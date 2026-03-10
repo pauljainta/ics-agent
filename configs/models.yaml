@@ -1,0 +1,4 @@
+model:
+  id: QWEN/qwen-3.5-small
+  cache_dir: ./.cache/models
+  trust_remote_code: true

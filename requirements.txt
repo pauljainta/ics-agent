@@ -1,0 +1,9 @@
+langchain>=0.0.0
+transformers>=4.30.0
+torch>=2.0.0
+safetensors
+accelerate
+python-dotenv
+pytest
+black
+ruff
