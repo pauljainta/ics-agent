@@ -3,12 +3,15 @@ __pycache__/
 *.py[cod]
 *.so
 *.egg-info/
+.Python
 .pytest_cache/
 .ruff_cache/
 
 # Environments
 .venv/
 .env
+.env.*
+!.env.example
 
 # Build / dist
 build/
@@ -22,3 +25,24 @@ dist/
 # Local caches and logs
 .cache/
 logs/*.log
+*.log
+*.out
+*.err
+nohup.out
+slurm-*.out
+
+# Local model weights/artifacts (keep code under models/ tracked)
+models/local_models/*
+!models/local_models/.gitkeep
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+
+# Hugging Face / model download caches
+.hf/
+.huggingface/
+**/.cache/huggingface/

@@ -1,4 +1,0 @@
-simulation:
-  fidelity: F0
-  read_only: true
-  enable_actuation_gate: false

@@ -1,4 +1,0 @@
-sphere:
-  api_url: http://localhost:8000
-  api_key_env: SPHERE_API_KEY
-  read_only: true
