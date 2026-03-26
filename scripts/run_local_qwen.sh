@@ -46,8 +46,17 @@ set -a
 source .env
 set +a
 
+if [[ "${QWEN_MODEL_ID:-}" == "Qwen/Qwen3.5-8B" ]]; then
+  echo "WARNING: QWEN_MODEL_ID=Qwen/Qwen3.5-8B is invalid; switching to Qwen/Qwen3.5-9B." >&2
+  export QWEN_MODEL_ID="Qwen/Qwen3.5-9B"
+fi
+
 if [[ -z "${QWEN_MODEL_PATH:-}" ]]; then
-  export QWEN_MODEL_PATH="./models/local_models/qwen3.5-0.8b"
+  export QWEN_MODEL_PATH="./models/local_models/qwen3.5-9b"
+fi
+
+if [[ "${QWEN_MODEL_PATH:-}" == "./models/local_models/qwen3.5-8b" ]]; then
+  export QWEN_MODEL_PATH="./models/local_models/qwen3.5-9b"
 fi
 
 if [[ "${GPU_READY}" != "true" ]]; then

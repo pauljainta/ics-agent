@@ -2,6 +2,7 @@ git+https://github.com/huggingface/transformers.git
 torch>=2.6.0,<2.7.0
 safetensors>=0.4.0,<1.0.0
 accelerate>=1.13.0,<2.0.0
+bitsandbytes>=0.43.0,<1.0.0
 python-dotenv>=1.0.0,<2.0.0
 pytest>=8.0.0,<9.0.0
 black>=24.0.0,<25.0.0

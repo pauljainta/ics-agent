@@ -33,8 +33,17 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-MODEL_ID="${QWEN_MODEL_ID:-Qwen/Qwen3.5-0.8B}"
-MODEL_DIR="${QWEN_MODEL_PATH:-./models/local_models/qwen3.5-0.8b}"
+MODEL_ID="${QWEN_MODEL_ID:-Qwen/Qwen3.5-9B}"
+MODEL_DIR="${QWEN_MODEL_PATH:-./models/local_models/qwen3.5-9b}"
+
+# Backward-compatibility fix: Qwen3.5 has 0.8B and 9B, not 8B.
+if [[ "${MODEL_ID}" == "Qwen/Qwen3.5-8B" ]]; then
+  echo "WARNING: '${MODEL_ID}' is not a valid repo id; using 'Qwen/Qwen3.5-9B'." >&2
+  MODEL_ID="Qwen/Qwen3.5-9B"
+  if [[ "${MODEL_DIR}" == "./models/local_models/qwen3.5-8b" ]]; then
+    MODEL_DIR="./models/local_models/qwen3.5-9b"
+  fi
+fi
 
 mkdir -p "${MODEL_DIR}"
 
