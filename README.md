@@ -13,12 +13,12 @@ The repo now covers these AGENTS.md requirements in a reusable structure:
 
 - end-to-end OpenPLC testbed orchestration through a shared environment adapter
 - scripted online roles
-- agentic role scaffolding for Qwen 3.5 with optional LangChain / LangGraph use
+- agentic role scaffolding for Qwen 3.5 with LangChain / LangGraph execution
 - offline analysis roles operating only on stored run artifacts
 - config-driven scenario catalog and experiment matrices
 - combination-matrix execution with named experimental conditions
 - metrics and report generation for each run
-- repo-local `Results/` output instead of relying on loose workspace artifacts
+- workspace-level `Agentic_ICS/Results/` output kept outside the `ics-agent` git repo
 - automated validation and pytest coverage for config loading and orchestration
 
 ## Repo Layout
@@ -39,8 +39,9 @@ The repo now covers these AGENTS.md requirements in a reusable structure:
   Agentic prompt templates kept in files for reproducibility.
 - `tests/`
   Unit and orchestration tests.
-- `Results/`
-  Machine-readable and human-readable outputs for completed runs.
+- `../Results/`
+  Machine-readable and human-readable outputs for completed runs. This lives at
+  the workspace root so results stay outside the `ics-agent` git repo.
 - `agents/scripted_wargame.py`
   Legacy scripted runner kept for compatibility with older flows.
 
@@ -77,9 +78,10 @@ Implemented role families:
 - `scripted`
   Deterministic scenario-plan or rule-based behavior
 - `agentic`
-  Qwen-oriented role wrapper with optional LangChain / LangGraph integration
-  and a deterministic heuristic fallback when local model dependencies are not
-  available
+  Qwen-oriented role wrapper that defaults to a LangChain / LangGraph decision
+  flow with cached model loading, candidate-action selection, memory windows,
+  and strict backend enforcement so agentic profiles fail explicitly when the
+  local model path or dependencies are unavailable
 - `offline`
   Same role interface, but executed only after a run from stored artifacts
 
@@ -103,6 +105,14 @@ Run the core smoke matrix:
 python3 -m ics_agent.cli run experiments/smoke_core_matrix.yaml
 ```
 
+Bootstrap the local Qwen runtime for the all-agentic path:
+
+```bash
+bash scripts/setup_env.sh
+bash scripts/download_qwen_model.sh
+QWEN_MODEL_PATH=./models/local_models/qwen3.5-9b .venv/bin/python -m ics_agent.cli run experiments/smoke_full_agentic.yaml
+```
+
 Run mixed observer / planner smoke combinations:
 
 ```bash
@@ -118,7 +128,7 @@ python3 -m ics_agent.cli run experiments/full_matrix.yaml
 Results are written under:
 
 ```text
-Results/<experiment_name>/<experiment_id>/<condition>/<suite>/<scenario_id>/trial-001/
+../Results/<experiment_name>/<experiment_id>/<condition>/<suite>/<scenario_id>/trial-001/
 ```
 
 Each run directory includes:
@@ -142,7 +152,7 @@ Replay mode lets offline agents operate only on saved logs.
 Workflow:
 
 1. Run a live experiment and choose one run directory.
-2. Copy or link that run directory into `Results/replay_seed/<name>/`.
+2. Copy or link that run directory into `../Results/replay_seed/<name>/`.
 3. Run:
 
 ```bash

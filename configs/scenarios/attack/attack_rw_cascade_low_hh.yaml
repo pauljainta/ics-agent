@@ -1,0 +1,41 @@
+scenario_id: "wt-attack-sensor-rw-cascade-low-hh"
+process_id: "WT-P1"
+description: "Attack: cascade raw-water spoof from low to high-high during runtime"
+duration_sec: 50
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 14
+    action:
+      type: set_sensor
+      name: RW_Tank_Level
+      value: 390
+  - time_sec: 24
+    action:
+      type: set_sensor
+      name: RW_Tank_Level
+      value: 1210
+  - { time_sec: 38, action: hmi_stop }
+
+expectations:
+  final_state: SHUTDOWN
+  must_reach_states: [RUNNING]
+  must_change:
+    - RW_Tank_Level
+  peak_at_least:
+    RW_Tank_Level: 1200
+  ever_nonzero:
+    - RW_Tank_PR_Valve_Sts
+  event_count:
+    hmi_start: 1
+    hmi_stop: 1
+  min_samples: 70
+

@@ -59,9 +59,9 @@ class RunBundle:
     decisions: list[dict[str, Any]] = field(default_factory=list)
     alerts: list[dict[str, Any]] = field(default_factory=list)
     offline_analyses: list[dict[str, Any]] = field(default_factory=list)
+    expectation_checks: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     status: str = "pending"
     passed: bool | None = None
     summary: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
-

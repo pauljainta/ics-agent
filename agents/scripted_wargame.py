@@ -174,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-root",
-        default=str(REPO_ROOT / "Results" / "legacy_scripted_agents"),
+        default=str(WORKSPACE_ROOT / "Results" / "legacy_scripted_agents"),
         help="Directory for suite artifacts",
     )
     return parser

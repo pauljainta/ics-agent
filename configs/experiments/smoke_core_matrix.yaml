@@ -4,7 +4,7 @@ scenario_selectors:
   - smoke/wt-smoke-rw-refill-spoof
 repeats: 1
 resume: true
-results_root: Results
+results_root: ../Results
 environment:
   backend: auto
   keep_running: false
@@ -16,4 +16,3 @@ role_matrix:
   planner: [scripted_planner]
   operator: [scripted_operator]
   offline_analysis: [scripted_offline_analyst]
-

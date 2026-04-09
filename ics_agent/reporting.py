@@ -60,6 +60,7 @@ def write_run_bundle(run_dir: Path, bundle: dict[str, Any]) -> None:
     write_json(run_dir / "actions.json", bundle.get("executed_actions", []))
     write_json(run_dir / "decisions.json", bundle.get("decisions", []))
     write_json(run_dir / "alerts.json", bundle.get("alerts", []))
+    write_json(run_dir / "checks.json", bundle.get("expectation_checks", []))
     write_json(run_dir / "system_events.json", bundle.get("system_events", []))
     write_json(run_dir / "offline_analysis.json", bundle.get("offline_analyses", []))
     write_json(run_dir / "errors.json", bundle.get("errors", []))
@@ -67,4 +68,3 @@ def write_run_bundle(run_dir: Path, bundle: dict[str, Any]) -> None:
     dump_yaml(run_dir / "config_snapshot.yaml", bundle["config_snapshot"])
     dump_yaml(run_dir / "scenario_resolved.yaml", bundle["scenario"])
     write_markdown_summary(run_dir / "summary.md", bundle)
-

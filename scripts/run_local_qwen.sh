@@ -33,8 +33,8 @@ fi
 source .venv/bin/activate
 
 VENV_VERSION="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
-if [[ "${VENV_VERSION}" != "3.10.3" ]]; then
-  echo "ERROR: .venv must use Python 3.10.3 (found ${VENV_VERSION})." >&2
+if [[ "${VENV_VERSION}" != 3.10.* ]]; then
+  echo "ERROR: .venv must use Python 3.10.x (found ${VENV_VERSION})." >&2
   exit 1
 fi
 

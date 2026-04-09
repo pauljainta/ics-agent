@@ -15,21 +15,30 @@ else
 fi
 
 PYTHON_VERSION="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
-if [[ "${PYTHON_VERSION}" != "3.10.3" ]]; then
-  echo "ERROR: expected python 3.10.3, got ${PYTHON_VERSION}." >&2
+if [[ "${PYTHON_VERSION}" != 3.10.* ]]; then
+  echo "ERROR: expected python 3.10.x, got ${PYTHON_VERSION}." >&2
   exit 1
 fi
 
-if [[ ! -d .venv ]]; then
-  python -m venv .venv
+if [[ ! -d .venv || ! -f .venv/bin/activate ]]; then
+  if python -m virtualenv --version >/dev/null 2>&1; then
+    python -m virtualenv --clear .venv
+  elif ! python -m venv .venv; then
+    if python -m virtualenv --version >/dev/null 2>&1; then
+      python -m virtualenv .venv
+    else
+      echo "ERROR: unable to create .venv with venv, and virtualenv is unavailable." >&2
+      exit 1
+    fi
+  fi
 fi
 
 source .venv/bin/activate
 
 VENV_VERSION="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
-if [[ "${VENV_VERSION}" != "3.10.3" ]]; then
-  echo "ERROR: .venv is not using python 3.10.3 (found ${VENV_VERSION})." >&2
-  echo "Delete .venv and rerun scripts/setup_env.sh to recreate it with python/3.10.3." >&2
+if [[ "${VENV_VERSION}" != 3.10.* ]]; then
+  echo "ERROR: .venv is not using python 3.10.x (found ${VENV_VERSION})." >&2
+  echo "Delete .venv and rerun scripts/setup_env.sh to recreate it with Python 3.10.x." >&2
   exit 1
 fi
 

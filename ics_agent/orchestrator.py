@@ -20,6 +20,21 @@ from .utils import stable_hash, utc_now
 ROLE_ORDER = ["planner", "observer", "defender", "operator", "attacker"]
 
 
+def canonical_action_name(action: dict[str, Any] | str) -> str:
+    if isinstance(action, str):
+        return action
+    action_type = action.get("type", "unknown")
+    process_id = action.get("process_id")
+    if action_type == "set_manual_valve":
+        chemical = action.get("chemical", "unknown")
+        state = "open" if action.get("open", True) else "close"
+        return f"{process_id}:{action_type}:{chemical}:{state}"
+    if action_type == "select_process":
+        state = "on" if action.get("active", True) else "off"
+        return f"{process_id}:{action_type}:{state}"
+    return str(action_type)
+
+
 class ExperimentOrchestrator:
     def __init__(self, catalog: ScenarioCatalog | None = None) -> None:
         self.catalog = catalog or ScenarioCatalog()
@@ -39,7 +54,7 @@ class ExperimentOrchestrator:
         conditions = self._enumerate_conditions(config)
         timestamp = utc_now().replace(":", "").replace("-", "").replace(".", "")
         experiment_id = f"{timestamp[:15]}-{stable_hash({'config': portable_path(config['_path']), 'conditions': conditions})}"
-        results_root = resolve_repo_path(config.get("results_root", "Results"), base_dir=REPO_ROOT)
+        results_root = resolve_repo_path(config.get("results_root", str(RESULTS_ROOT)), base_dir=REPO_ROOT)
         experiment_root = results_root / experiment_name / experiment_id
         experiment_root.mkdir(parents=True, exist_ok=True)
 
@@ -85,6 +100,9 @@ class ExperimentOrchestrator:
                         config=config,
                     )
                     condition_summary["runs"].append(bundle["summary"])
+                    if bundle["summary"]["status"] != "completed":
+                        condition_summary["status"] = "failed"
+                        suite_summary["status"] = "failed"
             write_json(condition_root / "condition_summary.json", condition_summary)
             suite_summary["conditions"].append(condition_summary)
 
@@ -210,14 +228,28 @@ class ExperimentOrchestrator:
             "metrics": bundle.metrics,
             "passed": bundle.passed,
             "duration_sec": float(scenario.execution.get("duration_sec", 0.0)),
+            "observations": bundle.observations,
+            "executed_actions": bundle.executed_actions,
+            "decisions": bundle.decisions,
+            "alerts": bundle.alerts,
         }
         for role, agent in agents.items():
             if agent.mode != "offline":
                 continue
-            for decision in agent.finalize(offline_context):
-                rendered = decision.as_dict()
-                bundle.decisions.append(rendered)
-                bundle.offline_analyses.append(rendered)
+            try:
+                for decision in agent.finalize(offline_context):
+                    rendered = decision.as_dict()
+                    bundle.decisions.append(rendered)
+                    bundle.offline_analyses.append(rendered)
+            except Exception as exc:  # pragma: no cover - depends on local model environment
+                bundle.status = "failed"
+                bundle.passed = False
+                bundle.errors.append(
+                    {
+                        "timestamp_utc": utc_now(),
+                        "error": f"offline agent `{role}` failed: {exc}",
+                    }
+                )
 
         bundle.summary = {
             "run_id": run_id,
@@ -272,10 +304,12 @@ class ExperimentOrchestrator:
                 "scenario": scenario,
                 "time_sec": elapsed,
                 "observation": observation,
+                "observations": bundle.observations,
                 "alerts": bundle.alerts,
                 "decisions": bundle.decisions,
                 "executed_actions": bundle.executed_actions,
                 "planned_events": planned_events,
+                "playbooks": planned_events,
             }
             for role in ROLE_ORDER:
                 agent = agents.get(role)
@@ -320,8 +354,27 @@ class ExperimentOrchestrator:
                     )
             time.sleep(poll_interval)
 
-        passed = scenario.execution.get("expectations", {}).get("final_state")
-        bundle.passed = bool(bundle.observations) and (passed is None or bundle.observations[-1].get("STATE_NAME") == passed)
+        expectation_events = [
+            {
+                "timestamp_utc": item["timestamp_utc"],
+                "time_sec": item["time_sec"],
+                "action": canonical_action_name(item["action"]),
+                "state_after": item["state_after"],
+            }
+            for item in bundle.executed_actions
+        ]
+        if hasattr(env, "testbed") and hasattr(env.testbed, "evaluate_expectations"):
+            passed, checks = env.testbed.evaluate_expectations(
+                bundle.observations,
+                expectation_events,
+                scenario.execution.get("expectations"),
+            )
+            bundle.passed = passed
+            bundle.expectation_checks = [check.__dict__ for check in checks]
+        else:
+            passed = scenario.execution.get("expectations", {}).get("final_state")
+            bundle.passed = bool(bundle.observations) and (passed is None or bundle.observations[-1].get("STATE_NAME") == passed)
+            bundle.expectation_checks = []
 
     def _run_replay_loop(
         self,
@@ -345,6 +398,7 @@ class ExperimentOrchestrator:
             ("actions.json", "executed_actions"),
             ("decisions.json", "decisions"),
             ("alerts.json", "alerts"),
+            ("checks.json", "expectation_checks"),
             ("system_events.json", "system_events"),
             ("offline_analysis.json", "offline_analyses"),
         ):
@@ -382,6 +436,7 @@ class ExperimentOrchestrator:
             "decisions": bundle.decisions,
             "alerts": bundle.alerts,
             "offline_analyses": bundle.offline_analyses,
+            "expectation_checks": bundle.expectation_checks,
             "errors": bundle.errors,
             "status": bundle.status,
             "passed": bundle.passed,

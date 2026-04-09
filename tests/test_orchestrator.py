@@ -98,7 +98,9 @@ def test_orchestrator_runs_live_smoke_with_fake_environment(tmp_path, monkeypatc
     monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
     monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
 
-    summary = ExperimentOrchestrator().run(config_path)
+    orchestrator = ExperimentOrchestrator()
+    orchestrator.agent_profiles["agentic_offline_analyst"]["llm"]["strict_backend"] = False
+    summary = orchestrator.run(config_path)
     assert summary["conditions"]
 
     metric_files = list((tmp_path / "Results").rglob("metrics.json"))
@@ -141,9 +143,58 @@ def test_orchestrator_runs_replay_mode_from_saved_results(tmp_path) -> None:
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
-    summary = ExperimentOrchestrator().run(config_path)
+    orchestrator = ExperimentOrchestrator()
+    orchestrator.agent_profiles["agentic_offline_analyst"]["llm"]["strict_backend"] = False
+    summary = orchestrator.run(config_path)
     assert summary["conditions"]
     analysis_files = list((tmp_path / "Results").rglob("offline_analysis.json"))
     assert analysis_files
     payload = json.loads(analysis_files[0].read_text())
     assert payload
+
+
+def test_orchestrator_marks_failed_run_when_offline_agent_finalize_errors(tmp_path, monkeypatch) -> None:
+    replay_dir = tmp_path / "replay_seed"
+    replay_dir.mkdir(parents=True)
+    with (replay_dir / "observations.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["STATE_NAME", "RW_Tank_Level"])
+        writer.writeheader()
+        writer.writerow({"STATE_NAME": "RUNNING", "RW_Tank_Level": 390})
+        writer.writerow({"STATE_NAME": "SHUTDOWN", "RW_Tank_Level": 390})
+    (replay_dir / "actions.json").write_text(json.dumps([{"role": "defender", "time_sec": 1.0, "action": {"type": "hmi_stop"}}]))
+    (replay_dir / "decisions.json").write_text(json.dumps([{"role": "observer", "time_sec": 0.9, "diagnosis": "raw_water_low_or_spoof"}]))
+    (replay_dir / "alerts.json").write_text(json.dumps([{"role": "observer", "time_sec": 0.9}]))
+    (replay_dir / "summary.json").write_text(json.dumps({"passed": True}))
+
+    config_path = tmp_path / "replay_fail.yaml"
+    config = {
+        "experiment_name": "pytest_replay_fail",
+        "execution_mode": "replay",
+        "replay_source": str(replay_dir),
+        "scenario_selectors": ["smoke/wt-smoke-rw-refill-spoof"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "role_matrix": {
+            "attacker": ["scripted_attacker"],
+            "defender": ["scripted_defender"],
+            "observer": ["scripted_observer"],
+            "planner": ["scripted_planner"],
+            "operator": ["scripted_operator"],
+            "offline_analysis": ["agentic_offline_analyst"],
+        },
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    def broken_finalize(self, context):
+        raise RuntimeError("offline backend unavailable")
+
+    monkeypatch.setattr("ics_agent.orchestrator.AgenticRoleAgent.finalize", broken_finalize)
+
+    summary = ExperimentOrchestrator().run(config_path)
+
+    assert summary["status"] == "failed"
+    assert summary["conditions"][0]["status"] == "failed"
+    run_summary = summary["conditions"][0]["runs"][0]
+    assert run_summary["status"] == "failed"
+    assert "offline backend unavailable" in run_summary["errors"][0]["error"]

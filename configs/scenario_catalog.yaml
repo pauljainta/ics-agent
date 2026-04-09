@@ -198,6 +198,48 @@ scenario_overrides:
       incident_start_time_sec: 8
       expected_diagnosis: unauthorized_chemical_dosing
       expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-naocl-drain:
+    name: P2 NaOCl Drain Attack
+    intent: Abuse the Process 2 NaOCl manual valve to drain chemical inventory while the plant is running.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-hcl-drain:
+    name: P2 HCl Drain Attack
+    intent: Abuse the Process 2 HCl manual valve to drain chemical inventory while the plant is running.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-dual-hijack:
+    name: P2 Dual Hijack Attack
+    intent: Chain two unauthorized chemical actions to create a multi-stage Process 2 compromise.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-select-chatter:
+    name: P2 Selection Chatter Attack
+    intent: Repeatedly toggle Process 2 selection to create control confusion and distract operators.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process]
+  attack/wt-attack-sensor-rw-cascade-low-hh:
+    name: Raw Water Cascade Spoof Attack
+    intent: Drive a low-to-high-high sensor cascade to force multiple controller reactions in one attack run.
+    ground_truth:
+      incident_start_time_sec: 14
+      expected_diagnosis: raw_water_alarm_condition
+      expected_defender_actions: [hmi_stop, hmi_estop]
+  attack/wt-attack-sensor-rw-oscillation:
+    name: Raw Water Oscillation Spoof Attack
+    intent: Oscillate raw-water level readings to create repeated, confusing process responses.
+    ground_truth:
+      incident_start_time_sec: 14
+      expected_diagnosis: raw_water_low_or_spoof
+      expected_defender_actions: [hmi_stop]
   readiness/wt-uc1-low-level-block:
     name: Low-Level Permissive Block
     intent: Validate that raw-water permissives block startup from an unsafe low initial level.
@@ -240,3 +282,32 @@ scenario_overrides:
       expected_diagnosis: raw_water_low_or_spoof
       expected_defender_actions: [hmi_stop]
       mitigation_actions: [hmi_stop, hmi_estop]
+  smoke/wt-smoke-p2-naocl-attack:
+    name: Short P2 NaOCl Attack
+    intent: Provide a compact Process 2 hijack scenario for fully agentic and mixed-role smoke testing.
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 6
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  smoke/wt-smoke-p2-dual-nominal:
+    name: Short P2 Dual Nominal Smoke Run
+    intent: Quickly verify nominal manual dosing across two chemicals and clean Process 2 deselection.
+    ground_truth:
+      incident_type: nominal
+  recheck/wt-recheck-attack-rw-refill-spoof:
+    name: Recheck Raw Water Refill Spoof
+    intent: Re-run the refill spoof attack after framework changes to confirm detection still fires.
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 15
+      expected_diagnosis: raw_water_low_or_spoof
+      expected_defender_actions: [hmi_stop]
+  recheck/wt-recheck-attack-p2-naocl-drain:
+    name: Recheck P2 NaOCl Drain
+    intent: Re-run the NaOCl hijack after framework changes to confirm Process 2 abuse remains visible.
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]

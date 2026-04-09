@@ -1,0 +1,18 @@
+experiment_name: smoke_full_agentic
+scenario_selectors:
+  - smoke/wt-smoke-p1-short-nominal
+  - smoke/wt-smoke-rw-refill-spoof
+repeats: 1
+resume: true
+results_root: ../Results
+environment:
+  backend: auto
+  keep_running: false
+  start_bridge: true
+role_matrix:
+  attacker: [agentic_attacker]
+  defender: [agentic_defender]
+  observer: [agentic_observer]
+  planner: [agentic_planner]
+  operator: [agentic_operator]
+  offline_analysis: [agentic_offline_analyst]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from ics_agent.paths import RESULTS_ROOT, WORKSPACE_ROOT
 from ics_agent.scenarios import ScenarioCatalog
 
 
@@ -31,3 +34,10 @@ def test_catalog_applies_metadata_schema_defaults() -> None:
         assert key in metadata
     assert metadata["ground_truth"]["incident_type"] == "attack"
 
+
+def test_smoke_nominal_bindings_assign_operator_and_workspace_results_root() -> None:
+    catalog = ScenarioCatalog()
+    scenario = catalog.get("smoke/wt-smoke-p1-short-nominal")
+    assert scenario.metadata["role_bindings"]["operator"] == [0, 1]
+    assert RESULTS_ROOT == WORKSPACE_ROOT / "Results"
+    assert RESULTS_ROOT == Path("/home/researcher/Agentic_ICS/Results")

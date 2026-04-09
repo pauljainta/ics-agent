@@ -6,7 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
 CONFIG_ROOT = REPO_ROOT / "configs"
-RESULTS_ROOT = REPO_ROOT / "Results"
+RESULTS_ROOT = WORKSPACE_ROOT / "Results"
 SCENARIO_CONFIG_ROOT = CONFIG_ROOT / "scenarios"
 SPHERE_WT_OPENPLC_DIR = (
     WORKSPACE_ROOT
@@ -26,4 +26,3 @@ def portable_path(path: Path) -> str:
         except ValueError:
             continue
     return str(resolved)
-

@@ -16,6 +16,7 @@ __pycache__/
 # Build / dist
 build/
 dist/
+Results/
 
 # IDE / OS
 .vscode/

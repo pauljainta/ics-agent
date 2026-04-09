@@ -1,0 +1,41 @@
+scenario_id: "wt-smoke-p2-dual-nominal"
+process_id: "WT-P2"
+description: "Short smoke nominal: quick NaCl and HCl manual dosing sequence"
+duration_sec: 26
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - time_sec: 4
+    action: { process_id: WT-P1, type: hmi_start }
+  - time_sec: 6
+    action: { process_id: WT-P2, type: select_process, active: true }
+  - time_sec: 8
+    action: { process_id: WT-P2, type: set_manual_valve, chemical: NaCl, open: true }
+  - time_sec: 11
+    action: { process_id: WT-P2, type: set_manual_valve, chemical: NaCl, open: false }
+  - time_sec: 13
+    action: { process_id: WT-P2, type: set_manual_valve, chemical: HCl, open: true }
+  - time_sec: 16
+    action: { process_id: WT-P2, type: set_manual_valve, chemical: HCl, open: false }
+  - time_sec: 18
+    action: { process_id: WT-P2, type: select_process, active: false }
+  - time_sec: 20
+    action: { process_id: WT-P1, type: hmi_stop }
+
+expectations:
+  final_state: SHUTDOWN
+  must_reach_states: [RUNNING]
+  must_change:
+    - ChemTreat_NaCl_Level
+    - ChemTreat_HCl_Level
+  ever_nonzero:
+    - ChemTreat_NaCl_Valve_Sts
+    - ChemTreat_HCl_Valve_Sts
+  min_samples: 28

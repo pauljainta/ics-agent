@@ -46,14 +46,14 @@ def _default_role_bindings(suite: str, execution: dict[str, Any], metadata: dict
     for index, item in enumerate(timeline):
         action = item.get("action")
         action_type = action if isinstance(action, str) else action.get("type")
-        if suite in {"normal", "readiness", "recheck"}:
-            bindings["operator"].append(index)
-            continue
         if suite == "attack" or incident_type == "attack":
             if index == 0 and action_type == "hmi_start":
                 bindings["operator"].append(index)
             else:
                 bindings["attacker"].append(index)
+            continue
+        if suite in {"normal", "readiness", "recheck", "smoke"} or incident_type in {"nominal", "fault", "regression", "smoke"}:
+            bindings["operator"].append(index)
             continue
         bindings["system"].append(index)
 
@@ -151,4 +151,3 @@ class ScenarioCatalog:
                 seen.add(match.catalog_id)
                 selected.append(match)
         return selected
-

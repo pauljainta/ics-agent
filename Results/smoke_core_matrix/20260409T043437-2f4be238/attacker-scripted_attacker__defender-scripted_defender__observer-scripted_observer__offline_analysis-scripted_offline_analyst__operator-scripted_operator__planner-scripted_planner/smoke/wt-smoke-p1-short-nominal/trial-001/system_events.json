@@ -1,9 +1,0 @@
-[
-  {
-    "timestamp_utc": "2026-04-09T04:34:59.631397+00:00",
-    "time_sec": 0.0,
-    "event_type": "state_transition",
-    "from_state": null,
-    "to_state": "SHUTDOWN"
-  }
-]
