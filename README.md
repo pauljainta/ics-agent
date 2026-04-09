@@ -30,6 +30,34 @@ As of 2026-04-09, the attack-only agentic path has been verified end to end.
   observer and defender metrics are split cleanly, and redundant scheduled
   playbook actions are skipped once the plant is already in the requested state
 
+## Current Performance Note
+
+Using the latest checked attack batches in this workspace, the current
+tradeoff is:
+
+- `agentic_agents` is now stronger on attack detection coverage and slightly
+  faster on average blue-team time-to-detection
+- `scripted_baseline` is still stronger on defender intervention,
+  containment, and overall decision reliability
+
+Current attack-batch snapshot:
+
+- `agentic_agents`: `18/18` detected, `3/18` mitigated, average detection time
+  about `0.44s`, average safety violations `3.61`, average decision
+  correctness `0.56`
+- `scripted_baseline`: `13/18` detected, `13/18` mitigated, average detection
+  time about `0.50s`, average safety violations `2.78`, average decision
+  correctness `0.86`
+
+So, as of now, the agentic stack is much better than before at noticing attacks
+quickly, but the scripted defender still performs better as the practical
+blue-team baseline when the goal is to intervene early and keep the plant in a
+safer state.
+
+This comparison is useful but not perfectly apples-to-apples: it is based on
+the latest verified agentic batch and the current stored scripted baseline
+batch, not a fresh same-code rerun of both conditions.
+
 ## What Is In Scope
 
 The repo now covers these AGENTS.md requirements in a reusable structure:
