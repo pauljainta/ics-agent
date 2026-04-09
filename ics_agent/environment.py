@@ -51,7 +51,10 @@ class OpenPLCEnvironment:
 
     def reset(self, initial_conditions: dict[str, int] | None = None) -> dict[str, Any]:
         try:
-            return self.testbed.reset(initial_conditions, wait_sec=float(self.config.get("reset_wait_sec", 1.5)))
+            return self.testbed.reset(
+                initial_conditions,
+                wait_sec=float(self.config.get("reset_wait_sec", 1.5)),
+            )
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
 
@@ -82,4 +85,3 @@ class OpenPLCEnvironment:
             raise EnvironmentError(str(exc)) from exc
         finally:
             self.started = False
-

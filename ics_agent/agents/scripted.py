@@ -9,7 +9,15 @@ from ..types import RoleDecision
 def _read_value(observation: dict[str, Any], key: str) -> Any:
     if key in observation:
         return observation[key]
-    for group in ("levels", "status", "commands", "states", "alarms", "hmi", "process_controls"):
+    for group in (
+        "levels",
+        "status",
+        "commands",
+        "states",
+        "alarms",
+        "hmi",
+        "process_controls",
+    ):
         nested = observation.get(group)
         if isinstance(nested, dict) and key in nested:
             return nested[key]
@@ -27,7 +35,10 @@ def _match_clause(clause: dict[str, Any], context: dict[str, Any]) -> bool:
     if "below" in clause:
         return actual is not None and actual < clause["below"]
     if "state_is" in clause:
-        return observation.get("STATE_NAME") == clause["state_is"] or observation.get("state_name") == clause["state_is"]
+        return (
+            observation.get("STATE_NAME") == clause["state_is"]
+            or observation.get("state_name") == clause["state_is"]
+        )
     if "role_alerted" in clause:
         target = clause["role_alerted"]
         return any(item.get("role") == target for item in context.get("alerts", []))
@@ -72,7 +83,9 @@ class ScriptedRoleAgent(RoleAgent):
                 summary=summary,
                 time_sec=float(context.get("duration_sec", 0.0)),
                 confidence=1.0,
-                diagnosis=context.get("scenario").metadata.get("ground_truth", {}).get("expected_diagnosis"),
+                diagnosis=context.get("scenario")
+                .metadata.get("ground_truth", {})
+                .get("expected_diagnosis"),
                 labels=["offline", "scripted"],
                 metadata={"metrics": metrics},
             )
@@ -86,7 +99,9 @@ class ScriptedRoleAgent(RoleAgent):
 
         while cursor < len(plan) and now >= float(plan[cursor]["time_sec"]):
             action = plan[cursor]["action"]
-            action_type = action if isinstance(action, str) else action.get("type", "unknown")
+            action_type = (
+                action if isinstance(action, str) else action.get("type", "unknown")
+            )
             decisions.append(
                 self.decision(
                     decision_type="action",
@@ -135,7 +150,9 @@ class ScriptedRoleAgent(RoleAgent):
                 decisions.append(
                     self.decision(
                         decision_type="action",
-                        summary=str(rule.get("action_summary", f"{self.role} mitigation action")),
+                        summary=str(
+                            rule.get("action_summary", f"{self.role} mitigation action")
+                        ),
                         time_sec=now,
                         action=action,
                         confidence=float(rule.get("confidence", 1.0)),
@@ -159,7 +176,8 @@ class ScriptedRoleAgent(RoleAgent):
                 time_sec=float(context["time_sec"]),
                 confidence=1.0,
                 labels=["scripted", "planner"],
-                metadata={"expected_outcomes": scenario.metadata.get("expected_outcomes", [])},
+                metadata={
+                    "expected_outcomes": scenario.metadata.get("expected_outcomes", [])
+                },
             )
         ]
-

@@ -34,4 +34,3 @@ def dump_yaml(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as handle:
         yaml.safe_dump(payload, handle, sort_keys=False)
-

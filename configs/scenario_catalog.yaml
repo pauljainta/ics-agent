@@ -1,6 +1,7 @@
 global_required_metrics: &global_required_metrics
   - time_to_detection_sec
   - time_to_mitigation_sec
+  - true_positive_rate
   - false_positive_rate
   - false_negative_rate
   - safety_violation_count

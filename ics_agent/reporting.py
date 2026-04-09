@@ -30,6 +30,9 @@ def write_json(path: Path, payload: Any) -> None:
 def write_markdown_summary(path: Path, bundle: dict[str, Any]) -> None:
     scenario = bundle["scenario"]
     metrics = bundle.get("metrics", {})
+    observer_detection = metrics.get("observer_detection", {})
+    defender_detection = metrics.get("defender_detection", {})
+    defender_intervention = metrics.get("defender_intervention", {})
     lines = [
         f"# {scenario['scenario_id']}",
         "",
@@ -39,8 +42,12 @@ def write_markdown_summary(path: Path, bundle: dict[str, Any]) -> None:
         f"- Samples: `{len(bundle.get('observations', []))}`",
         f"- Actions: `{len(bundle.get('executed_actions', []))}`",
         f"- Alerts: `{len(bundle.get('alerts', []))}`",
-        f"- TTD: `{metrics.get('time_to_detection_sec')}`",
-        f"- TTM: `{metrics.get('time_to_mitigation_sec')}`",
+        f"- Blue-Team TTD: `{metrics.get('time_to_detection_sec')}`",
+        f"- Observer TTD: `{observer_detection.get('time_to_detection_sec')}`",
+        f"- Defender TTD: `{defender_detection.get('time_to_detection_sec')}`",
+        f"- Defender TTM: `{defender_intervention.get('time_to_mitigation_sec')}`",
+        f"- Blue-Team TPR: `{metrics.get('true_positive_rate')}`",
+        f"- Blue-Team FPR: `{metrics.get('false_positive_rate')}`",
         f"- Safety Violations: `{metrics.get('safety_violation_count')}`",
         "",
         "## Intent",

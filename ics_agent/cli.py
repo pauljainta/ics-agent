@@ -9,10 +9,14 @@ from .scenarios import ScenarioCatalog
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ICS water-treatment experiment runner")
+    parser = argparse.ArgumentParser(
+        description="ICS water-treatment experiment runner"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    validate_parser = sub.add_parser("validate", help="Validate scenario catalog and agent profiles")
+    validate_parser = sub.add_parser(
+        "validate", help="Validate scenario catalog and agent profiles"
+    )
     validate_parser.add_argument("--catalog", default="scenario_catalog.yaml")
 
     list_parser = sub.add_parser("list-scenarios", help="List known scenarios")
@@ -28,10 +32,15 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "validate":
+        orchestrator = ExperimentOrchestrator()
+        runtime = orchestrator.validate_runtime()
         catalog = ScenarioCatalog(args.catalog)
         payload = {
             "validated": True,
             "scenario_count": len(catalog.list()),
+            "profile_count": runtime["profile_count"],
+            "agentic_profile_count": runtime["agentic_profile_count"],
+            "knowledge_file_count": runtime["knowledge_file_count"],
             "scenarios": [scenario.catalog_id for scenario in catalog.list()],
         }
         print(json.dumps(payload, indent=2))

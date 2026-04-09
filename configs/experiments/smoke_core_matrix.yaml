@@ -9,6 +9,7 @@ environment:
   backend: auto
   keep_running: false
   start_bridge: true
+  loop_sleep_sec: 0.05
 role_matrix:
   attacker: [scripted_attacker, agentic_attacker]
   defender: [scripted_defender, agentic_defender]

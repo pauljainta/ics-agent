@@ -34,11 +34,15 @@ def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-def _default_role_bindings(suite: str, execution: dict[str, Any], metadata: dict[str, Any]) -> dict[str, list[int]]:
+def _default_role_bindings(
+    suite: str, execution: dict[str, Any], metadata: dict[str, Any]
+) -> dict[str, list[int]]:
     timeline = execution.get("timeline", [])
     explicit = metadata.get("role_bindings")
     if isinstance(explicit, dict):
-        return {role: [int(item) for item in values] for role, values in explicit.items()}
+        return {
+            role: [int(item) for item in values] for role, values in explicit.items()
+        }
 
     bindings: dict[str, list[int]] = {"operator": [], "attacker": [], "system": []}
     incident_type = metadata.get("ground_truth", {}).get("incident_type", "nominal")
@@ -52,7 +56,12 @@ def _default_role_bindings(suite: str, execution: dict[str, Any], metadata: dict
             else:
                 bindings["attacker"].append(index)
             continue
-        if suite in {"normal", "readiness", "recheck", "smoke"} or incident_type in {"nominal", "fault", "regression", "smoke"}:
+        if suite in {"normal", "readiness", "recheck", "smoke"} or incident_type in {
+            "nominal",
+            "fault",
+            "regression",
+            "smoke",
+        }:
             bindings["operator"].append(index)
             continue
         bindings["system"].append(index)
@@ -61,10 +70,19 @@ def _default_role_bindings(suite: str, execution: dict[str, Any], metadata: dict
 
 
 def _validate_execution(path: Path, payload: dict[str, Any]) -> None:
-    required = ["scenario_id", "description", "duration_sec", "poll_interval_ms", "timeline", "expectations"]
+    required = [
+        "scenario_id",
+        "description",
+        "duration_sec",
+        "poll_interval_ms",
+        "timeline",
+        "expectations",
+    ]
     missing = [field for field in required if field not in payload]
     if missing:
-        raise ConfigError(f"scenario execution {path} missing fields: {', '.join(missing)}")
+        raise ConfigError(
+            f"scenario execution {path} missing fields: {', '.join(missing)}"
+        )
 
 
 class ScenarioCatalog:
@@ -93,22 +111,39 @@ class ScenarioCatalog:
 
             metadata.setdefault("name", execution["scenario_id"])
             metadata.setdefault("intent", execution.get("description", ""))
-            metadata.setdefault("prerequisites", ["OpenPLC stack running or launchable via configured backend"])
-            metadata.setdefault("start_state", {"initial_conditions": execution.get("initial_conditions", {})})
+            metadata.setdefault(
+                "prerequisites",
+                ["OpenPLC stack running or launchable via configured backend"],
+            )
+            metadata.setdefault(
+                "start_state",
+                {"initial_conditions": execution.get("initial_conditions", {})},
+            )
             metadata.setdefault("attacker_actions", [])
             metadata.setdefault("defender_responses", [])
             metadata.setdefault("expected_outcomes", [execution.get("description", "")])
-            metadata.setdefault("success_conditions", [check for check in execution.get("expectations", {}).keys()])
+            metadata.setdefault(
+                "success_conditions",
+                [check for check in execution.get("expectations", {}).keys()],
+            )
             metadata.setdefault("failure_conditions", ["scenario expectations fail"])
-            metadata.setdefault("required_metrics", self.config.get("global_required_metrics", []))
+            metadata.setdefault(
+                "required_metrics", self.config.get("global_required_metrics", [])
+            )
             metadata.setdefault("ground_truth", {})
             metadata.setdefault("safety_bounds", {})
             metadata.setdefault("tags", [])
-            metadata["role_bindings"] = _default_role_bindings(suite, execution, metadata)
+            metadata["role_bindings"] = _default_role_bindings(
+                suite, execution, metadata
+            )
 
-            missing = [field for field in REQUIRED_METADATA_FIELDS if field not in metadata]
+            missing = [
+                field for field in REQUIRED_METADATA_FIELDS if field not in metadata
+            ]
             if missing:
-                raise ConfigError(f"scenario metadata for {catalog_id} missing fields: {', '.join(missing)}")
+                raise ConfigError(
+                    f"scenario metadata for {catalog_id} missing fields: {', '.join(missing)}"
+                )
 
             definitions[catalog_id] = ScenarioDefinition(
                 catalog_id=catalog_id,
@@ -142,7 +177,11 @@ class ScenarioCatalog:
                 matches = self.list()
             elif selector.endswith("/*"):
                 prefix = selector[:-1]
-                matches = [scenario for scenario in self.list() if scenario.catalog_id.startswith(prefix)]
+                matches = [
+                    scenario
+                    for scenario in self.list()
+                    if scenario.catalog_id.startswith(prefix)
+                ]
             else:
                 matches = [self.get(selector)]
             for match in matches:

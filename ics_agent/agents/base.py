@@ -55,4 +55,3 @@ class RoleAgent(ABC):
 
     def finalize(self, context: dict[str, Any]) -> list[RoleDecision]:
         return []
-

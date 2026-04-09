@@ -18,15 +18,15 @@ fi
 GPU_READY=true
 if [[ "${HAVE_MODULE}" == "true" ]]; then
   if ! module load cuda/11.8.0; then
-    echo "WARNING: could not load cuda/11.8.0; CPU fallback will be used." >&2
+    echo "WARNING: could not load cuda/11.8.0; relying on existing CUDA runtime." >&2
     GPU_READY=false
   fi
   if ! module load cudnn/8.6.0.163-11.8-gpu; then
-    echo "WARNING: could not load cudnn/8.6.0.163-11.8-gpu; CPU fallback will be used." >&2
+    echo "WARNING: could not load cudnn/8.6.0.163-11.8-gpu; relying on existing CUDA runtime." >&2
     GPU_READY=false
   fi
 else
-  echo "WARNING: module command unavailable; CPU fallback will be used." >&2
+  echo "WARNING: module command unavailable; relying on existing CUDA runtime." >&2
   GPU_READY=false
 fi
 
@@ -59,8 +59,14 @@ if [[ "${QWEN_MODEL_PATH:-}" == "./models/local_models/qwen3.5-8b" ]]; then
   export QWEN_MODEL_PATH="./models/local_models/qwen3.5-9b"
 fi
 
-if [[ "${GPU_READY}" != "true" ]]; then
-  export QWEN_DEVICE=cpu
-fi
+python - <<'PY'
+import sys
+import torch
 
-python models/qwen_test.py --offline
+if not torch.cuda.is_available():
+    raise SystemExit("ERROR: CUDA GPU is required for agentic model validation.")
+
+print("CUDA device:", torch.cuda.get_device_name(0))
+PY
+
+python models/qwen_test.py --offline --device cuda

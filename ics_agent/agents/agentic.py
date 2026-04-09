@@ -1,27 +1,17 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
+import textwrap
 from pathlib import Path
 from typing import Any
 
+from .action_space import action_key, build_candidate_actions, normalize_action
 from .base import RoleAgent
+from ..knowledge import load_manual_bundle
 from ..paths import REPO_ROOT
-
-
-def _normalize_action(action: dict[str, Any] | str | None) -> dict[str, Any] | None:
-    if action is None:
-        return None
-    if isinstance(action, str):
-        return {"type": action}
-    return dict(action)
-
-
-def _action_key(action: dict[str, Any] | str | None) -> str:
-    normalized = _normalize_action(action)
-    if normalized is None:
-        return "null"
-    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
 class CachedQwenDecisionEngine:
@@ -35,15 +25,24 @@ class CachedQwenDecisionEngine:
         self.backend = str(llm_cfg.get("backend", "qwen_langgraph"))
         self.model_id = str(llm_cfg.get("model_id", "Qwen/Qwen3.5-9B"))
         self.prompt_file = llm_cfg.get("prompt_file")
-        self.use_langgraph = bool(llm_cfg.get("use_langgraph", self.backend == "qwen_langgraph"))
-        self.strict_backend = bool(llm_cfg.get("strict_backend", False))
-        self.allow_langchain_fallback = bool(llm_cfg.get("allow_langchain_fallback", True))
+        self.use_langgraph = bool(
+            llm_cfg.get("use_langgraph", self.backend == "qwen_langgraph")
+        )
+        self.strict_backend = bool(llm_cfg.get("strict_backend", True))
+        self.allow_langchain_fallback = bool(
+            llm_cfg.get("allow_langchain_fallback", True)
+        )
         self.local_files_only = bool(llm_cfg.get("local_files_only", True))
-        self.max_new_tokens = int(llm_cfg.get("max_new_tokens", 256))
+        self.max_new_tokens = int(llm_cfg.get("max_new_tokens", 192))
         self.temperature = float(llm_cfg.get("temperature", 0.0))
+        self.quantization = str(llm_cfg.get("quantization", "bf16")).strip().lower()
+        self.require_cuda = bool(llm_cfg.get("require_cuda", True))
+        self.knowledge_files = list(profile.get("knowledge_files", []))
         self.prompt_text = self._load_prompt()
+        self.operational_knowledge = load_manual_bundle(self.knowledge_files)
         self.last_mode = "uninitialized"
         self.last_error: str | None = None
+        self.last_raw_output: str | None = None
 
     def _load_prompt(self) -> str:
         if not self.prompt_file:
@@ -56,51 +55,54 @@ class CachedQwenDecisionEngine:
         except FileNotFoundError:
             return ""
 
-    def decide(self, context: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    def decide(self, context: dict[str, Any]) -> dict[str, Any]:
         self.last_error = None
-        if self.backend == "heuristic":
-            self.last_mode = "heuristic"
-            return self._finalize_payload(fallback, context, fallback)
-
         if self.backend not in {"qwen_langchain", "qwen_langgraph"}:
-            self.last_error = f"unsupported backend `{self.backend}`"
-            if self.strict_backend:
-                raise RuntimeError(self.last_error)
-            self.last_mode = "heuristic_fallback"
-            return self._finalize_payload(fallback, context, fallback)
+            raise RuntimeError(
+                f"unsupported backend `{self.backend}` for agentic role `{self.role}`"
+            )
 
         errors: list[str] = []
         try:
             if self.backend == "qwen_langgraph" and self.use_langgraph:
                 try:
-                    payload = self._decide_with_langgraph(context, fallback)
+                    payload = self._decide_with_langgraph(context)
                     self.last_mode = "qwen_langgraph"
                     return payload
                 except Exception as exc:
                     errors.append(f"langgraph: {exc}")
                     if not self.allow_langchain_fallback:
                         raise
-            payload = self._decide_with_langchain(context, fallback)
+            payload = self._decide_with_langchain(context)
             self.last_mode = "qwen_langchain"
             return payload
-        except Exception as exc:  # pragma: no cover - depends on local model environment
-            errors.append(f"langchain: {exc}")
-            self.last_error = "; ".join(errors) if errors else str(exc)
-            if self.strict_backend:
-                raise RuntimeError(f"{self.role} backend `{self.backend}` unavailable: {self.last_error}") from exc
-            self.last_mode = "heuristic_fallback"
-            return self._finalize_payload(fallback, context, fallback)
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - depends on local model environment
+            if not errors:
+                errors.append(f"langchain: {exc}")
+            elif "langchain:" not in errors[-1]:
+                errors.append(f"langchain: {exc}")
+            self.last_error = "; ".join(errors)
+            raise RuntimeError(
+                f"{self.role} backend `{self.backend}` unavailable: {self.last_error}"
+            ) from exc
 
     def _llm(self):
         import torch  # type: ignore
-        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline  # type: ignore
         from langchain_huggingface import HuggingFacePipeline  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline  # type: ignore
+
+        if self.require_cuda and not torch.cuda.is_available():
+            raise RuntimeError("CUDA GPU is required for agentic execution")
+        if not torch.cuda.is_available():
+            raise RuntimeError("No CUDA GPU detected for agentic execution")
 
         model_ref = os.environ.get("QWEN_MODEL_PATH", "").strip() or self.model_id
         model_cache_key = (
             model_ref,
             self.local_files_only,
-            torch.cuda.is_available(),
+            self.quantization,
         )
         if model_cache_key not in self._model_cache:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -108,13 +110,24 @@ class CachedQwenDecisionEngine:
                 trust_remote_code=True,
                 local_files_only=self.local_files_only,
             )
-            model = AutoModelForCausalLM.from_pretrained(
-                model_ref,
-                trust_remote_code=True,
-                local_files_only=self.local_files_only,
-                device_map="auto",
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            )
+            load_kwargs: dict[str, Any] = {
+                "trust_remote_code": True,
+                "local_files_only": self.local_files_only,
+                "device_map": "auto",
+            }
+            if self.quantization == "4bit":
+                load_kwargs["load_in_4bit"] = True
+            elif self.quantization == "8bit":
+                load_kwargs["load_in_8bit"] = True
+            else:
+                if (
+                    self.quantization == "bf16"
+                    and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
+                ):
+                    load_kwargs["torch_dtype"] = torch.bfloat16
+                else:
+                    load_kwargs["torch_dtype"] = torch.float16
+            model = AutoModelForCausalLM.from_pretrained(model_ref, **load_kwargs)
             self._model_cache[model_cache_key] = (tokenizer, model)
 
         tokenizer, model = self._model_cache[model_cache_key]
@@ -126,22 +139,30 @@ class CachedQwenDecisionEngine:
         if llm_cache_key in self._llm_cache:
             return self._llm_cache[llm_cache_key]
 
+        generator_kwargs: dict[str, Any] = {
+            "max_new_tokens": self.max_new_tokens,
+            "return_full_text": False,
+            "do_sample": self.temperature > 0,
+        }
+        if self.temperature > 0:
+            generator_kwargs["temperature"] = self.temperature
+
         generator = pipeline(
             "text-generation",
             model=model,
             tokenizer=tokenizer,
-            max_new_tokens=self.max_new_tokens,
-            do_sample=self.temperature > 0,
-            temperature=max(self.temperature, 0.01),
-            return_full_text=False,
+            **generator_kwargs,
         )
         llm = HuggingFacePipeline(pipeline=generator)
         self._llm_cache[llm_cache_key] = llm
         return llm
 
     def _format_prompt(self, context: dict[str, Any]) -> str:
-        prompt_template = self.prompt_text or "You are an ICS role agent. Reason carefully and answer with strict JSON."
-        prompt = {
+        prompt_template = (
+            self.prompt_text
+            or "You are an ICS role agent. Reason carefully and answer with strict JSON only."
+        )
+        payload = {
             "role": self.role,
             "scenario_id": context["scenario_id"],
             "suite": context["suite"],
@@ -149,90 +170,259 @@ class CachedQwenDecisionEngine:
             "process_id": context.get("process_id"),
             "time_sec": round(float(context["time_sec"]), 3),
             "state_name": context.get("state_name"),
+            "observation": context.get("observation"),
             "candidate_actions": context.get("candidate_actions", []),
             "remaining_playbook": context.get("remaining_playbook", []),
             "recent_observations": context.get("recent_observations", []),
             "recent_actions": context.get("recent_actions", []),
             "recent_decisions": context.get("recent_decisions", []),
             "recent_alerts": context.get("recent_alerts", []),
+            "active_alarms": context.get("active_alarms", []),
+            "active_states": context.get("active_states", []),
+            "active_commands": context.get("active_commands", []),
+            "short_horizon_trends": context.get("short_horizon_trends", {}),
+            "relationship_notes": context.get("relationship_notes", []),
+            "risk_flags": context.get("risk_flags", []),
             "role_goal": context.get("role_goal"),
             "role_constraints": context.get("role_constraints", []),
+            "expected_outcomes": context.get("expected_outcomes", []),
+            "safety_bounds": context.get("safety_bounds", {}),
             "metrics": context.get("metrics"),
             "passed": context.get("passed"),
         }
+        operational_knowledge = self.operational_knowledge.strip()
+        knowledge_block = (
+            f"Operational manuals:\n{operational_knowledge}\n\n"
+            if operational_knowledge
+            else ""
+        )
         return (
             f"{prompt_template}\n\n"
-            "Return strict JSON with keys: summary, candidate_id, confidence, diagnosis, labels, decision_type. "
-            "`candidate_id` must match one of the listed candidates or be null.\n\n"
-            f"Context:\n{json.dumps(prompt, indent=2)}"
+            f"{knowledge_block}"
+            "Return exactly one JSON object and no prose before or after it.\n"
+            "Required keys: summary, candidate_id, confidence, diagnosis, labels, decision_type.\n"
+            "Rules:\n"
+            "- candidate_id must be either null or match one of candidate_actions[].id.\n"
+            "- Never invent a new action or a new candidate id.\n"
+            "- Use decision_type of note, alert, action, or analysis.\n"
+            "- diagnosis must be null or a short snake_case style label, never a sentence.\n"
+            "- Infer any diagnosis from the provided telemetry and history only.\n"
+            "- If the evidence is weak, set diagnosis to null instead of guessing.\n"
+            "- If you want to hold position, prefer the noop candidate when available.\n\n"
+            "Example JSON:\n"
+            '{"summary":"Monitor and hold.","candidate_id":null,"confidence":0.42,"diagnosis":null,"labels":["agentic"],"decision_type":"note"}\n\n'
+            f"Context:\n{json.dumps(payload, indent=2)}"
         )
 
-    def _decide_with_langchain(self, context: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    def _decide_with_langchain(self, context: dict[str, Any]) -> dict[str, Any]:
         from langchain_core.output_parsers import StrOutputParser  # type: ignore
         from langchain_core.prompts import PromptTemplate  # type: ignore
 
         prompt = PromptTemplate.from_template("{body}")
         chain = prompt | self._llm() | StrOutputParser()
         raw = chain.invoke({"body": self._format_prompt(context)})
+        self.last_raw_output = self._raw_excerpt(raw)
         payload = self._parse_output(raw)
-        return self._finalize_payload(payload, context, fallback)
+        if payload is None:
+            raise RuntimeError(
+                f"model output did not contain valid JSON: {self.last_raw_output}"
+            )
+        return self._finalize_payload(payload, context)
 
-    def _decide_with_langgraph(self, context: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    def _decide_with_langgraph(self, context: dict[str, Any]) -> dict[str, Any]:
         from langgraph.graph import END, StateGraph  # type: ignore
 
         cache_key = (self.role, self.backend)
         if cache_key not in self._graph_cache:
             graph = StateGraph(dict)
-            graph.add_node("prepare", lambda state: {"prompt": self._format_prompt(state["context"])})
-            graph.add_node("generate", lambda state: {"raw": self._llm().invoke(state["prompt"])})
-            graph.add_node("parse", lambda state: {"payload": self._parse_output(state.get("raw", ""))})
+            graph.add_node(
+                "prepare",
+                lambda state: {"prompt": self._format_prompt(state["context"])},
+            )
+            graph.add_node(
+                "generate", lambda state: {"raw": self._llm().invoke(state["prompt"])}
+            )
             graph.set_entry_point("prepare")
             graph.add_edge("prepare", "generate")
-            graph.add_edge("generate", "parse")
-            graph.add_edge("parse", END)
+            graph.add_edge("generate", END)
             self._graph_cache[cache_key] = graph.compile()
 
         app = self._graph_cache[cache_key]
         result = app.invoke({"context": context})
-        return self._finalize_payload(result.get("payload"), context, fallback)
+        raw = result.get("raw", "")
+        self.last_raw_output = self._raw_excerpt(raw)
+        payload = self._parse_output(raw)
+        if payload is None:
+            raise RuntimeError(
+                f"model output did not contain valid JSON: {self.last_raw_output}"
+            )
+        return self._finalize_payload(payload, context)
 
     @staticmethod
     def _parse_output(raw: Any) -> dict[str, Any] | None:
-        text = str(raw)
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
+        import yaml
+
+        text = textwrap.dedent(str(raw)).strip()
+        if not text:
             return None
-        try:
-            payload = json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add_candidate(candidate: str) -> None:
+            candidate = textwrap.dedent(candidate).strip()
+            if not candidate or candidate in seen:
+                return
+            seen.add(candidate)
+            candidates.append(candidate)
+
+        add_candidate(text)
+        cleaned = re.sub(
+            r"<think>.*?</think>",
+            "",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ).strip()
+        cleaned = re.sub(r"```json\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.replace("```", "").strip()
+        cleaned = (
+            cleaned.replace("\u201c", '"')
+            .replace("\u201d", '"')
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+        )
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+        add_candidate(cleaned)
+
+        for block in re.findall(
+            r"```(?:json)?\s*(.*?)```",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            add_candidate(block)
+
+        decoder = json.JSONDecoder()
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                return payload
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                return payload[0]
+
+            try:
+                payload = yaml.safe_load(candidate)
+            except yaml.YAMLError:
+                payload = None
+            if isinstance(payload, dict):
+                return payload
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                return payload[0]
+
+            try:
+                payload = ast.literal_eval(candidate)
+            except (SyntaxError, ValueError):
+                payload = None
+            if isinstance(payload, dict):
+                return payload
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                return payload[0]
+
+            for index, char in enumerate(candidate):
+                if char != "{":
+                    continue
+                try:
+                    payload, _ = decoder.raw_decode(candidate[index:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    return payload
+        return None
+
+    @staticmethod
+    def _raw_excerpt(raw: Any, *, limit: int = 320) -> str:
+        text = re.sub(r"\s+", " ", str(raw)).strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 3]}..."
 
     def _finalize_payload(
         self,
         payload: dict[str, Any] | None,
         context: dict[str, Any],
-        fallback: dict[str, Any],
     ) -> dict[str, Any]:
-        candidate_lookup = {item["id"]: item for item in context.get("candidate_actions", [])}
-        selected = payload or {}
+        if payload is None:
+            raise RuntimeError("model output did not contain valid JSON")
+
+        selected = dict(payload)
+        candidate_lookup = {
+            item["id"]: item for item in context.get("candidate_actions", [])
+        }
+        action = normalize_action(selected.get("action"))
         candidate_id = selected.get("candidate_id")
-        action = selected.get("action")
+
         if candidate_id in candidate_lookup:
-            action = candidate_lookup[candidate_id]["action"]
-            selected.setdefault("summary", candidate_lookup[candidate_id]["summary"])
-        selected["action"] = _normalize_action(action)
-        selected.setdefault("labels", fallback.get("labels", ["agentic"]))
-        selected.setdefault("confidence", fallback.get("confidence", 0.65))
-        selected.setdefault("decision_type", fallback.get("decision_type", "note"))
-        selected.setdefault("summary", fallback.get("summary", f"Agentic {self.role} decision"))
-        selected.setdefault("diagnosis", fallback.get("diagnosis"))
-        if selected["action"] is None and fallback.get("action") is not None:
-            selected["action"] = _normalize_action(fallback["action"])
-        if selected["action"] is not None and selected.get("decision_type") == "note":
-            selected["decision_type"] = "action"
+            matched = candidate_lookup[str(candidate_id)]
+            action = matched["action"]
+            selected["candidate_id"] = matched["id"]
+            selected.setdefault("summary", matched["summary"])
+        elif action is not None and candidate_lookup:
+            key = action_key(action)
+            matched = next(
+                (item for item in candidate_lookup.values() if item["id"] == key), None
+            )
+            if matched is None:
+                raise RuntimeError(
+                    "model selected an action outside the candidate list"
+                )
+            action = matched["action"]
+            selected["candidate_id"] = matched["id"]
+            selected.setdefault("summary", matched["summary"])
+
+        selected["action"] = action
+        selected.setdefault("summary", f"Agentic {self.role} assessment")
+        selected.setdefault("confidence", 0.55)
+        selected["diagnosis"] = self._normalize_diagnosis(selected.get("diagnosis"))
+        labels = selected.get("labels", ["agentic", self.role])
+        if not isinstance(labels, list):
+            labels = [str(labels)]
+        selected["labels"] = [str(label) for label in labels]
+        selected.setdefault(
+            "decision_type",
+            "analysis" if self.role == "offline_analysis" else "note",
+        )
+        if selected["decision_type"] not in {"note", "alert", "action", "analysis"}:
+            selected["decision_type"] = (
+                "analysis" if self.role == "offline_analysis" else "note"
+            )
+
+        if selected["action"] is not None and selected["action"].get("type") == "noop":
+            selected["action"] = None
+            if selected["decision_type"] == "action":
+                selected["decision_type"] = "note"
+
         return selected
+
+    @staticmethod
+    def _normalize_diagnosis(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if not text or text in {"none", "null", "unknown"}:
+            return None
+
+        word_count = len(re.findall(r"[a-z0-9]+", text))
+        if len(text) > 64 or word_count > 8 or any(char in text for char in ".!?;"):
+            return None
+
+        normalized = re.sub(r"[\s/-]+", "_", text)
+        normalized = re.sub(r"[^a-z0-9_]", "", normalized).strip("_")
+        if not normalized or len(normalized) > 64:
+            return None
+        return normalized
 
 
 class AgenticRoleAgent(RoleAgent):
@@ -246,7 +436,11 @@ class AgenticRoleAgent(RoleAgent):
         self.alert_window = int(memory.get("alert_window", 6))
         self.action_cooldown_sec = float(profile.get("action_cooldown_sec", 1.5))
         self.note_cooldown_sec = float(profile.get("note_cooldown_sec", 5.0))
-        self.playbook_anticipation_sec = float(profile.get("playbook_anticipation_sec", 0.5))
+        self.playbook_anticipation_sec = float(
+            profile.get("playbook_anticipation_sec", 0.5)
+        )
+        self.reasoning_cooldown_sec = float(profile.get("reasoning_cooldown_sec", 2.0))
+        self.reasoning_refresh_sec = float(profile.get("reasoning_refresh_sec", 6.0))
 
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
@@ -263,16 +457,32 @@ class AgenticRoleAgent(RoleAgent):
         if self.role != "offline_analysis":
             return []
         agent_context = self._build_offline_context(context)
-        fallback = self._offline_fallback(agent_context)
-        payload = self.engine.decide(agent_context, fallback)
+        try:
+            payload = self.engine.decide(agent_context)
+        except Exception:
+            return [
+                self.decision(
+                    decision_type="analysis",
+                    summary="Agentic offline analysis unavailable; recorded metrics only.",
+                    time_sec=float(context.get("duration_sec", 0.0)),
+                    confidence=0.0,
+                    diagnosis=None,
+                    labels=["offline", "agentic", "backend-error"],
+                    metadata={
+                        "backend": self.engine.last_mode,
+                        "error": self.engine.last_error,
+                        "metrics": context.get("metrics", {}),
+                    },
+                )
+            ]
         return [
             self.decision(
                 decision_type="analysis",
-                summary=str(payload.get("summary", fallback["summary"])),
+                summary=str(payload.get("summary", "Agentic offline analysis")),
                 time_sec=float(context.get("duration_sec", 0.0)),
-                confidence=float(payload.get("confidence", fallback.get("confidence", 0.7))),
-                diagnosis=payload.get("diagnosis", fallback.get("diagnosis")),
-                labels=list(payload.get("labels", fallback.get("labels", ["offline", "agentic"]))),
+                confidence=float(payload.get("confidence", 0.7)),
+                diagnosis=payload.get("diagnosis"),
+                labels=list(payload.get("labels", ["offline", "agentic"])),
                 metadata={
                     "backend": self.engine.last_mode,
                     "error": self.engine.last_error,
@@ -283,30 +493,46 @@ class AgenticRoleAgent(RoleAgent):
 
     def _step_action_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
-        fallback = self._goal_fallback(agent_context)
-        payload = self.engine.decide(agent_context, fallback)
-        return self._payload_to_decisions(payload, agent_context)
+        if self._due_playbook_action(agent_context) is None and self._only_noop_candidates(
+            agent_context
+        ):
+            return []
+        if not self._should_reason(agent_context, channel="action"):
+            return self._due_playbook_fallback(agent_context, reason="reasoning_cooldown")
+        try:
+            payload = self.engine.decide(agent_context)
+        except Exception:
+            return self._due_playbook_fallback(agent_context, reason="backend_error")
+        decisions = self._payload_to_decisions(payload, agent_context)
+        if any(decision.action is not None for decision in decisions):
+            return decisions
+        fallback = self._due_playbook_fallback(
+            agent_context, reason="due_playbook_action"
+        )
+        return fallback or decisions
 
     def _step_monitoring_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
-        fallback = self._monitoring_fallback(agent_context)
-        payload = self.engine.decide(agent_context, fallback)
+        if not self._should_monitor(agent_context):
+            return []
+        if not self._should_reason(agent_context, channel="monitor"):
+            return []
+        try:
+            payload = self.engine.decide(agent_context)
+        except Exception:
+            return []
         return self._payload_to_decisions(payload, agent_context)
 
     def _step_planner(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
-        state_name = agent_context.get("state_name", "UNKNOWN")
-        signature = f"planner:{state_name}"
-        if not self._allow_signature(signature, float(context["time_sec"]), cooldown=self.note_cooldown_sec):
+        if not self._should_plan(agent_context):
             return []
-        fallback = {
-            "summary": f"Planner phase update: plant state is {state_name} and objective is {agent_context['intent']}",
-            "decision_type": "note",
-            "confidence": 0.7,
-            "labels": ["agentic", "planner"],
-            "diagnosis": agent_context.get("expected_diagnosis"),
-        }
-        payload = self.engine.decide(agent_context, fallback)
+        if not self._should_reason(agent_context, channel="planner"):
+            return []
+        try:
+            payload = self.engine.decide(agent_context)
+        except Exception:
+            return []
         return self._payload_to_decisions(payload, agent_context)
 
     def _build_online_context(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -321,35 +547,41 @@ class AgenticRoleAgent(RoleAgent):
         observation = context["observation"]
         remaining_playbook = self._remaining_playbook(context)
         candidate_actions = self._candidate_actions(context, remaining_playbook)
-        role_goal = {
-            "attacker": scenario.metadata.get("attacker_actions", []),
-            "defender": scenario.metadata.get("defender_responses", []),
-            "observer": scenario.metadata.get("expected_outcomes", []),
-            "planner": scenario.metadata.get("expected_outcomes", []),
-            "operator": scenario.metadata.get("expected_outcomes", []),
-        }.get(self.role, [])
+        telemetry_summary = self._summarize_telemetry(
+            observation=observation,
+            recent_observations=context.get("observations", []),
+        )
         return {
             "role": self.role,
-            "scenario_id": scenario.scenario_id,
+            "scenario_id": self._visible_scenario_id(scenario),
             "suite": scenario.suite,
             "process_id": scenario.execution.get("process_id"),
-            "intent": scenario.metadata.get("intent", scenario.execution.get("description", "")),
-            "expected_diagnosis": scenario.metadata.get("ground_truth", {}).get("expected_diagnosis"),
+            "intent": self._live_intent(scenario),
             "time_sec": float(context["time_sec"]),
-            "state_name": observation.get("STATE_NAME") or observation.get("state_name"),
-            "observation": observation,
+            "state_name": observation.get("STATE_NAME")
+            or observation.get("state_name"),
+            "observation": self._compact_observation(observation),
             "recent_observations": recent_observations,
             "recent_actions": recent_actions,
             "recent_decisions": recent_decisions,
             "recent_alerts": recent_alerts,
+            "active_alarms": telemetry_summary["active_alarms"],
+            "active_states": telemetry_summary["active_states"],
+            "active_commands": telemetry_summary["active_commands"],
+            "short_horizon_trends": telemetry_summary["short_horizon_trends"],
+            "relationship_notes": telemetry_summary["relationship_notes"],
+            "risk_flags": telemetry_summary["risk_flags"],
             "candidate_actions": candidate_actions,
             "remaining_playbook": remaining_playbook,
-            "role_goal": role_goal,
+            "role_goal": self._live_role_goals(scenario),
             "role_constraints": [
-                "Only choose actions from candidate_actions.",
-                "Prefer noop or note if no justified action is needed.",
-                "Keep summaries concise and specific to the water-treatment process.",
+                "Use recent telemetry and state to justify the decision.",
+                "Choose only from candidate_actions or emit a note/alert with no live action.",
+                "Do not assume hidden attack plans, ground truth labels, or future timeline steps.",
+                "Keep summaries concise and specific to the water-treatment environment.",
             ],
+            "expected_outcomes": self._live_expected_outcomes(scenario),
+            "safety_bounds": scenario.metadata.get("safety_bounds", {}),
         }
 
     def _build_offline_context(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -358,12 +590,19 @@ class AgenticRoleAgent(RoleAgent):
             "role": self.role,
             "scenario_id": scenario.scenario_id,
             "suite": scenario.suite,
-            "intent": scenario.metadata.get("intent", scenario.execution.get("description", "")),
+            "intent": scenario.metadata.get(
+                "intent", scenario.execution.get("description", "")
+            ),
             "time_sec": float(context.get("duration_sec", 0.0)),
             "candidate_actions": [],
             "remaining_playbook": [],
-            "recent_observations": [self._compact_observation(item) for item in context.get("observations", [])[-self.observation_window :]],
-            "recent_actions": context.get("executed_actions", [])[-self.action_window :],
+            "recent_observations": [
+                self._compact_observation(item)
+                for item in context.get("observations", [])[-self.observation_window :]
+            ],
+            "recent_actions": context.get("executed_actions", [])[
+                -self.action_window :
+            ],
             "recent_decisions": context.get("decisions", [])[-self.decision_window :],
             "recent_alerts": context.get("alerts", [])[-self.alert_window :],
             "role_goal": [
@@ -372,174 +611,475 @@ class AgenticRoleAgent(RoleAgent):
             "role_constraints": ["Offline analysis may not issue live actions."],
             "metrics": context.get("metrics", {}),
             "passed": context.get("passed"),
-            "expected_diagnosis": scenario.metadata.get("ground_truth", {}).get("expected_diagnosis"),
+            "expected_outcomes": scenario.metadata.get("expected_outcomes", []),
+            "safety_bounds": scenario.metadata.get("safety_bounds", {}),
         }
+
+    def _visible_scenario_id(self, scenario: Any) -> str:
+        if self.role in {"attacker", "offline_analysis"}:
+            return scenario.scenario_id
+        process_id = str(scenario.execution.get("process_id", "WT")).lower()
+        return f"{scenario.suite}-{process_id}-live"
+
+    def _live_intent(self, scenario: Any) -> str:
+        process_id = scenario.execution.get("process_id", "WT-P1")
+        role_intents = {
+            "attacker": scenario.metadata.get(
+                "intent", scenario.execution.get("description", "")
+            ),
+            "defender": (
+                f"Monitor {process_id} telemetry for unsafe or suspicious behavior and "
+                "apply the least disruptive effective mitigation when warranted."
+            ),
+            "observer": (
+                f"Watch {process_id} telemetry for anomalies, explain likely causes, "
+                "and raise timely evidence-based alerts."
+            ),
+            "planner": (
+                f"Summarize the current {process_id} operating picture, plant risk, "
+                "and useful near-term focus areas without predicting hidden events."
+            ),
+            "operator": (
+                f"Operate {process_id} safely, follow the due playbook actions, and "
+                "avoid unnecessary disruption."
+            ),
+        }
+        return role_intents.get(self.role, "Monitor the plant safely.")
+
+    def _live_role_goals(self, scenario: Any) -> list[str]:
+        process_id = scenario.execution.get("process_id", "WT-P1")
+        goals = {
+            "attacker": scenario.metadata.get("attacker_actions", []),
+            "defender": [
+                f"Use current {process_id} telemetry, alarms, and action history to justify any intervention.",
+                "Prefer select_process or controlled stop before estop when both are viable.",
+            ],
+            "observer": [
+                f"Describe anomalies in {process_id} using grounded plant evidence.",
+                "Alert early when telemetry or command-state relationships look unsafe or implausible.",
+            ],
+            "planner": [
+                "Summarize state transitions, alarms, and risk trends that matter for the next few seconds.",
+            ],
+            "operator": [
+                "Execute due operator actions only when they are currently scheduled or clearly safe.",
+                "Use hold position when the plant needs more evidence before acting.",
+            ],
+        }
+        return goals.get(self.role, [])
+
+    def _live_expected_outcomes(self, scenario: Any) -> list[str]:
+        process_id = scenario.execution.get("process_id", "WT-P1")
+        expected = {
+            "attacker": scenario.metadata.get("expected_outcomes", []),
+            "defender": [
+                f"{process_id} remains in a safe operating envelope or is safely shut down.",
+                "Unsafe manual dosing or raw-water anomalies are contained quickly once evidenced.",
+            ],
+            "observer": [
+                "Alerts and diagnoses stay tied to current telemetry and recent actions.",
+            ],
+            "planner": [
+                "The plan notes near-term risks, active alarms, and likely consequences of recent commands.",
+            ],
+            "operator": [
+                f"{process_id} follows the allowed playbook without unnecessary unsafe transitions.",
+            ],
+        }
+        return expected.get(self.role, [])
+
+    def _summarize_telemetry(
+        self,
+        *,
+        observation: dict[str, Any],
+        recent_observations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        active_alarms = self._active_flags(observation, prefix="Alarm_")
+        active_states = self._active_flags(observation, prefix="SYS_")
+        active_commands = self._active_commands(observation)
+        short_horizon_trends = self._short_horizon_trends(recent_observations)
+        relationship_notes = self._derive_relationship_notes(
+            observation,
+            short_horizon_trends,
+        )
+        risk_flags = self._derive_risk_flags(
+            observation,
+            active_alarms,
+            relationship_notes,
+            short_horizon_trends,
+        )
+        return {
+            "active_alarms": active_alarms,
+            "active_states": active_states,
+            "active_commands": active_commands,
+            "short_horizon_trends": short_horizon_trends,
+            "relationship_notes": relationship_notes,
+            "risk_flags": risk_flags,
+        }
+
+    def _active_flags(self, observation: dict[str, Any], *, prefix: str) -> list[str]:
+        return sorted(
+            key
+            for key, value in observation.items()
+            if key.startswith(prefix) and self._is_active_flag(value)
+        )
+
+    def _active_commands(self, observation: dict[str, Any]) -> list[str]:
+        keys: list[str] = []
+        for key, value in observation.items():
+            if key.endswith("_Cmd") and self._is_active_flag(value):
+                keys.append(key)
+            if key in {
+                "HMI_Start_PB",
+                "HMI_Stop_PB",
+                "HMI_Start_Active",
+                "HMI_Stop_Active",
+                "HMI_Reset_PB",
+                "P2_Selected",
+            } and self._is_active_flag(value):
+                keys.append(key)
+        return sorted(keys)
+
+    def _short_horizon_trends(
+        self, observations: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        fields = [
+            "RW_Tank_Level",
+            "UF_UFFT_Tank_Level",
+            "ChemTreat_NaCl_Level",
+            "ChemTreat_NaOCl_Level",
+            "ChemTreat_HCl_Level",
+            "RW_Pump_Flow",
+            "RW_Pump_Speed_Cmd",
+        ]
+        if not observations:
+            return {}
+
+        history = observations[-max(5, self.observation_window) :]
+        trends: dict[str, dict[str, Any]] = {}
+        for field in fields:
+            points = [
+                self._coerce_number(item.get(field))
+                for item in history
+                if self._coerce_number(item.get(field)) is not None
+            ]
+            if not points:
+                continue
+            current = points[-1]
+            previous = points[-2] if len(points) >= 2 else current
+            baseline = points[-4] if len(points) >= 4 else points[0]
+            delta_1 = round(current - previous, 3)
+            delta_window = round(current - baseline, 3)
+            direction = "stable"
+            if delta_window > 0.5:
+                direction = "rising"
+            elif delta_window < -0.5:
+                direction = "falling"
+            trends[field] = {
+                "current": round(current, 3),
+                "delta_1": delta_1,
+                "delta_window": delta_window,
+                "direction": direction,
+            }
+        return trends
+
+    def _derive_relationship_notes(
+        self,
+        observation: dict[str, Any],
+        trends: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        notes: list[str] = []
+        if self._is_active_flag(observation.get("Alarm_RW_Tank_LL")):
+            notes.append("raw_water_low_low_alarm_active")
+        if self._is_active_flag(observation.get("Alarm_RW_Tank_HH")):
+            notes.append("raw_water_high_high_alarm_active")
+
+        if self._is_active_flag(observation.get("P2_Selected")):
+            notes.append("process2_selected")
+
+        chemical_status_fields = [
+            "ChemTreat_NaCl_Valve_Sts",
+            "ChemTreat_NaOCl_Valve_Sts",
+            "ChemTreat_HCl_Valve_Sts",
+        ]
+        if any(self._is_active_flag(observation.get(field)) for field in chemical_status_fields):
+            notes.append("process2_manual_dosing_active")
+
+        for cmd_field, sts_field in (
+            ("RW_Tank_PR_Valve_Cmd", "RW_Tank_PR_Valve_Sts"),
+            ("RW_Tank_P_Valve_Cmd", "RW_Tank_P_Valve_Sts"),
+            ("ChemTreat_NaCl_Valve_Cmd", "ChemTreat_NaCl_Valve_Sts"),
+            ("ChemTreat_NaOCl_Valve_Cmd", "ChemTreat_NaOCl_Valve_Sts"),
+            ("ChemTreat_HCl_Valve_Cmd", "ChemTreat_HCl_Valve_Sts"),
+        ):
+            if cmd_field not in observation or sts_field not in observation:
+                continue
+            if self._is_active_flag(observation.get(cmd_field)) != self._is_active_flag(
+                observation.get(sts_field)
+            ):
+                notes.append(f"command_status_mismatch:{cmd_field}->{sts_field}")
+
+        if (
+            self._is_active_flag(observation.get("RW_Pump_Sts"))
+            and self._coerce_number(observation.get("RW_Tank_Level")) is not None
+            and self._coerce_number(observation.get("RW_Tank_Level")) <= 450.0
+        ):
+            notes.append("pump_running_while_raw_water_low")
+
+        for field in (
+            "RW_Tank_Level",
+            "UF_UFFT_Tank_Level",
+            "ChemTreat_NaCl_Level",
+            "ChemTreat_NaOCl_Level",
+            "ChemTreat_HCl_Level",
+        ):
+            trend = trends.get(field)
+            if trend and abs(float(trend.get("delta_1", 0.0))) >= 80.0:
+                notes.append(f"abrupt_change:{field}")
+
+        return notes
+
+    def _derive_risk_flags(
+        self,
+        observation: dict[str, Any],
+        active_alarms: list[str],
+        relationship_notes: list[str],
+        trends: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        risks: list[str] = []
+        if active_alarms:
+            risks.append("alarm_active")
+        if "raw_water_low_low_alarm_active" in relationship_notes:
+            risks.append("raw_water_protection_risk")
+        if "raw_water_high_high_alarm_active" in relationship_notes:
+            risks.append("overflow_risk")
+        if "process2_selected" in relationship_notes:
+            risks.append("process2_manual_path_active")
+        if "process2_manual_dosing_active" in relationship_notes:
+            risks.append("unauthorized_manual_dosing_possible")
+        if any(note.startswith("command_status_mismatch:") for note in relationship_notes):
+            risks.append("command_status_divergence")
+        if any(note.startswith("abrupt_change:") for note in relationship_notes):
+            risks.append("sensor_or_process_jump")
+
+        rw_level = self._coerce_number(observation.get("RW_Tank_Level"))
+        if rw_level is not None and rw_level <= 450.0:
+            risks.append("raw_water_low_band")
+        if rw_level is not None and rw_level >= 1180.0:
+            risks.append("raw_water_high_high_band")
+
+        for field in ("ChemTreat_NaCl_Level", "ChemTreat_NaOCl_Level", "ChemTreat_HCl_Level"):
+            trend = trends.get(field)
+            if trend and trend.get("direction") == "falling":
+                risks.append(f"{field}_depleting")
+
+        return sorted(set(risks))
+
+    @staticmethod
+    def _is_active_flag(value: Any) -> bool:
+        numeric = AgenticRoleAgent._coerce_number(value)
+        if numeric is not None:
+            return numeric >= 1.0
+        return str(value).strip().lower() in {"true", "on", "active", "running"}
 
     def _remaining_playbook(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         playbook = context.get("playbooks", {}).get(self.role, [])
         role_actions = [
-            _normalize_action(item.get("action"))
+            normalize_action(item.get("action"))
             for item in context.get("executed_actions", [])
             if item.get("role") == self.role
         ]
+        now = float(context.get("time_sec", 0.0))
         cursor = 0
         for planned in playbook:
-            normalized = _normalize_action(planned.get("action"))
-            if cursor < len(role_actions) and _action_key(role_actions[cursor]) == _action_key(normalized):
+            normalized = normalize_action(planned.get("action"))
+            if cursor < len(role_actions) and action_key(
+                role_actions[cursor]
+            ) == action_key(normalized):
+                cursor += 1
+                continue
+            if float(planned.get("time_sec", 0.0)) <= now and self._action_satisfied(
+                normalized,
+                observation=context.get("observation", {}),
+            ):
                 cursor += 1
                 continue
             break
         return playbook[cursor:]
 
-    def _candidate_actions(self, context: dict[str, Any], remaining_playbook: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        observation = context["observation"]
-        now = float(context["time_sec"])
-        process_id = context["scenario"].execution.get("process_id")
+    def _action_satisfied(
+        self,
+        action: dict[str, Any] | None,
+        *,
+        observation: dict[str, Any],
+    ) -> bool:
+        if action is None:
+            return False
+
+        action_type = str(action.get("type", ""))
+        state_name = str(
+            observation.get("STATE_NAME") or observation.get("state_name") or ""
+        ).upper()
+
+        if action_type == "hmi_start":
+            return state_name == "RUNNING"
+        if action_type in {"hmi_stop", "hmi_estop"}:
+            return state_name == "SHUTDOWN"
+        if action_type == "hmi_reset":
+            return state_name == "IDLE"
+        if action_type == "select_process":
+            return self._is_active_flag(observation.get("P2_Selected")) == bool(
+                action.get("active", True)
+            )
+        if action_type == "set_manual_valve":
+            chemical = str(action.get("chemical", "")).strip()
+            if not chemical:
+                return False
+            field = f"ChemTreat_{chemical}_Valve_Sts"
+            if field not in observation:
+                return False
+            return self._is_active_flag(observation.get(field)) == bool(
+                action.get("open", True)
+            )
+        return False
+
+    def _candidate_actions(
+        self,
+        context: dict[str, Any],
+        remaining_playbook: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if self.role in {"operator", "attacker"}:
+            return self._strict_playbook_candidates(
+                remaining_playbook, now=float(context["time_sec"])
+            )
+        if (
+            self.role == "attacker"
+            and not remaining_playbook
+            and not context["scenario"].metadata.get("attacker_actions")
+        ):
+            noop_candidate = self._noop_candidate(
+                "No attacker objective is active in this scenario."
+            )
+            return [noop_candidate] if noop_candidate is not None else []
+        return build_candidate_actions(
+            role=self.role,
+            allowed_action_types=list(self.profile.get("allowed_action_types", [])),
+            scenario=context["scenario"],
+            observation=context["observation"],
+            remaining_playbook=remaining_playbook,
+            now=float(context["time_sec"]),
+            playbook_anticipation_sec=self.playbook_anticipation_sec,
+        )
+
+    def _strict_playbook_candidates(
+        self, remaining_playbook: list[dict[str, Any]], *, now: float
+    ) -> list[dict[str, Any]]:
+        allowed = set(self.profile.get("allowed_action_types", []))
         candidates: list[dict[str, Any]] = []
 
-        def add(summary: str, action: dict[str, Any] | str | None) -> None:
-            normalized = _normalize_action(action)
-            if normalized is None:
-                return
-            key = _action_key(normalized)
-            if any(item["id"] == key for item in candidates):
-                return
-            candidates.append({"id": key, "summary": summary, "action": normalized})
+        for item in remaining_playbook[:3]:
+            if float(item.get("time_sec", 0.0)) > now:
+                break
+            action = normalize_action(item.get("action"))
+            if action is None or str(action.get("type")) not in allowed:
+                continue
+            candidates.append(
+                {
+                    "id": action_key(action),
+                    "summary": f"Execute the due playbook action `{action.get('type', 'unknown')}`.",
+                    "action": action,
+                    "source": "playbook",
+                }
+            )
 
-        for item in remaining_playbook[:2]:
-            if now + self.playbook_anticipation_sec >= float(item.get("time_sec", 0)):
-                normalized = _normalize_action(item.get("action"))
-                if normalized is not None:
-                    add(f"Reference playbook action: {normalized.get('type')}", normalized)
-
-        if self.role in {"operator", "attacker"} and not remaining_playbook:
-            if observation.get("STATE_NAME") == "IDLE":
-                add("Start the plant", {"type": "hmi_start", "process_id": "WT-P1"})
-            if observation.get("STATE_NAME") == "RUNNING":
-                add("Stop the plant", {"type": "hmi_stop", "process_id": "WT-P1"})
-
-        if self.role == "defender":
-            if observation.get("P2_Selected") == 0:
-                add("Select Process 2 manual controls", {"process_id": "WT-P2", "type": "select_process", "active": True})
-            if observation.get("P2_Selected") == 1:
-                add("Deselect Process 2 manual controls", {"process_id": "WT-P2", "type": "select_process", "active": False})
-        elif self.role in {"operator", "attacker"} and not remaining_playbook:
-            if observation.get("P2_Selected") == 0:
-                add("Select Process 2 manual controls", {"process_id": "WT-P2", "type": "select_process", "active": True})
-            if observation.get("P2_Selected") == 1:
-                add("Deselect Process 2 manual controls", {"process_id": "WT-P2", "type": "select_process", "active": False})
-
-        diagnosis = context["scenario"].metadata.get("ground_truth", {}).get("expected_diagnosis", "")
-        if self.role == "attacker" and process_id == "WT-P1" and not remaining_playbook:
-            if "high" in diagnosis:
-                add("Spoof raw-water tank high-high", {"type": "set_sensor", "name": "RW_Tank_Level", "value": 1210})
-            if "low" in diagnosis or "spoof" in diagnosis:
-                add("Spoof raw-water tank low", {"type": "set_sensor", "name": "RW_Tank_Level", "value": 390})
-            add("Spoof UF tank high", {"type": "set_sensor", "name": "UF_UFFT_Tank_Level", "value": 920})
-        if self.role in {"attacker", "operator"} and process_id == "WT-P2" and not remaining_playbook:
-            for chemical in ("NaCl", "NaOCl", "HCl"):
-                add(
-                    f"Open {chemical} manual valve",
-                    {"process_id": "WT-P2", "type": "set_manual_valve", "chemical": chemical, "open": True},
-                )
-                add(
-                    f"Close {chemical} manual valve",
-                    {"process_id": "WT-P2", "type": "set_manual_valve", "chemical": chemical, "open": False},
-                )
-
-        if self.role == "defender":
-            if observation.get("Alarm_RW_Tank_HH") or int(observation.get("RW_Tank_Level", 0)) > 1180:
-                add("Emergency stop due to high-high raw-water condition", {"type": "hmi_estop", "process_id": "WT-P1"})
-            if observation.get("Alarm_RW_Tank_LL") or int(observation.get("RW_Tank_Level", 9999)) < 450:
-                add("Stop plant due to low raw-water condition", {"type": "hmi_stop", "process_id": "WT-P1"})
-            if observation.get("P2_Selected") == 1:
-                add("Deselect Process 2 to constrain unauthorized dosing", {"process_id": "WT-P2", "type": "select_process", "active": False})
-
-        add("Do nothing this cycle", {"type": "noop"})
+        noop_candidate = self._noop_candidate(
+            "Wait until the next scheduled playbook action is due."
+        )
+        if noop_candidate is not None:
+            candidates.append(noop_candidate)
         return candidates
 
-    def _goal_fallback(self, context: dict[str, Any]) -> dict[str, Any]:
-        candidates = [item for item in context.get("candidate_actions", []) if item["action"]["type"] != "noop"]
-        selected = candidates[0] if candidates else next(item for item in context["candidate_actions"] if item["action"]["type"] == "noop")
-        decision_type = "action" if selected["action"]["type"] != "noop" else "note"
+    def _noop_candidate(self, summary: str) -> dict[str, Any] | None:
+        allowed = set(self.profile.get("allowed_action_types", []))
+        if "noop" not in allowed:
+            return None
         return {
-            "summary": selected["summary"],
-            "candidate_id": selected["id"],
-            "action": selected["action"],
-            "decision_type": decision_type,
-            "confidence": 0.72,
-            "diagnosis": context.get("expected_diagnosis"),
-            "labels": ["agentic", "goal-driven", self.role],
-        }
-
-    def _monitoring_fallback(self, context: dict[str, Any]) -> dict[str, Any]:
-        observation = context["observation"]
-        diagnosis = "nominal_operation"
-        summary = f"{self.role} sees nominal operation"
-        decision_type = "note"
-        candidate_id = next(item["id"] for item in context["candidate_actions"] if item["action"]["type"] == "noop")
-
-        if observation.get("Alarm_RW_Tank_HH") or int(observation.get("RW_Tank_Level", 0)) > 1180:
-            diagnosis = "raw_water_alarm_condition"
-            summary = f"{self.role} detected a raw-water high-high condition"
-            decision_type = "alert"
-        elif observation.get("Alarm_RW_Tank_LL") or int(observation.get("RW_Tank_Level", 9999)) < 450:
-            diagnosis = "raw_water_low_or_spoof"
-            summary = f"{self.role} detected a raw-water low or spoof condition"
-            decision_type = "alert"
-        elif observation.get("P2_Selected") == 1 and float(context["time_sec"]) > 6:
-            diagnosis = "unauthorized_chemical_dosing"
-            summary = f"{self.role} detected sustained Process 2 actuation"
-            decision_type = "alert"
-
-        if self.role == "defender":
-            if diagnosis == "raw_water_alarm_condition":
-                candidate_id = _action_key({"type": "hmi_estop", "process_id": "WT-P1"})
-            elif diagnosis == "raw_water_low_or_spoof":
-                candidate_id = _action_key({"type": "hmi_stop", "process_id": "WT-P1"})
-            elif diagnosis == "unauthorized_chemical_dosing":
-                candidate_id = _action_key({"process_id": "WT-P2", "type": "select_process", "active": False})
-
-        action = next((item["action"] for item in context["candidate_actions"] if item["id"] == candidate_id), None)
-
-        return {
+            "id": action_key({"type": "noop"}),
             "summary": summary,
-            "candidate_id": candidate_id,
-            "action": action,
-            "decision_type": "action" if self.role == "defender" and decision_type == "alert" else decision_type,
-            "confidence": 0.78 if diagnosis != "nominal_operation" else 0.6,
-            "diagnosis": diagnosis,
-            "labels": ["agentic", "monitoring", self.role],
+            "action": {"type": "noop"},
+            "source": "action_space",
         }
 
-    def _offline_fallback(self, context: dict[str, Any]) -> dict[str, Any]:
-        metrics = context.get("metrics", {})
-        summary = (
-            f"Offline review: passed={context.get('passed')} "
-            f"ttd={metrics.get('time_to_detection_sec')} "
-            f"ttm={metrics.get('time_to_mitigation_sec')} "
-            f"violations={metrics.get('safety_violation_count')}"
+    def _due_playbook_action(self, context: dict[str, Any]) -> dict[str, Any] | None:
+        if self.role not in {"operator", "attacker"}:
+            return None
+        remaining_playbook = context.get("remaining_playbook", [])
+        if not remaining_playbook:
+            return None
+        next_event = remaining_playbook[0]
+        if float(next_event.get("time_sec", 0.0)) > float(context["time_sec"]):
+            return None
+        action = normalize_action(next_event.get("action"))
+        if action is None:
+            return None
+        allowed = set(self.profile.get("allowed_action_types", []))
+        if str(action.get("type")) not in allowed:
+            return None
+        return action
+
+    def _due_playbook_fallback(
+        self, context: dict[str, Any], *, reason: str
+    ) -> list[Any]:
+        action = self._due_playbook_action(context)
+        if action is None:
+            return []
+        action_type = str(action.get("type", "unknown"))
+        return [
+            self.decision(
+                decision_type="action",
+                summary=f"Execute due playbook action `{action_type}` ({reason}).",
+                time_sec=float(context["time_sec"]),
+                action=action,
+                confidence=0.25,
+                labels=["agentic", self.role, "playbook-fallback"],
+                metadata={
+                    "backend": self.engine.last_mode,
+                    "error": self.engine.last_error,
+                    "fallback": reason,
+                },
+            )
+        ]
+
+    @staticmethod
+    def _only_noop_candidates(context: dict[str, Any]) -> bool:
+        candidates = context.get("candidate_actions", [])
+        if not candidates:
+            return False
+        return all(
+            normalize_action(item.get("action")) == {"type": "noop"}
+            for item in candidates
         )
-        return {
-            "summary": summary,
-            "decision_type": "analysis",
-            "confidence": 0.74,
-            "diagnosis": context.get("expected_diagnosis"),
-            "labels": ["offline", "agentic", "analysis"],
-        }
 
-    def _payload_to_decisions(self, payload: dict[str, Any], context: dict[str, Any]) -> list[Any]:
+    def _payload_to_decisions(
+        self, payload: dict[str, Any], context: dict[str, Any]
+    ) -> list[Any]:
         summary = str(payload.get("summary", "")).strip()
-        action = _normalize_action(payload.get("action"))
+        action = normalize_action(payload.get("action"))
         decision_type = str(payload.get("decision_type", "note"))
         now = float(context["time_sec"])
 
-        if action is not None and action.get("type") == "noop" and decision_type == "action":
+        if (
+            action is not None
+            and action.get("type") == "noop"
+            and decision_type == "action"
+        ):
             decision_type = "note"
             action = None
 
-        signature = f"{decision_type}:{_action_key(action) if action else summary}:{payload.get('diagnosis')}"
-        cooldown = self.action_cooldown_sec if action is not None else self.note_cooldown_sec
+        signature = f"{decision_type}:{action_key(action) if action else summary}:{payload.get('diagnosis')}"
+        cooldown = (
+            self.action_cooldown_sec if action is not None else self.note_cooldown_sec
+        )
         if not self._allow_signature(signature, now, cooldown=cooldown):
             return []
 
@@ -555,7 +1095,10 @@ class AgenticRoleAgent(RoleAgent):
                 confidence=float(payload.get("confidence", 0.65)),
                 diagnosis=payload.get("diagnosis"),
                 labels=list(payload.get("labels", ["agentic", self.role])),
-                metadata={"backend": self.engine.last_mode, "error": self.engine.last_error},
+                metadata={
+                    "backend": self.engine.last_mode,
+                    "error": self.engine.last_error,
+                },
             )
         ]
 
@@ -567,23 +1110,175 @@ class AgenticRoleAgent(RoleAgent):
         signatures[signature] = now
         return True
 
+    def _should_reason(self, context: dict[str, Any], *, channel: str) -> bool:
+        now = float(context["time_sec"])
+        state = self._state.setdefault("reasoning", {})
+        signature = self._reasoning_signature(context, channel=channel)
+        channel_state = state.get(channel, {})
+        last_signature = channel_state.get("signature")
+        last_time = float(channel_state.get("time_sec", -10_000.0))
+
+        if signature == last_signature and now - last_time < self.reasoning_refresh_sec:
+            return False
+        if now - last_time < self.reasoning_cooldown_sec:
+            return False
+
+        state[channel] = {"signature": signature, "time_sec": now}
+        return True
+
+    def _should_monitor(self, context: dict[str, Any]) -> bool:
+        if context.get("active_alarms") or context.get("risk_flags"):
+            return True
+        if self._recent_role_activity(
+            context,
+            roles={"attacker", "defender"},
+            within_sec=8.0,
+        ):
+            return True
+        if self._recent_alert_activity(context, within_sec=10.0):
+            return True
+        return False
+
+    def _should_plan(self, context: dict[str, Any]) -> bool:
+        if context.get("risk_flags") or context.get("active_alarms"):
+            return True
+        if self._recent_alert_activity(context, within_sec=10.0):
+            return True
+        if self._recent_role_activity(
+            context,
+            roles={"attacker", "defender"},
+            within_sec=8.0,
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _recent_state_change(context: dict[str, Any]) -> bool:
+        observations = context.get("recent_observations", [])
+        if len(observations) < 2:
+            return False
+        return observations[-1].get("STATE_NAME") != observations[-2].get("STATE_NAME")
+
+    @staticmethod
+    def _recent_role_activity(
+        context: dict[str, Any], *, roles: set[str], within_sec: float
+    ) -> bool:
+        now = float(context.get("time_sec", 0.0))
+        for item in context.get("recent_actions", []):
+            if item.get("role") not in roles:
+                continue
+            time_sec = AgenticRoleAgent._coerce_number(item.get("time_sec"))
+            if time_sec is None:
+                continue
+            if now - time_sec <= within_sec:
+                return True
+        return False
+
+    @staticmethod
+    def _recent_alert_activity(context: dict[str, Any], *, within_sec: float) -> bool:
+        now = float(context.get("time_sec", 0.0))
+        for item in context.get("recent_alerts", []):
+            time_sec = AgenticRoleAgent._coerce_number(item.get("time_sec"))
+            if time_sec is None:
+                continue
+            if now - time_sec <= within_sec:
+                return True
+        return False
+
+    def _reasoning_signature(self, context: dict[str, Any], *, channel: str) -> str:
+        safety_bounds = context.get("safety_bounds", {})
+        observation = dict(context.get("observation") or {})
+        signature_observation: dict[str, Any] = {}
+        for key, value in observation.items():
+            if key in {"timestamp_utc", "elapsed_sec", "sample_phase"}:
+                continue
+            numeric_value = self._coerce_number(value)
+            bounds = safety_bounds.get(key)
+            if numeric_value is not None and isinstance(bounds, dict):
+                minimum = self._coerce_number(bounds.get("min"))
+                maximum = self._coerce_number(bounds.get("max"))
+                if minimum is not None and maximum is not None and maximum > minimum:
+                    bucket = max(1.0, (maximum - minimum) / 20.0)
+                    signature_observation[key] = round(numeric_value / bucket, 2)
+                    continue
+            signature_observation[key] = value
+
+        payload = {
+            "channel": channel,
+            "state_name": context.get("state_name"),
+            "observation": signature_observation,
+            "candidate_ids": [
+                item["id"] for item in context.get("candidate_actions", [])
+            ],
+            "playbook_head": [
+                {
+                    "time_sec": item.get("time_sec"),
+                    "action": normalize_action(item.get("action")),
+                }
+                for item in context.get("remaining_playbook", [])[:2]
+            ],
+            "recent_alert_count": len(context.get("recent_alerts", [])),
+            "recent_action_count": len(context.get("recent_actions", [])),
+            "recent_decision_count": len(context.get("recent_decisions", [])),
+            "active_alarms": context.get("active_alarms", []),
+            "risk_flags": context.get("risk_flags", []),
+            "relationship_notes": context.get("relationship_notes", [])[:8],
+            "trend_directions": {
+                field: item.get("direction")
+                for field, item in context.get("short_horizon_trends", {}).items()
+            },
+            "metrics": context.get("metrics"),
+            "passed": context.get("passed"),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+    @staticmethod
+    def _coerce_number(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     @staticmethod
     def _compact_observation(observation: dict[str, Any]) -> dict[str, Any]:
         fields = [
             "timestamp_utc",
             "elapsed_sec",
+            "sample_phase",
             "STATE_NAME",
             "RW_Tank_Level",
             "UF_UFFT_Tank_Level",
             "ChemTreat_NaCl_Level",
             "ChemTreat_NaOCl_Level",
             "ChemTreat_HCl_Level",
+            "RW_Pump_Flow",
+            "RW_Pump_Speed_Cmd",
+            "RW_Tank_PR_Valve_Cmd",
+            "RW_Tank_P_Valve_Cmd",
             "RW_Tank_PR_Valve_Sts",
+            "RW_Tank_P_Valve_Sts",
+            "RW_Pump_Sts",
+            "ChemTreat_NaCl_Valve_Cmd",
+            "ChemTreat_NaOCl_Valve_Cmd",
+            "ChemTreat_HCl_Valve_Cmd",
             "ChemTreat_NaCl_Valve_Sts",
             "ChemTreat_NaOCl_Valve_Sts",
             "ChemTreat_HCl_Valve_Sts",
+            "SYS_IDLE",
+            "SYS_START",
+            "SYS_RUNNING",
+            "SYS_SHUTDOWN",
             "P2_Selected",
+            "P2_NaCl_Cmd",
+            "P2_NaOCl_Cmd",
+            "P2_HCl_Cmd",
             "Alarm_RW_Tank_LL",
+            "Alarm_RW_Tank_L",
+            "Alarm_RW_Tank_H",
             "Alarm_RW_Tank_HH",
+            "HMI_Start_Active",
+            "HMI_Stop_Active",
         ]
-        return {field: observation.get(field) for field in fields if field in observation}
+        return {
+            field: observation.get(field) for field in fields if field in observation
+        }

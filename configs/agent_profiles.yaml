@@ -9,6 +9,9 @@ profiles:
     family: agentic
     mode: online
     allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/attacker_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -18,7 +21,9 @@ profiles:
       model_id: Qwen/Qwen3.5-9B
       prompt_file: configs/prompts/attacker.md
       local_files_only: true
-      max_new_tokens: 220
+      require_cuda: true
+      quantization: bf16
+      max_new_tokens: 128
     memory:
       observation_window: 10
       decision_window: 10
@@ -26,6 +31,8 @@ profiles:
       alert_window: 6
     playbook_anticipation_sec: 1.0
     action_cooldown_sec: 1.5
+    reasoning_cooldown_sec: 8.0
+    reasoning_refresh_sec: 12.0
   scripted_defender:
     role: defender
     family: scripted
@@ -67,6 +74,9 @@ profiles:
     family: agentic
     mode: online
     allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/defender_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -76,12 +86,16 @@ profiles:
       model_id: Qwen/Qwen3.5-9B
       prompt_file: configs/prompts/defender.md
       local_files_only: true
-      max_new_tokens: 220
+      require_cuda: true
+      quantization: bf16
+      max_new_tokens: 128
     memory:
       observation_window: 12
       decision_window: 12
       action_window: 10
       alert_window: 8
+    reasoning_cooldown_sec: 8.0
+    reasoning_refresh_sec: 12.0
   scripted_observer:
     role: observer
     family: scripted
@@ -117,6 +131,9 @@ profiles:
     family: agentic
     mode: online
     allowed_action_types: [noop]
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/observer_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -126,12 +143,16 @@ profiles:
       model_id: Qwen/Qwen3.5-9B
       prompt_file: configs/prompts/observer.md
       local_files_only: true
-      max_new_tokens: 220
+      require_cuda: true
+      quantization: bf16
+      max_new_tokens: 128
     memory:
       observation_window: 12
       decision_window: 12
       action_window: 8
       alert_window: 8
+    reasoning_cooldown_sec: 8.0
+    reasoning_refresh_sec: 12.0
   scripted_planner:
     role: planner
     family: scripted
@@ -142,6 +163,8 @@ profiles:
     family: agentic
     mode: online
     allowed_action_types: [noop]
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -151,8 +174,12 @@ profiles:
       model_id: Qwen/Qwen3.5-9B
       prompt_file: configs/prompts/planner.md
       local_files_only: true
-      max_new_tokens: 180
-    note_cooldown_sec: 8.0
+      require_cuda: true
+      quantization: bf16
+      max_new_tokens: 96
+    note_cooldown_sec: 20.0
+    reasoning_cooldown_sec: 20.0
+    reasoning_refresh_sec: 24.0
   scripted_operator:
     role: operator
     family: scripted
@@ -163,6 +190,9 @@ profiles:
     family: agentic
     mode: online
     allowed_action_types: [hmi_start, hmi_stop, hmi_reset, select_process, set_manual_valve, noop]
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/operator_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -172,13 +202,17 @@ profiles:
       model_id: Qwen/Qwen3.5-9B
       prompt_file: configs/prompts/operator.md
       local_files_only: true
-      max_new_tokens: 220
+      require_cuda: true
+      quantization: bf16
+      max_new_tokens: 128
     memory:
       observation_window: 10
       decision_window: 10
       action_window: 10
       alert_window: 6
     playbook_anticipation_sec: 1.0
+    reasoning_cooldown_sec: 8.0
+    reasoning_refresh_sec: 12.0
   scripted_offline_analyst:
     role: offline_analysis
     family: scripted
@@ -189,6 +223,9 @@ profiles:
     family: agentic
     mode: offline
     allowed_action_types: [noop]
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/offline_analyst_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -198,4 +235,6 @@ profiles:
       model_id: Qwen/Qwen3.5-9B
       prompt_file: configs/prompts/offline_analyst.md
       local_files_only: true
-      max_new_tokens: 220
+      require_cuda: true
+      quantization: bf16
+      max_new_tokens: 128

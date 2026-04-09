@@ -34,9 +34,9 @@ def parse_args():
     )
     parser.add_argument(
         "--device",
-        choices=["auto", "cpu", "cuda"],
-        default=DEFAULT_DEVICE if DEFAULT_DEVICE in {"auto", "cpu", "cuda"} else "auto",
-        help="Execution target. auto picks cuda when available, otherwise cpu.",
+        choices=["auto", "cuda"],
+        default=DEFAULT_DEVICE if DEFAULT_DEVICE in {"auto", "cuda"} else "auto",
+        help="Execution target. auto requires a CUDA-capable GPU.",
     )
     parser.add_argument(
         "--precision",
@@ -52,11 +52,11 @@ def parse_args():
 
 
 def resolve_device(requested: str) -> str:
-    if requested == "cpu":
-        return "cpu"
-    if requested == "cuda":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Qwen smoke test requires a CUDA-capable GPU")
+    if requested == "auto" and not torch.cuda.is_available():
+        raise RuntimeError("Qwen smoke test requires a CUDA-capable GPU")
+    return "cuda"
 
 
 def resolve_dtype(requested_precision: str):
@@ -65,8 +65,12 @@ def resolve_dtype(requested_precision: str):
     return torch.float16
 
 
-def load_model(model_ref: str, offline: bool, resolved_device: str, requested_precision: str):
-    device_map = "auto" if resolved_device == "cuda" else "cpu"
+def load_model(
+    model_ref: str, offline: bool, resolved_device: str, requested_precision: str
+):
+    if resolved_device != "cuda":
+        raise RuntimeError("Agentic model loading requires CUDA")
+    device_map = "auto"
     load_kwargs = {
         "trust_remote_code": True,
         "device_map": device_map,
@@ -74,15 +78,17 @@ def load_model(model_ref: str, offline: bool, resolved_device: str, requested_pr
         "cache_dir": CACHE_DIR,
     }
 
-    if resolved_device == "cuda":
-        if requested_precision == "4bit":
-            load_kwargs["load_in_4bit"] = True
-        elif requested_precision == "8bit":
-            load_kwargs["load_in_8bit"] = True
-        else:
-            load_kwargs["torch_dtype"] = resolve_dtype(requested_precision)
+    if requested_precision == "4bit":
+        load_kwargs["load_in_4bit"] = True
+    elif requested_precision == "8bit":
+        load_kwargs["load_in_8bit"] = True
+    elif (
+        requested_precision == "bf16"
+        and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
+    ):
+        load_kwargs["torch_dtype"] = torch.bfloat16
     else:
-        load_kwargs["torch_dtype"] = torch.float32
+        load_kwargs["torch_dtype"] = resolve_dtype(requested_precision)
 
     return AutoModelForCausalLM.from_pretrained(
         model_ref,
@@ -117,14 +123,7 @@ def main():
         local_files_only=args.offline,
         cache_dir=CACHE_DIR,
     )
-    try:
-        model = load_model(model_ref, args.offline, resolved_device, args.precision)
-    except Exception as exc:
-        if resolved_device == "cuda":
-            print(f"WARNING: GPU load failed ({exc}). Falling back to CPU.")
-            model = load_model(model_ref, args.offline, "cpu", args.precision)
-        else:
-            raise
+    model = load_model(model_ref, args.offline, resolved_device, args.precision)
 
     pipe = pipeline(
         "text-generation",

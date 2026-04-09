@@ -32,4 +32,3 @@ def require_fields(payload: dict[str, Any], fields: list[str], *, ctx: str) -> N
     missing = [field for field in fields if field not in payload]
     if missing:
         raise ConfigError(f"{ctx} missing required fields: {', '.join(missing)}")
-
