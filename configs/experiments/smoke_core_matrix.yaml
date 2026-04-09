@@ -1,0 +1,19 @@
+experiment_name: smoke_core_matrix
+scenario_selectors:
+  - smoke/wt-smoke-p1-short-nominal
+  - smoke/wt-smoke-rw-refill-spoof
+repeats: 1
+resume: true
+results_root: Results
+environment:
+  backend: auto
+  keep_running: false
+  start_bridge: true
+role_matrix:
+  attacker: [scripted_attacker, agentic_attacker]
+  defender: [scripted_defender, agentic_defender]
+  observer: [scripted_observer]
+  planner: [scripted_planner]
+  operator: [scripted_operator]
+  offline_analysis: [scripted_offline_analyst]
+

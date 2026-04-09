@@ -1,0 +1,25 @@
+{
+  "condition_name": "attacker-scripted_attacker__defender-agentic_defender__observer-scripted_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-agentic_planner",
+  "profiles": {
+    "attacker": "scripted_attacker",
+    "defender": "agentic_defender",
+    "observer": "scripted_observer",
+    "planner": "agentic_planner",
+    "operator": "scripted_operator",
+    "offline_analysis": "scripted_offline_analyst"
+  },
+  "runs": [
+    {
+      "run_id": "smoke-wt-smoke-rw-refill-spoof-trial-001",
+      "scenario": "smoke/wt-smoke-rw-refill-spoof",
+      "scenario_id": "wt-smoke-rw-refill-spoof",
+      "suite": "smoke",
+      "condition_name": "attacker-scripted_attacker__defender-agentic_defender__observer-scripted_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-agentic_planner",
+      "status": "completed",
+      "passed": true,
+      "run_dir": "Results/smoke_mixed_roles/20260409T044511-6727296c/attacker-scripted_attacker__defender-agentic_defender__observer-scripted_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-agentic_planner/smoke/wt-smoke-rw-refill-spoof/trial-001",
+      "errors": []
+    }
+  ],
+  "status": "completed"
+}

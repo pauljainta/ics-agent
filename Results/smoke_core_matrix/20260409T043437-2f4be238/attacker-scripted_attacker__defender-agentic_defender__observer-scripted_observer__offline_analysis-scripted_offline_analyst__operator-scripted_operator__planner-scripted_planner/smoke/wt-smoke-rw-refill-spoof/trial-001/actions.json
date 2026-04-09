@@ -1,0 +1,241 @@
+[
+  {
+    "timestamp_utc": "2026-04-09T04:38:58.939071+00:00",
+    "time_sec": 0.0,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:00.193165+00:00",
+    "time_sec": 1.254,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:01.447746+00:00",
+    "time_sec": 2.509,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:02.702092+00:00",
+    "time_sec": 3.763,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:03.956237+00:00",
+    "time_sec": 5.017,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:04.709295+00:00",
+    "time_sec": 5.017,
+    "role": "operator",
+    "agent_name": "scripted_operator",
+    "action": {
+      "type": "hmi_start"
+    },
+    "state_after": "RUNNING",
+    "labels": [
+      "scripted",
+      "scenario-plan"
+    ],
+    "diagnosis": null
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:05.963140+00:00",
+    "time_sec": 7.024,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:08.000097+00:00",
+    "time_sec": 7.024,
+    "role": "attacker",
+    "agent_name": "scripted_attacker",
+    "action": {
+      "type": "set_sensor",
+      "name": "RW_Tank_Level",
+      "value": 390
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "scripted",
+      "scenario-plan"
+    ],
+    "diagnosis": null
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:09.254353+00:00",
+    "time_sec": 10.315,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:10.508419+00:00",
+    "time_sec": 11.569,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:11.762478+00:00",
+    "time_sec": 12.823,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:13.017463+00:00",
+    "time_sec": 14.078,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:13.770486+00:00",
+    "time_sec": 14.078,
+    "role": "attacker",
+    "agent_name": "scripted_attacker",
+    "action": {
+      "type": "hmi_stop"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "scripted",
+      "scenario-plan"
+    ],
+    "diagnosis": null
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:15.024747+00:00",
+    "time_sec": 16.086,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:39:16.278845+00:00",
+    "time_sec": 17.34,
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  }
+]

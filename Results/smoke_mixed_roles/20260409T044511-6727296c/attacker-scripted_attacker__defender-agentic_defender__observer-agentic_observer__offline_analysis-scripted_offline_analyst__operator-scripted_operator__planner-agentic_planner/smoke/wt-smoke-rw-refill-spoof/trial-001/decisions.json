@@ -1,0 +1,592 @@
+[
+  {
+    "role": "planner",
+    "agent_name": "agentic_planner",
+    "decision_type": "note",
+    "summary": "Agentic planner briefing for wt-smoke-rw-refill-spoof: Provide a short attack scenario for core combination-matrix smoke testing.",
+    "time_sec": 0.0,
+    "timestamp_utc": "2026-04-09T04:49:47.592169+00:00",
+    "action": null,
+    "confidence": 0.7,
+    "diagnosis": null,
+    "labels": [
+      "agentic",
+      "planner"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 0.0,
+    "timestamp_utc": "2026-04-09T04:49:47.592194+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 0.0,
+    "timestamp_utc": "2026-04-09T04:49:47.592208+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 1.254,
+    "timestamp_utc": "2026-04-09T04:49:48.846954+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 1.254,
+    "timestamp_utc": "2026-04-09T04:49:48.846978+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 2.508,
+    "timestamp_utc": "2026-04-09T04:49:50.100821+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 2.508,
+    "timestamp_utc": "2026-04-09T04:49:50.100846+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 3.763,
+    "timestamp_utc": "2026-04-09T04:49:51.355285+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 3.763,
+    "timestamp_utc": "2026-04-09T04:49:51.355312+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 5.016,
+    "timestamp_utc": "2026-04-09T04:49:52.608799+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 5.016,
+    "timestamp_utc": "2026-04-09T04:49:52.608827+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "operator",
+    "agent_name": "scripted_operator",
+    "decision_type": "action",
+    "summary": "Execute scripted operator action `hmi_start`",
+    "time_sec": 5.016,
+    "timestamp_utc": "2026-04-09T04:49:53.361704+00:00",
+    "action": {
+      "type": "hmi_start"
+    },
+    "confidence": 1.0,
+    "diagnosis": null,
+    "labels": [
+      "scripted",
+      "scenario-plan"
+    ],
+    "metadata": {
+      "plan_index": 0
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 7.023,
+    "timestamp_utc": "2026-04-09T04:49:54.615821+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 7.023,
+    "timestamp_utc": "2026-04-09T04:49:54.615848+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "attacker",
+    "agent_name": "scripted_attacker",
+    "decision_type": "action",
+    "summary": "Execute scripted attacker action `set_sensor`",
+    "time_sec": 7.023,
+    "timestamp_utc": "2026-04-09T04:49:55.369074+00:00",
+    "action": {
+      "type": "set_sensor",
+      "name": "RW_Tank_Level",
+      "value": 390
+    },
+    "confidence": 1.0,
+    "diagnosis": null,
+    "labels": [
+      "scripted",
+      "scenario-plan"
+    ],
+    "metadata": {
+      "plan_index": 0
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 10.317,
+    "timestamp_utc": "2026-04-09T04:49:57.909201+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 10.317,
+    "timestamp_utc": "2026-04-09T04:49:57.909240+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 11.571,
+    "timestamp_utc": "2026-04-09T04:49:59.163323+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 11.571,
+    "timestamp_utc": "2026-04-09T04:49:59.163354+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 12.825,
+    "timestamp_utc": "2026-04-09T04:50:00.417616+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 12.825,
+    "timestamp_utc": "2026-04-09T04:50:00.417661+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 14.08,
+    "timestamp_utc": "2026-04-09T04:50:01.672511+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 14.08,
+    "timestamp_utc": "2026-04-09T04:50:01.672541+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "attacker",
+    "agent_name": "scripted_attacker",
+    "decision_type": "action",
+    "summary": "Execute scripted attacker action `hmi_stop`",
+    "time_sec": 14.08,
+    "timestamp_utc": "2026-04-09T04:50:02.424777+00:00",
+    "action": {
+      "type": "hmi_stop"
+    },
+    "confidence": 1.0,
+    "diagnosis": null,
+    "labels": [
+      "scripted",
+      "scenario-plan"
+    ],
+    "metadata": {
+      "plan_index": 1
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 16.087,
+    "timestamp_utc": "2026-04-09T04:50:03.679529+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 16.087,
+    "timestamp_utc": "2026-04-09T04:50:03.679563+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "observer",
+    "agent_name": "agentic_observer",
+    "decision_type": "note",
+    "summary": "Agentic observer suspects raw_water_low_or_spoof",
+    "time_sec": 17.342,
+    "timestamp_utc": "2026-04-09T04:50:04.934520+00:00",
+    "action": null,
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "defender",
+    "agent_name": "agentic_defender",
+    "decision_type": "alert",
+    "summary": "Agentic defender suspects raw_water_low_or_spoof",
+    "time_sec": 17.342,
+    "timestamp_utc": "2026-04-09T04:50:04.934549+00:00",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "confidence": 0.6,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "agentic",
+      "monitoring"
+    ],
+    "metadata": {
+      "backend": "heuristic"
+    }
+  },
+  {
+    "role": "offline_analysis",
+    "agent_name": "scripted_offline_analyst",
+    "decision_type": "analysis",
+    "summary": "Offline scripted analysis: pass=True ttd=0.023 ttm=0.023",
+    "time_sec": 18.0,
+    "timestamp_utc": "2026-04-09T04:50:36.243127+00:00",
+    "action": null,
+    "confidence": 1.0,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "offline",
+      "scripted"
+    ],
+    "metadata": {
+      "metrics": {
+        "incident_start_time_sec": 7,
+        "time_to_detection_sec": 0.023,
+        "time_to_mitigation_sec": 0.023,
+        "false_positive_rate": 0.4167,
+        "false_negative_rate": 0.0,
+        "safety_violation_count": 0,
+        "safety_violations_by_field": {
+          "RW_Tank_Level": 0,
+          "UF_UFFT_Tank_Level": 0,
+          "ChemTreat_NaCl_Level": 0,
+          "ChemTreat_NaOCl_Level": 0,
+          "ChemTreat_HCl_Level": 0
+        },
+        "recovery_success_rate": 1.0,
+        "decision_correctness": 1.0,
+        "diagnosis_accuracy": 1.0,
+        "system_stability_indicators": {
+          "state_transition_count": 2,
+          "observation_count": 12
+        },
+        "operator_workload": 1,
+        "alert_count": 12,
+        "defender_action_count": 12
+      }
+    }
+  }
+]

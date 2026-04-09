@@ -1,0 +1,13 @@
+experiment_config_path: configs/experiments/smoke_mixed_roles.yaml
+condition:
+  attacker: scripted_attacker
+  defender: agentic_defender
+  observer: agentic_observer
+  planner: agentic_planner
+  operator: scripted_operator
+  offline_analysis: scripted_offline_analyst
+scenario: smoke/wt-smoke-rw-refill-spoof
+environment:
+  backend: auto
+  keep_running: false
+  start_bridge: true

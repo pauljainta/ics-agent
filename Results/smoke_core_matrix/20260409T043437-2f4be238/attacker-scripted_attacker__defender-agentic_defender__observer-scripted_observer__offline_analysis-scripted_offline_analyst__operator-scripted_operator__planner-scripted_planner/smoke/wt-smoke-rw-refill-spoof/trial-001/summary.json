@@ -1,0 +1,11 @@
+{
+  "run_id": "smoke-wt-smoke-rw-refill-spoof-trial-001",
+  "scenario": "smoke/wt-smoke-rw-refill-spoof",
+  "scenario_id": "wt-smoke-rw-refill-spoof",
+  "suite": "smoke",
+  "condition_name": "attacker-scripted_attacker__defender-agentic_defender__observer-scripted_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-scripted_planner",
+  "status": "completed",
+  "passed": true,
+  "run_dir": "Results/smoke_core_matrix/20260409T043437-2f4be238/attacker-scripted_attacker__defender-agentic_defender__observer-scripted_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-scripted_planner/smoke/wt-smoke-rw-refill-spoof/trial-001",
+  "errors": []
+}

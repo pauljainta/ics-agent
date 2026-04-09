@@ -1,190 +1,172 @@
 # ICS Agent
 
-`ics-agent` is the agent-side repository in the shared `Agentic_ICS` workspace.
-Today it is primarily the entry point for scripted cyber-physical wargaming of
-the water-treatment OpenPLC setup, with the local Qwen tooling kept as optional
-infrastructure for future LLM-based agents.
+`ics-agent` is now the config-driven experiment and agent orchestration repo for
+the OpenPLC water-treatment wargaming stack in this workspace.
 
-## What Is Implemented
+It reuses the working host-side OpenPLC testbed from the sibling
+`sphere-usecases` repo, but moves experiment control, scenario metadata,
+agent-role swapping, metrics, reporting, and results storage into this repo.
 
-The current implemented functionality is:
+## What Is In Scope
 
-- a scripted multi-scenario wargame runner in `agents/scripted_wargame.py`
-- support for four suite types:
-  - `readiness`
-  - `normal`
-  - `attack`
-  - `recheck`
-- integration with the water-treatment testbed in the sibling
-  `sphere-usecases` repository
-- suite and per-scenario artifact generation under the workspace `artifacts/`
-  directory
-- optional local Qwen runner scripts for future autonomous-agent work
+The repo now covers these AGENTS.md requirements in a reusable structure:
 
-This repo does not yet contain a full adaptive red-team or blue-team agent with
-planning, memory, tool selection, or autonomous strategy generation. The
-current wargame layer is scripted and scenario-driven.
+- end-to-end OpenPLC testbed orchestration through a shared environment adapter
+- scripted online roles
+- agentic role scaffolding for Qwen 3.5 with optional LangChain / LangGraph use
+- offline analysis roles operating only on stored run artifacts
+- config-driven scenario catalog and experiment matrices
+- combination-matrix execution with named experimental conditions
+- metrics and report generation for each run
+- repo-local `Results/` output instead of relying on loose workspace artifacts
+- automated validation and pytest coverage for config loading and orchestration
 
-## Operational Status
+## Repo Layout
 
-The workspace has already been made operational on this machine without
-changing the system Python version.
-
-Important context:
-
-- the scripted runner in this repo drives the host-side testbed controller
-- the host-side testbed now supports a native Modbus-backed fallback runtime in
-  the sibling `sphere-usecases` repo
-- that fallback is used when Docker is unavailable, while keeping the same
-  action and observation surface for scenarios and agents
-
-Validated suites on this machine so far:
-
-- `attack`: 12 scenarios passed
-- `normal`: 10 scenarios passed
-- `recheck`: 2 scenarios passed
-
-## Repository Layout
-
-### Scripted wargame entry point
-
+- `ics_agent/`
+  The Python package for runtime orchestration, environment integration,
+  metrics, reporting, and role implementations.
+- `configs/scenarios/`
+  Repo-local execution scenario YAMLs. Add new scenarios here.
+- `configs/scenario_catalog.yaml`
+  Suite defaults plus per-scenario metadata overrides. Add intent,
+  prerequisites, expected outcomes, metrics, and ground truth here.
+- `configs/agent_profiles.yaml`
+  Configurable scripted, agentic, and offline role profiles.
+- `configs/experiments/`
+  Experiment launch configs, including smoke and full matrix examples.
+- `configs/prompts/`
+  Agentic prompt templates kept in files for reproducibility.
+- `tests/`
+  Unit and orchestration tests.
+- `Results/`
+  Machine-readable and human-readable outputs for completed runs.
 - `agents/scripted_wargame.py`
+  Legacy scripted runner kept for compatibility with older flows.
 
-Responsibilities:
+## Scenario Model
 
-- discover scenario groups
-- call the water-treatment testbed controller
-- run suites end to end
-- write suite summaries and scenario outputs
+A scenario now has two layers:
 
-### Optional local model utilities
+1. `configs/scenarios/<suite>/*.yaml`
+   This is the execution spec: duration, initial conditions, timeline, and
+   expectations.
+2. `configs/scenario_catalog.yaml`
+   This is the metadata schema: intent, prerequisites, attacker actions,
+   defender responses, expected outcomes, success/failure conditions, metrics,
+   safety bounds, and ground truth.
 
-- `models/qwen_test.py`
-- `scripts/setup_env.sh`
-- `scripts/download_qwen_model.sh`
-- `scripts/run_local_qwen.sh`
+That split keeps scenario mechanics reusable while letting the same scenario be
+run with scripted, agentic, or offline analyses.
 
-These utilities are still useful for future experiments, but they are not
-required for the current scripted water-treatment runs.
+## Agent Model
 
-## Workspace Assumptions
+Profiles in `configs/agent_profiles.yaml` define each role:
 
-This repository is intended to live beside these sibling repositories:
+- `attacker`
+- `defender`
+- `observer`
+- `planner`
+- `operator`
+- `offline_analysis`
 
-- `ics-agent/`
-- `sphere-usecases/`
-- `cps-enclave-model/`
+Each role can be swapped at runtime by changing the experiment config, not code.
 
-The scripted runner derives the workspace root dynamically from its own file
-location. Tracked source code should not contain machine-specific absolute
-paths.
+Implemented role families:
 
-## How The Scripted Wargame Works
+- `scripted`
+  Deterministic scenario-plan or rule-based behavior
+- `agentic`
+  Qwen-oriented role wrapper with optional LangChain / LangGraph integration
+  and a deterministic heuristic fallback when local model dependencies are not
+  available
+- `offline`
+  Same role interface, but executed only after a run from stored artifacts
 
-`agents/scripted_wargame.py` imports the testbed controller from the
-water-treatment OpenPLC implementation and runs curated scenario groups.
+## Running
 
-Scenario sources:
-
-- `readiness`
-  - canonical scenarios from the OpenPLC implementation
-- `normal`
-  - nominal scenarios under `artifacts/agent_smoke/normal`
-- `attack`
-  - adversarial scenarios under `artifacts/agent_smoke/attack`
-- `recheck`
-  - follow-up regression scenarios under `artifacts/agent_smoke/recheck`
-
-Typical outputs:
-
-- `artifacts/scripted_agents/`
-- `artifacts/scripted_agents_attack/`
-- `artifacts/scripted_agents_normal/`
-- `artifacts/scripted_agents_recheck/`
-
-Generated summaries now prefer workspace-relative paths instead of
-machine-specific absolute paths.
-
-## Running It
-
-From the workspace root:
+Validate the catalog and configs:
 
 ```bash
-python3 ics-agent/agents/scripted_wargame.py --suite readiness
-python3 ics-agent/agents/scripted_wargame.py --suite attack
-python3 ics-agent/agents/scripted_wargame.py --suite normal
-python3 ics-agent/agents/scripted_wargame.py --suite recheck
-python3 ics-agent/agents/scripted_wargame.py --suite all
+python3 -m ics_agent.cli validate
 ```
 
-Custom output root:
+List scenarios:
 
 ```bash
-python3 ics-agent/agents/scripted_wargame.py \
-  --suite attack \
-  --output-root artifacts/my_scripted_runs
+python3 -m ics_agent.cli list-scenarios
 ```
 
-## Local Qwen Runner
-
-The local Qwen flow remains available for future autonomous-agent experiments.
-
-Setup:
+Run the core smoke matrix:
 
 ```bash
-bash scripts/setup_env.sh
-cp -f .env.example .env
-bash scripts/download_qwen_model.sh
+python3 -m ics_agent.cli run experiments/smoke_core_matrix.yaml
 ```
+
+Run mixed observer / planner smoke combinations:
+
+```bash
+python3 -m ics_agent.cli run experiments/smoke_mixed_roles.yaml
+```
+
+Run the full combination matrix:
+
+```bash
+python3 -m ics_agent.cli run experiments/full_matrix.yaml
+```
+
+Results are written under:
+
+```text
+Results/<experiment_name>/<experiment_id>/<condition>/<suite>/<scenario_id>/trial-001/
+```
+
+Each run directory includes:
+
+- `observations.csv`
+- `actions.json`
+- `decisions.json`
+- `alerts.json`
+- `system_events.json`
+- `offline_analysis.json`
+- `metrics.json`
+- `summary.json`
+- `summary.md`
+- `config_snapshot.yaml`
+- `scenario_resolved.yaml`
+
+## Replay / Offline Mode
+
+Replay mode lets offline agents operate only on saved logs.
+
+Workflow:
+
+1. Run a live experiment and choose one run directory.
+2. Copy or link that run directory into `Results/replay_seed/<name>/`.
+3. Run:
+
+```bash
+python3 -m ics_agent.cli run experiments/smoke_offline_replay.yaml
+```
+
+## Testing
 
 Run:
 
 ```bash
-bash scripts/run_local_qwen.sh
+pytest tests -q
 ```
 
-CPU-only run:
+The test suite validates:
 
-```bash
-QWEN_DEVICE=cpu bash scripts/run_local_qwen.sh
-```
+- scenario catalog loading
+- metrics calculations
+- fake-environment orchestration
+- replay-mode execution
 
-Prompt test:
+## Notes
 
-```bash
-source .venv/bin/activate
-set -a
-source .env
-set +a
-python models/qwen_test.py --offline --prompt "List three PLC tags for tank level control."
-```
-
-Precision values:
-
-- `auto`
-- `bf16`
-- `fp16`
-- `8bit`
-- `4bit`
-
-## Git Hygiene
-
-Before committing this repository:
-
-- keep tracked code free of hardcoded user-specific paths
-- do not commit `.env` files
-- do not commit model weights or local caches
-- do not commit generated artifacts unless you intentionally want frozen
-  example outputs in version control
-
-Note:
-
-- runtime artifacts may still include scenario metadata for traceability
-- tracked source files should stay portable and path-clean
-
-## What This Repo Means Right Now
-
-`ics-agent` is no longer just a stale note about a local Qwen model. It now
-documents and exposes the implemented scripted wargaming layer for the
-water-treatment CPS environment, while leaving room for future autonomous
-red-team and blue-team agents.
+- No sensitive paths or secrets are hardcoded into tracked source.
+- Prompt templates, role choices, and scenario metadata live in files.
+- The OpenPLC environment adapter preserves a stable role interface while
+  swapping implementation families.

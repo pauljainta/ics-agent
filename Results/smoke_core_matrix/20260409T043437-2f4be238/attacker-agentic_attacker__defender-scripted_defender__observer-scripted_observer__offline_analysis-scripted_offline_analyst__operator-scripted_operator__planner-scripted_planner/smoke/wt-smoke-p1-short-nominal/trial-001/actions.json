@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp_utc": "2026-04-09T04:40:20.136792+00:00",
+    "time_sec": 0.0,
+    "role": "defender",
+    "agent_name": "scripted_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "scripted",
+      "rule-based"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  }
+]

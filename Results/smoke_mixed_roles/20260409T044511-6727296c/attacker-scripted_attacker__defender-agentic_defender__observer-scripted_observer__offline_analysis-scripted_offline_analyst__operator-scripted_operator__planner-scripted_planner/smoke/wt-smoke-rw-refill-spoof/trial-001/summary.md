@@ -1,0 +1,17 @@
+# wt-smoke-rw-refill-spoof
+
+- Condition: `attacker-scripted_attacker__defender-agentic_defender__observer-scripted_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-scripted_planner`
+- Status: `completed`
+- Passed: `True`
+- Samples: `12`
+- Actions: `15`
+- Alerts: `13`
+- TTD: `0.026`
+- TTM: `0.026`
+- Safety Violations: `0`
+
+## Intent
+Provide a short attack scenario for core combination-matrix smoke testing.
+
+## Expected Outcomes
+- Detection and mitigation timing are available from a short run.

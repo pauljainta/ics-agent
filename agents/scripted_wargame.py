@@ -18,6 +18,8 @@ from typing import Any
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_SCENARIOS = REPO_ROOT / "configs" / "scenarios"
 OPENPLC_DIR = (
     WORKSPACE_ROOT
     / "sphere-usecases"
@@ -29,7 +31,7 @@ OPENPLC_SCRIPTS = OPENPLC_DIR / "scripts"
 sys.path = [entry for entry in sys.path if entry not in ("", str(OPENPLC_SCRIPTS))]
 sys.path.insert(0, str(OPENPLC_SCRIPTS))
 
-from openplc_testbed import DEFAULT_READINESS_SCENARIOS, OpenPLCWaterTreatmentTestbed, TestbedError
+from openplc_testbed import OpenPLCWaterTreatmentTestbed, TestbedError
 
 
 def utc_now() -> str:
@@ -64,15 +66,15 @@ def unique_paths(paths: list[Path]) -> list[Path]:
 
 
 def readiness_paths() -> list[Path]:
-    return unique_paths([(OPENPLC_DIR / path).resolve() for path in DEFAULT_READINESS_SCENARIOS])
+    return unique_paths(sorted((CONFIG_SCENARIOS / "readiness").glob("*.yaml")))
 
 
 def agent_smoke_paths(group: str) -> list[Path]:
-    return unique_paths(sorted((WORKSPACE_ROOT / "artifacts" / "agent_smoke" / group).glob("*/scenario.yaml")))
+    return unique_paths(sorted((CONFIG_SCENARIOS / group).glob("*.yaml")))
 
 
 def recheck_paths() -> list[Path]:
-    return unique_paths(sorted((WORKSPACE_ROOT / "artifacts" / "agent_smoke" / "recheck").glob("*/scenario.yaml")))
+    return unique_paths(sorted((CONFIG_SCENARIOS / "recheck").glob("*.yaml")))
 
 
 @dataclass
@@ -172,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-root",
-        default=str(WORKSPACE_ROOT / "artifacts" / "scripted_agents"),
+        default=str(REPO_ROOT / "Results" / "legacy_scripted_agents"),
         help="Directory for suite artifacts",
     )
     return parser

@@ -1,0 +1,65 @@
+[
+  {
+    "timestamp_utc": "2026-04-09T04:41:39.046406+00:00",
+    "time_sec": 0.0,
+    "role": "defender",
+    "agent_name": "scripted_defender",
+    "action": {
+      "type": "hmi_stop",
+      "process_id": "WT-P1"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "scripted",
+      "rule-based"
+    ],
+    "diagnosis": "raw_water_low_or_spoof"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:41:43.310267+00:00",
+    "time_sec": 4.264,
+    "role": "operator",
+    "agent_name": "scripted_operator",
+    "action": {
+      "type": "hmi_start"
+    },
+    "state_after": "RUNNING",
+    "labels": [
+      "scripted",
+      "scenario-plan"
+    ],
+    "diagnosis": null
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:41:47.351631+00:00",
+    "time_sec": 7.022,
+    "role": "attacker",
+    "agent_name": "agentic_attacker",
+    "action": {
+      "type": "set_sensor",
+      "name": "RW_Tank_Level",
+      "value": 390
+    },
+    "state_after": "RUNNING",
+    "labels": [
+      "agentic",
+      "plan-guided"
+    ],
+    "diagnosis": null
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:41:52.117425+00:00",
+    "time_sec": 13.071,
+    "role": "attacker",
+    "agent_name": "agentic_attacker",
+    "action": {
+      "type": "hmi_stop"
+    },
+    "state_after": "SHUTDOWN",
+    "labels": [
+      "agentic",
+      "plan-guided"
+    ],
+    "diagnosis": null
+  }
+]

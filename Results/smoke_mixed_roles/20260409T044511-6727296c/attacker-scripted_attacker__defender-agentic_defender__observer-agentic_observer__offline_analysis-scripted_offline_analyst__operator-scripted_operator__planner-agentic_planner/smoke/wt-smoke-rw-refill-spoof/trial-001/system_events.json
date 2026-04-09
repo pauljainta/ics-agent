@@ -1,0 +1,23 @@
+[
+  {
+    "timestamp_utc": "2026-04-09T04:49:47.592146+00:00",
+    "time_sec": 0.0,
+    "event_type": "state_transition",
+    "from_state": null,
+    "to_state": "SHUTDOWN"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:49:54.615763+00:00",
+    "time_sec": 7.023,
+    "event_type": "state_transition",
+    "from_state": "SHUTDOWN",
+    "to_state": "RUNNING"
+  },
+  {
+    "timestamp_utc": "2026-04-09T04:49:57.909140+00:00",
+    "time_sec": 10.317,
+    "event_type": "state_transition",
+    "from_state": "RUNNING",
+    "to_state": "SHUTDOWN"
+  }
+]

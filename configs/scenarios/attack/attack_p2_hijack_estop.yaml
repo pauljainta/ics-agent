@@ -1,0 +1,53 @@
+scenario_id: "wt-attack-p2-process-hijack-estop"
+process_id: "WT-P2"
+description: "Attack: hijack Process 2 for unauthorized dosing and then force an emergency stop"
+duration_sec: 60
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - time_sec: 5
+    action:
+      process_id: WT-P1
+      type: hmi_start
+  - time_sec: 8
+    action:
+      process_id: WT-P2
+      type: select_process
+      active: true
+  - time_sec: 10
+    action:
+      process_id: WT-P2
+      type: set_manual_valve
+      chemical: NaCl
+      open: true
+  - time_sec: 24
+    action:
+      process_id: WT-P1
+      type: hmi_estop
+
+expectations:
+  final_state: SHUTDOWN
+  must_reach_states: [RUNNING, SHUTDOWN]
+  event_count:
+    hmi_start: 1
+    hmi_estop: 1
+  events_lead_to_state:
+    hmi_start: RUNNING
+    hmi_estop: SHUTDOWN
+  min_samples: 90
+  must_change:
+    - ChemTreat_NaCl_Level
+  ever_nonzero:
+    - ChemTreat_NaCl_Valve_Sts
+  final_equals:
+    RW_Pump_Sts: 0
+    RW_Pump_Flow: 0
+
+reference_bundle: null

@@ -1,0 +1,25 @@
+scenario_id: "wt-smoke-p1-short-nominal"
+process_id: "WT-P1"
+description: "Short nominal startup and shutdown smoke test"
+duration_sec: 16
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 620
+  UF_UFFT_Tank_Level: 420
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - { time_sec: 4, action: hmi_start }
+  - { time_sec: 11, action: hmi_stop }
+
+expectations:
+  final_state: SHUTDOWN
+  must_reach_states: [RUNNING]
+  event_count:
+    hmi_start: 1
+    hmi_stop: 1
+  min_samples: 20
+

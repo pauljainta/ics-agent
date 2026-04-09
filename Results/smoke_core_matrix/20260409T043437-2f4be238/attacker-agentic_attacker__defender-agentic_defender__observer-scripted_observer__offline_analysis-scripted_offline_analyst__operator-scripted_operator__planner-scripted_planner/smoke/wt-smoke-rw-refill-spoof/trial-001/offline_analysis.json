@@ -1,0 +1,44 @@
+[
+  {
+    "role": "offline_analysis",
+    "agent_name": "scripted_offline_analyst",
+    "decision_type": "analysis",
+    "summary": "Offline scripted analysis: pass=True ttd=0.025 ttm=0.025",
+    "time_sec": 18.0,
+    "timestamp_utc": "2026-04-09T04:45:06.822210+00:00",
+    "action": null,
+    "confidence": 1.0,
+    "diagnosis": "raw_water_low_or_spoof",
+    "labels": [
+      "offline",
+      "scripted"
+    ],
+    "metadata": {
+      "metrics": {
+        "incident_start_time_sec": 7,
+        "time_to_detection_sec": 0.025,
+        "time_to_mitigation_sec": 0.025,
+        "false_positive_rate": 0.4615,
+        "false_negative_rate": 0.0,
+        "safety_violation_count": 0,
+        "safety_violations_by_field": {
+          "RW_Tank_Level": 0,
+          "UF_UFFT_Tank_Level": 0,
+          "ChemTreat_NaCl_Level": 0,
+          "ChemTreat_NaOCl_Level": 0,
+          "ChemTreat_HCl_Level": 0
+        },
+        "recovery_success_rate": 1.0,
+        "decision_correctness": 1.0,
+        "diagnosis_accuracy": 1.0,
+        "system_stability_indicators": {
+          "state_transition_count": 2,
+          "observation_count": 12
+        },
+        "operator_workload": 1,
+        "alert_count": 13,
+        "defender_action_count": 12
+      }
+    }
+  }
+]
