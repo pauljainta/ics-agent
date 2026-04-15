@@ -94,8 +94,10 @@ profiles:
       decision_window: 12
       action_window: 10
       alert_window: 8
-    reasoning_cooldown_sec: 8.0
-    reasoning_refresh_sec: 12.0
+    action_cooldown_sec: 1.0
+    note_cooldown_sec: 3.0
+    reasoning_cooldown_sec: 2.0
+    reasoning_refresh_sec: 4.0
   scripted_observer:
     role: observer
     family: scripted
@@ -151,8 +153,9 @@ profiles:
       decision_window: 12
       action_window: 8
       alert_window: 8
-    reasoning_cooldown_sec: 8.0
-    reasoning_refresh_sec: 12.0
+    note_cooldown_sec: 3.0
+    reasoning_cooldown_sec: 3.0
+    reasoning_refresh_sec: 5.0
   scripted_planner:
     role: planner
     family: scripted

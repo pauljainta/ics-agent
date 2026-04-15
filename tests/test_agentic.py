@@ -496,6 +496,366 @@ def test_live_context_is_sanitized_and_enriched() -> None:
     assert "raw_water_low_low_alarm_active" in context["relationship_notes"]
     assert "raw_water_protection_risk" in context["risk_flags"]
     assert "RW_Tank_Level" in context["short_horizon_trends"]
+    assert context["incident"]["type"] == "raw_water_low_protection"
+    assert context["incident"]["status"] in {"suspected", "confirmed"}
+
+
+def test_defender_guardrail_contains_process2_drain_when_model_only_recognizes(
+    monkeypatch,
+) -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda context: {
+            "summary": "Process 2 dosing looks suspicious; monitor and hold.",
+            "candidate_id": action_key({"type": "noop"}),
+            "decision_type": "note",
+            "diagnosis": "unauthorized_chemical_dosing",
+        },
+    )
+
+    decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 10.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 610,
+                "UF_UFFT_Tank_Level": 430,
+                "ChemTreat_NaCl_Level": 800,
+                "ChemTreat_NaOCl_Level": 800,
+                "ChemTreat_HCl_Level": 760,
+                "ChemTreat_HCl_Valve_Sts": 1,
+                "P2_Selected": 1,
+                "RW_Pump_Sts": 1,
+            },
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "ChemTreat_HCl_Level": 800,
+                    "P2_Selected": 1,
+                },
+                {
+                    "STATE_NAME": "RUNNING",
+                    "ChemTreat_HCl_Level": 790,
+                    "P2_Selected": 1,
+                },
+                {
+                    "STATE_NAME": "RUNNING",
+                    "ChemTreat_HCl_Level": 775,
+                    "P2_Selected": 1,
+                },
+                {
+                    "STATE_NAME": "RUNNING",
+                    "ChemTreat_HCl_Level": 760,
+                    "P2_Selected": 1,
+                },
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 8.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 10.0,
+                    "action": {
+                        "type": "set_manual_valve",
+                        "process_id": "WT-P2",
+                        "chemical": "HCl",
+                        "open": True,
+                    },
+                },
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 10.0,
+                    "decision_type": "alert",
+                    "summary": "Observer saw Process 2 HCl drain activity.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                }
+            ],
+            "playbooks": {},
+        }
+    )
+
+    assert any(
+        decision.action == {
+            "type": "select_process",
+            "process_id": "WT-P2",
+            "active": False,
+        }
+        for decision in decisions
+    )
+    assert any("safety-guardrail" in decision.labels for decision in decisions)
+
+
+def test_defender_guardrail_escalates_raw_water_high_high_when_model_holds(
+    monkeypatch,
+) -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-hh-alarm")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda context: {
+            "summary": "High-high condition observed; monitor one more sample.",
+            "candidate_id": action_key({"type": "noop"}),
+            "decision_type": "note",
+            "diagnosis": "raw_water_alarm_condition",
+        },
+    )
+
+    decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 15.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 1245,
+                "UF_UFFT_Tank_Level": 430,
+                "Alarm_RW_Tank_HH": 1,
+                "RW_Pump_Sts": 1,
+                "RW_Tank_PR_Valve_Cmd": 1,
+                "RW_Tank_PR_Valve_Sts": 0,
+                "P2_Selected": 0,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 615},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1245},
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 15.0,
+                    "action": {
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 1250,
+                    },
+                }
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 15.0,
+                    "decision_type": "alert",
+                    "summary": "Observer saw abrupt RW high-high alarm.",
+                    "diagnosis": "raw_water_alarm_condition",
+                }
+            ],
+            "playbooks": {},
+        }
+    )
+
+    assert any(
+        decision.action == {"type": "hmi_estop", "process_id": "WT-P1"}
+        for decision in decisions
+    )
+    assert any("safety-guardrail" in decision.labels for decision in decisions)
+
+
+def test_defender_guardrail_does_not_repeat_same_action_after_containment(
+    monkeypatch,
+) -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-hh-alarm")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda context: {
+            "summary": "Stay cautious and monitor.",
+            "candidate_id": action_key({"type": "noop"}),
+            "decision_type": "note",
+            "diagnosis": "raw_water_alarm_condition",
+        },
+    )
+
+    first_decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 15.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 1245,
+                "Alarm_RW_Tank_HH": 1,
+                "RW_Pump_Sts": 1,
+                "RW_Tank_PR_Valve_Cmd": 1,
+                "RW_Tank_PR_Valve_Sts": 0,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 615},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1245},
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 15.0,
+                    "action": {
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 1250,
+                    },
+                }
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 15.0,
+                    "decision_type": "alert",
+                    "summary": "Observer saw abrupt RW high-high alarm.",
+                    "diagnosis": "raw_water_alarm_condition",
+                }
+            ],
+            "playbooks": {},
+        }
+    )
+
+    assert any(decision.action is not None for decision in first_decisions)
+
+    second_decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 18.0,
+            "observation": {
+                "STATE_NAME": "SHUTDOWN",
+                "RW_Tank_Level": 1238,
+                "Alarm_RW_Tank_HH": 1,
+                "RW_Pump_Sts": 0,
+                "RW_Tank_PR_Valve_Cmd": 0,
+                "RW_Tank_PR_Valve_Sts": 0,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 615},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1245},
+                {"STATE_NAME": "SHUTDOWN", "RW_Tank_Level": 1238},
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 15.0,
+                    "action": {
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 1250,
+                    },
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 15.0,
+                    "action": {"type": "hmi_estop", "process_id": "WT-P1"},
+                },
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 15.0,
+                    "decision_type": "alert",
+                    "summary": "Observer saw abrupt RW high-high alarm.",
+                    "diagnosis": "raw_water_alarm_condition",
+                }
+            ],
+            "playbooks": {},
+        }
+    )
+
+    assert not any(decision.action is not None for decision in second_decisions)
+
+
+def test_defender_model_action_is_suppressed_when_already_satisfied(monkeypatch) -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-hh-alarm")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda context: {
+            "summary": "Keep plant stopped.",
+            "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+            "decision_type": "action",
+            "diagnosis": "raw_water_alarm_condition",
+        },
+    )
+
+    decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 18.0,
+            "observation": {
+                "STATE_NAME": "SHUTDOWN",
+                "RW_Tank_Level": 1238,
+                "Alarm_RW_Tank_HH": 1,
+                "RW_Pump_Sts": 0,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 615},
+                {"STATE_NAME": "SHUTDOWN", "RW_Tank_Level": 1238},
+            ],
+            "executed_actions": [
+                {
+                    "role": "defender",
+                    "time_sec": 15.0,
+                    "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+                }
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert decisions == []
 
 
 def test_prompt_includes_operational_manual(tmp_path) -> None:

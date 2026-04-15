@@ -31,7 +31,9 @@ def write_markdown_summary(path: Path, bundle: dict[str, Any]) -> None:
     scenario = bundle["scenario"]
     metrics = bundle.get("metrics", {})
     observer_detection = metrics.get("observer_detection", {})
+    observer_recognition = metrics.get("observer_recognition", {})
     defender_detection = metrics.get("defender_detection", {})
+    defender_recognition = metrics.get("defender_recognition", {})
     defender_intervention = metrics.get("defender_intervention", {})
     lines = [
         f"# {scenario['scenario_id']}",
@@ -41,11 +43,16 @@ def write_markdown_summary(path: Path, bundle: dict[str, Any]) -> None:
         f"- Passed: `{bundle['passed']}`",
         f"- Samples: `{len(bundle.get('observations', []))}`",
         f"- Actions: `{len(bundle.get('executed_actions', []))}`",
-        f"- Alerts: `{len(bundle.get('alerts', []))}`",
+        f"- Blue-Team Alerts: `{metrics.get('blue_team_alert_count')}`",
+        f"- Planner Alerts: `{metrics.get('planner_alert_count')}`",
         f"- Blue-Team TTD: `{metrics.get('time_to_detection_sec')}`",
+        f"- Blue-Team TTR: `{metrics.get('time_to_recognition_sec')}`",
         f"- Observer TTD: `{observer_detection.get('time_to_detection_sec')}`",
+        f"- Observer TTR: `{observer_recognition.get('time_to_recognition_sec')}`",
         f"- Defender TTD: `{defender_detection.get('time_to_detection_sec')}`",
+        f"- Defender TTR: `{defender_recognition.get('time_to_recognition_sec')}`",
         f"- Defender TTM: `{defender_intervention.get('time_to_mitigation_sec')}`",
+        f"- Contained Before Violation: `{defender_intervention.get('contained_before_safety_violation')}`",
         f"- Blue-Team TPR: `{metrics.get('true_positive_rate')}`",
         f"- Blue-Team FPR: `{metrics.get('false_positive_rate')}`",
         f"- Safety Violations: `{metrics.get('safety_violation_count')}`",

@@ -9,54 +9,63 @@ agent-role swapping, metrics, reporting, and results storage into this repo.
 
 ## Current Status
 
-As of 2026-04-09, the attack-only agentic path has been verified end to end.
+As of 2026-04-15, the attack-only agentic defender refresh has been
+implemented and revalidated end to end.
 
 - Repo/package naming is intentional:
   the git repo is `ics-agent/`, while the Python package inside it is
   `ics_agent/`. There is no separate required `ics-agnt` package in the
   runtime path.
-- Verified attack-only agentic artifacts live under:
-  `../Results/full_matrix/<experiment_id>/agentic_agents/attack/`
-- Final verified attack summary:
-  `18/18` attack scenarios completed, `18/18` passed, observer detection fired
-  in `18/18`, defender-side detection fired in `15/18`, defender interventions
-  executed in `3/18`, and aggregate metrics were written to
-  `../Results/full_matrix/<experiment_id>/attack_metrics_summary.json`
+- Fresh verified attack-only agentic artifacts live under:
+  `../Results/full_matrix/20260415T083154-133ee0fb/agentic_agents/attack/`
+- Fresh verified attack summary:
+  `18/18` attack scenarios completed, `10/18` passed, blue-team detection
+  fired in `16/18`, defender-side detection fired in `14/18`, defender
+  interventions executed in `14/18`, containment landed before a safety
+  violation in `14/18`, `8/18` scenarios recovered, and aggregate metrics were
+  written to
+  `../Results/full_matrix/20260415T083154-133ee0fb/attack_metrics_summary.json`
 - Key fixes applied during verification:
-  reusable role-specific operational manuals are loaded before runs, blue-team
-  live context now includes richer telemetry and short-horizon relationships,
-  defender actions are no longer deferred behind pending attacker playbook
-  steps, structured output parsing is hardened to reduce playbook fallbacks,
-  observer and defender metrics are split cleanly, and redundant scheduled
-  playbook actions are skipped once the plant is already in the requested state
+  live observer output is now handed to the defender in the same loop cycle,
+  defender reasoning cooldown is bypassed on materially new evidence,
+  persistent incident memory tracks `suspected -> confirmed -> containing ->
+  stabilized`, defender action candidates are contextualized around telemetry
+  and alarms, Process 2 and raw-water doctrine is stronger, a narrow bounded
+  last-mile guardrail can issue obvious containment without replacing the
+  Qwen/LangGraph path, and observer/defender/intervention metrics are split
+  cleanly
 
 ## Current Performance Note
 
-Using the latest checked attack batches in this workspace, the current
-tradeoff is:
+Using the fresh 2026-04-15 attack-only `agentic_agents` batch and the current
+stored scripted baseline, the current tradeoff is:
 
-- `agentic_agents` is now stronger on attack detection coverage and slightly
-  faster on average blue-team time-to-detection
-- `scripted_baseline` is still stronger on defender intervention,
-  containment, and overall decision reliability
+- `agentic_agents` is now stronger on blue-team detection coverage, defender
+  coverage, and recovery count, and it reacts materially earlier on most
+  detected scenarios
+- `scripted_baseline` is still stronger on overall safety control and alert
+  discipline, especially on raw-water alarm scenarios
 
 Current attack-batch snapshot:
 
-- `agentic_agents`: `18/18` detected, `3/18` mitigated, average detection time
-  about `0.44s`, average safety violations `3.61`, average decision
-  correctness `0.56`
-- `scripted_baseline`: `13/18` detected, `13/18` mitigated, average detection
-  time about `0.50s`, average safety violations `2.78`, average decision
-  correctness `0.86`
+- `agentic_agents`: `16/18` detected, `14/18` defender-detected, `14/18`
+  mitigated, `14/18` contained before a safety violation, `8/18` recoveries,
+  average detection time about `0.38s`, average mitigation time about `0.61s`,
+  `105` total safety violations, and `130` blue-team alerts
+- `scripted_baseline`: `13/18` detected, `13/18` defender-detected, `13/18`
+  mitigated, `6/18` recoveries, average detection time about `0.50s`, average
+  mitigation time about `0.50s`, `50` total safety violations, and `26`
+  blue-team alerts
 
-So, as of now, the agentic stack is much better than before at noticing attacks
-quickly, but the scripted defender still performs better as the practical
-blue-team baseline when the goal is to intervene early and keep the plant in a
-safer state.
+So, as of now, the refreshed agentic defender is much better than the earlier
+agentic batches at noticing attacks and taking action, but it is still not
+better than the scripted defender overall when the goal is to keep the plant in
+the safest state.
 
-This comparison is useful but not perfectly apples-to-apples: it is based on
-the latest verified agentic batch and the current stored scripted baseline
-batch, not a fresh same-code rerun of both conditions.
+This comparison is useful but not perfectly apples-to-apples: the baseline is a
+stored 2026-04-09 batch rather than a fresh same-code rerun, and attack-suite
+`passed` is not a pure blue-team score because successful containment can still
+leave attack-effect checks such as `must_change` or `ever_nonzero` unsatisfied.
 
 ## What Is In Scope
 
@@ -151,18 +160,32 @@ prompts.
 
 The attack-only `agentic_agents` path was reworked in these areas:
 
+- blue-team live context now rebuilds between observer and defender passes, so
+  same-cycle observer alerts reach the defender immediately
 - blue-team context construction now exposes active alarms, commands, state
-  relationships, short-horizon trends, and derived risk flags
-- defender and observer now reason on post-action state, so they can react to
-  the freshest attacker effects
-- defender intervention is no longer blocked simply because attacker playbook
-  steps remain pending
+  relationships, short-horizon trends, recent alerts, incident state, and
+  derived risk flags
+- defender reasoning cooldown is now event-driven and is bypassed on new
+  observer alerts, attacker actions, active alarms, worsening risk flags, and
+  repeated suspicious Process 2 evidence
+- defender incident state now persists across turns and escalates through
+  `suspected -> confirmed -> containing -> stabilized`
+- defender candidate actions are now contextual and evidence-linked instead of
+  being limited to generic stop / estop / deselect suggestions
+- a narrow bounded defender guardrail can issue last-mile containment when the
+  agentic path clearly recognizes a dangerous incident but fails to emit the
+  obvious safety action; the primary decision path remains Qwen + LangChain /
+  LangGraph
+- defender prompt and manual doctrine now make Process 2 deselection,
+  controlled stop, and estop expectations more explicit without leaking hidden
+  scenario ground truth
 - structured-output parsing accepts stricter JSON while still recovering from
   common fenced, YAML-like, or `<think>`-wrapped backend responses
 - diagnoses are normalized into short labels so observer and defender metrics do
   not get polluted by free-form sentences
-- attack metrics now separate observer detection, defender detection, and
-  defender intervention instead of blending them into one blue-team score
+- attack metrics now separate observer recognition/detection, defender
+  recognition/detection, blue-team alerts, planner alerts, and defender
+  intervention timing / containment instead of blending them into one score
 
 Implemented role families:
 
@@ -210,11 +233,31 @@ Run the verified attack-only all-agentic experiment:
 QWEN_MODEL_PATH=./models/local_models/qwen3.5-9b .venv/bin/python -m ics_agent.cli run experiments/attack_full_agentic.yaml
 ```
 
-The latest verified attack-only agentic output is:
+The latest verified attack-only agentic output is the 2026-04-15 run
+`20260415T083154-133ee0fb`:
 
 ```text
-../Results/full_matrix/<experiment_id>/agentic_agents/attack/
+../Results/full_matrix/20260415T083154-133ee0fb/agentic_agents/attack/
 ```
+
+Compared with the most recent matching scripted baseline run
+`20260409T080533-2789bcab`, this fresh agentic attack-only run improved pass
+coverage, blue-team detection coverage, defender detection coverage, defender
+action coverage, and recovery outcomes, but it is still not better than the
+scripted baseline overall because safety performance regressed. Fresh aggregate
+results were `10/18` passed, `16/18` detected, `14/18` defender-detected,
+`14/18` mitigated, `14/18` contained before a safety violation, `8/18`
+recoveries, and `105` total safety violations. The scripted baseline was
+`7/18` passed, `13/18` detected, `13/18` defender-detected, `13/18`
+mitigated, `6/18` recoveries, and `50` total safety violations.
+
+Remaining caveats: pass count on the attack suite is partially driven by
+attack-effect checks, so early containment can still leave a run marked
+`passed: false`; `wt-attack-p2-hcl-drain` still produces excessive alert
+volume; `wt-attack-p2-select-chatter` still repeats Process 2 deselection; and
+raw-water scenarios `wt-attack-sensor-rw-cascade-low-hh` and
+`wt-attack-sensor-rw-hh-alarm` still accumulate `53` and `52` safety
+violations before shutdown.
 
 Run mixed observer / planner smoke combinations:
 

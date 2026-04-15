@@ -387,6 +387,107 @@ class CoordinatedFakeAgent:
         return []
 
 
+class HandoffFakeAgent:
+    def __init__(self, role: str) -> None:
+        self.role = role
+        self.mode = "online"
+        self.profile_name = f"handoff_{role}"
+        self._emitted = False
+
+    def reset(self, scenario) -> None:
+        self._emitted = False
+
+    def step(self, context):
+        from ics_agent.types import RoleDecision
+
+        if self.role == "operator":
+            if not self._emitted and float(context["time_sec"]) >= 5.0:
+                self._emitted = True
+                return [
+                    RoleDecision(
+                        role="operator",
+                        agent_name=self.profile_name,
+                        decision_type="action",
+                        summary="Start the plant.",
+                        time_sec=float(context["time_sec"]),
+                        timestamp_utc="2026-04-09T00:00:00Z",
+                        action={"type": "hmi_start", "process_id": "WT-P1"},
+                        labels=["operator"],
+                    )
+                ]
+            return []
+
+        if self.role == "attacker":
+            if not self._emitted and float(context["time_sec"]) >= 8.0:
+                self._emitted = True
+                return [
+                    RoleDecision(
+                        role="attacker",
+                        agent_name=self.profile_name,
+                        decision_type="action",
+                        summary="Enable process 2.",
+                        time_sec=float(context["time_sec"]),
+                        timestamp_utc="2026-04-09T00:00:00Z",
+                        action={
+                            "type": "select_process",
+                            "process_id": "WT-P2",
+                            "active": True,
+                        },
+                        labels=["attacker"],
+                    )
+                ]
+            return []
+
+        if self.role == "observer":
+            if context["observation"].get("P2_Selected") == 1 and not self._emitted:
+                self._emitted = True
+                return [
+                    RoleDecision(
+                        role="observer",
+                        agent_name=self.profile_name,
+                        decision_type="alert",
+                        summary="Observer saw unexpected Process 2 selection.",
+                        time_sec=float(context["time_sec"]),
+                        timestamp_utc="2026-04-09T00:00:00Z",
+                        diagnosis="unauthorized_chemical_dosing",
+                        labels=["observer"],
+                    )
+                ]
+            return []
+
+        if self.role == "defender":
+            if self._emitted:
+                return []
+            observer_alert_present = any(
+                item.get("role") == "observer" for item in context.get("alerts", [])
+            )
+            if context["observation"].get("P2_Selected") == 1 and observer_alert_present:
+                self._emitted = True
+                return [
+                    RoleDecision(
+                        role="defender",
+                        agent_name=self.profile_name,
+                        decision_type="action",
+                        summary="Deselect Process 2 from observer evidence.",
+                        time_sec=float(context["time_sec"]),
+                        timestamp_utc="2026-04-09T00:00:00Z",
+                        action={
+                            "type": "select_process",
+                            "process_id": "WT-P2",
+                            "active": False,
+                        },
+                        diagnosis="unauthorized_chemical_dosing",
+                        labels=["defender"],
+                    )
+                ]
+            return []
+
+        return []
+
+    def finalize(self, context):
+        return []
+
+
 def test_orchestrator_allows_defender_reaction_before_attacker_plan_finishes(
     tmp_path, monkeypatch
 ) -> None:
@@ -446,3 +547,58 @@ def test_orchestrator_allows_defender_reaction_before_attacker_plan_finishes(
     assert defender_action["action"]["type"] == "select_process"
     assert len(attacker_actions) == 1
     assert float(defender_action["time_sec"]) == float(attacker_actions[0]["time_sec"])
+
+
+def test_orchestrator_rebuilds_context_between_observer_and_defender(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "attack_handoff.yaml"
+    config = {
+        "experiment_name": "pytest_attack_handoff",
+        "scenario_selectors": ["attack/wt-attack-p2-hcl-drain"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "conditions": [
+            {
+                "name": "agentic_agents",
+                "profiles": {
+                    "attacker": "agentic_attacker",
+                    "defender": "agentic_defender",
+                    "observer": "agentic_observer",
+                    "planner": "agentic_planner",
+                    "operator": "agentic_operator",
+                    "offline_analysis": "agentic_offline_analyst",
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+
+    orchestrator = ExperimentOrchestrator()
+    monkeypatch.setattr(
+        orchestrator,
+        "_create_agent",
+        lambda profile_id: HandoffFakeAgent(
+            orchestrator.agent_profiles[profile_id]["role"]
+        ),
+    )
+
+    summary = orchestrator.run(config_path)
+
+    assert summary["status"] == "completed"
+    action_files = list((tmp_path / "Results").rglob("actions.json"))
+    actions = json.loads(action_files[0].read_text())
+    defender_action = next(item for item in actions if item["role"] == "defender")
+    attacker_action = next(item for item in actions if item["role"] == "attacker")
+    alert_files = list((tmp_path / "Results").rglob("alerts.json"))
+    alerts = json.loads(alert_files[0].read_text())
+
+    assert any(item["role"] == "observer" for item in alerts)
+    assert defender_action["action"]["type"] == "select_process"
+    assert float(defender_action["time_sec"]) == float(attacker_action["time_sec"])

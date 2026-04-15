@@ -22,6 +22,8 @@ ROLE_ORDER = ["planner", "observer", "defender", "operator", "attacker"]
 PLANNING_ROLES = ["planner"]
 ACTION_ROLES = ["operator", "attacker"]
 MONITORING_ROLES = ["observer", "defender"]
+OBSERVER_ROLES = ["observer"]
+DEFENDER_ROLES = ["defender"]
 
 
 def canonical_action_name(action: dict[str, Any] | str) -> str:
@@ -474,12 +476,21 @@ class ExperimentOrchestrator:
                 "time_to_detection_sec": run.get("metrics", {}).get(
                     "time_to_detection_sec"
                 ),
+                "time_to_recognition_sec": run.get("metrics", {}).get(
+                    "time_to_recognition_sec"
+                ),
                 "observer_time_to_detection_sec": run.get("metrics", {})
                 .get("observer_detection", {})
                 .get("time_to_detection_sec"),
+                "observer_time_to_recognition_sec": run.get("metrics", {})
+                .get("observer_recognition", {})
+                .get("time_to_recognition_sec"),
                 "defender_time_to_detection_sec": run.get("metrics", {})
                 .get("defender_detection", {})
                 .get("time_to_detection_sec"),
+                "defender_time_to_recognition_sec": run.get("metrics", {})
+                .get("defender_recognition", {})
+                .get("time_to_recognition_sec"),
                 "time_to_mitigation_sec": run.get("metrics", {}).get(
                     "time_to_mitigation_sec"
                 ),
@@ -490,6 +501,12 @@ class ExperimentOrchestrator:
                 "defender_detection_rate": run.get("metrics", {})
                 .get("defender_detection", {})
                 .get("detection_rate"),
+                "observer_recognition_rate": run.get("metrics", {})
+                .get("observer_recognition", {})
+                .get("recognition_rate"),
+                "defender_recognition_rate": run.get("metrics", {})
+                .get("defender_recognition", {})
+                .get("recognition_rate"),
                 "false_positive_rate": run.get("metrics", {}).get(
                     "false_positive_rate"
                 ),
@@ -505,17 +522,32 @@ class ExperimentOrchestrator:
                 "false_positive_count": run.get("metrics", {}).get(
                     "false_positive_count"
                 ),
+                "blue_team_alert_count": run.get("metrics", {}).get(
+                    "blue_team_alert_count"
+                ),
+                "planner_alert_count": run.get("metrics", {}).get(
+                    "planner_alert_count"
+                ),
                 "decision_correctness": run.get("metrics", {}).get(
                     "decision_correctness"
                 ),
                 "defender_action_count": run.get("metrics", {}).get(
                     "defender_action_count"
                 ),
+                "time_to_first_defender_action_sec": run.get("metrics", {})
+                .get("defender_intervention", {})
+                .get("time_to_first_action_sec"),
                 "mitigation_action_count": run.get("metrics", {})
                 .get("defender_intervention", {})
                 .get("mitigation_action_count"),
+                "contained_before_safety_violation": run.get("metrics", {})
+                .get("defender_intervention", {})
+                .get("contained_before_safety_violation"),
                 "safety_violation_count": run.get("metrics", {}).get(
                     "safety_violation_count"
+                ),
+                "recovery_success_rate": run.get("metrics", {}).get(
+                    "recovery_success_rate"
                 ),
             }
             for run in attack_runs
@@ -540,6 +572,11 @@ class ExperimentOrchestrator:
             for run in completed
             if run.get("metrics", {}).get("time_to_detection_sec") is not None
         ]
+        recognized = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("time_to_recognition_sec") is not None
+        ]
         observer_detected = [
             run
             for run in completed
@@ -561,28 +598,58 @@ class ExperimentOrchestrator:
             for run in completed
             if run.get("metrics", {}).get("time_to_mitigation_sec") is not None
         ]
+        defender_acted = [
+            run
+            for run in completed
+            if (run.get("metrics", {}).get("defender_action_count") or 0) > 0
+        ]
+        timely_contained = [
+            run
+            for run in completed
+            if run.get("metrics", {})
+            .get("defender_intervention", {})
+            .get("contained_before_safety_violation")
+        ]
 
         return {
             "attack_run_count": len(attack_runs),
             "completed_attack_run_count": len(completed),
             "failed_attack_run_count": len(attack_runs) - len(completed),
             "detected_attack_run_count": len(detected),
+            "recognized_attack_run_count": len(recognized),
             "observer_detected_attack_run_count": len(observer_detected),
             "defender_detected_attack_run_count": len(defender_detected),
+            "defender_acted_attack_run_count": len(defender_acted),
             "mitigated_attack_run_count": len(mitigated),
+            "contained_before_safety_violation_run_count": len(timely_contained),
             "time_to_detection_sec_avg": average("time_to_detection_sec"),
+            "time_to_recognition_sec_avg": average("time_to_recognition_sec"),
             "observer_time_to_detection_sec_avg": average(
                 "observer_time_to_detection_sec"
+            ),
+            "observer_time_to_recognition_sec_avg": average(
+                "observer_time_to_recognition_sec"
             ),
             "defender_time_to_detection_sec_avg": average(
                 "defender_time_to_detection_sec"
             ),
+            "defender_time_to_recognition_sec_avg": average(
+                "defender_time_to_recognition_sec"
+            ),
             "time_to_mitigation_sec_avg": average("time_to_mitigation_sec"),
+            "time_to_first_defender_action_sec_avg": average(
+                "time_to_first_defender_action_sec"
+            ),
             "false_positive_rate_avg": average("false_positive_rate"),
             "true_positive_rate_avg": average("true_positive_rate"),
             "observer_detection_rate_avg": average("observer_detection_rate"),
             "defender_detection_rate_avg": average("defender_detection_rate"),
+            "observer_recognition_rate_avg": average("observer_recognition_rate"),
+            "defender_recognition_rate_avg": average("defender_recognition_rate"),
+            "blue_team_alert_count_avg": average("blue_team_alert_count"),
+            "planner_alert_count_avg": average("planner_alert_count"),
             "safety_violation_count_avg": average("safety_violation_count"),
+            "recovery_success_rate_avg": average("recovery_success_rate"),
             "decision_correctness_avg": average("decision_correctness"),
             "per_run_metrics": per_run_metrics,
         }
@@ -658,7 +725,25 @@ class ExperimentOrchestrator:
                     last_state=last_state,
                 )
 
-            monitor_context = self._live_context(
+            observer_context = self._live_context(
+                scenario=scenario,
+                bundle=bundle,
+                planned_events=planned_events,
+                observation=bundle.observations[-1],
+                elapsed=elapsed,
+            )
+            self._execute_online_roles(
+                roles=OBSERVER_ROLES,
+                agents=agents,
+                context=observer_context,
+                bundle=bundle,
+                scenario=scenario,
+                condition=condition,
+                env=env,
+                elapsed=elapsed,
+            )
+
+            defender_context = self._live_context(
                 scenario=scenario,
                 bundle=bundle,
                 planned_events=planned_events,
@@ -666,9 +751,9 @@ class ExperimentOrchestrator:
                 elapsed=elapsed,
             )
             defense_taken = self._execute_online_roles(
-                roles=MONITORING_ROLES,
+                roles=DEFENDER_ROLES,
                 agents=agents,
-                context=monitor_context,
+                context=defender_context,
                 bundle=bundle,
                 scenario=scenario,
                 condition=condition,
