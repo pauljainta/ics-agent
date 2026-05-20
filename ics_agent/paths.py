@@ -6,8 +6,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
-REPO_CONFIG_ROOT = REPO_ROOT / "configs"
-RUNTIME_DEFAULTS_ROOT = REPO_ROOT / "runtime_defaults"
 DEFAULT_ARTIFACT_ROOT = WORKSPACE_ROOT / "Artifact"
 SPHERE_WT_OPENPLC_DIR = (
     WORKSPACE_ROOT
@@ -42,35 +40,20 @@ def results_root() -> Path:
     return artifact_root() / "Results"
 
 
-def runtime_default_config_root() -> Path:
-    return RUNTIME_DEFAULTS_ROOT / "Configs"
-
-
-def runtime_default_experiment_root() -> Path:
-    return RUNTIME_DEFAULTS_ROOT / "Experiments"
-
-
-def runtime_default_scenario_root() -> Path:
-    return RUNTIME_DEFAULTS_ROOT / "Scenarios"
-
-
 def config_roots() -> tuple[Path, ...]:
-    return (artifact_config_root(), runtime_default_config_root())
+    return (artifact_config_root(),)
 
 
 def experiment_roots() -> tuple[Path, ...]:
-    return (artifact_experiment_root(), runtime_default_experiment_root())
+    return (artifact_experiment_root(),)
 
 
 def scenario_roots() -> tuple[Path, ...]:
-    return (artifact_scenario_root(), runtime_default_scenario_root())
+    return (artifact_scenario_root(),)
 
 
 def active_scenario_config_root() -> Path:
-    for root in scenario_roots():
-        if root.exists() and any(root.rglob("*.yaml")):
-            return root
-    return runtime_default_scenario_root()
+    return artifact_scenario_root()
 
 
 CONFIG_ROOT = artifact_config_root()

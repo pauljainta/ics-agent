@@ -24,6 +24,39 @@ def _read_value(observation: dict[str, Any], key: str) -> Any:
     return None
 
 
+def _normalize_action(action: Any) -> dict[str, Any]:
+    if isinstance(action, dict):
+        return action
+    if isinstance(action, str):
+        return {"type": action}
+    return {}
+
+
+def _action_matches(actual: Any, expected: Any) -> bool:
+    actual_payload = _normalize_action(actual)
+    expected_payload = _normalize_action(expected)
+    if not actual_payload or not expected_payload:
+        return False
+    return all(actual_payload.get(key) == value for key, value in expected_payload.items())
+
+
+def _has_planned_role_action(spec: Any, context: dict[str, Any]) -> bool:
+    if not isinstance(spec, dict):
+        return False
+    role = str(spec.get("role", "")).strip()
+    expected_action = spec.get("action")
+    if not role or expected_action is None:
+        return False
+
+    planned_events = context.get("planned_events") or context.get("playbooks") or {}
+    role_plan = planned_events.get(role, [])
+    return any(
+        _action_matches(item.get("action"), expected_action)
+        for item in role_plan
+        if isinstance(item, dict)
+    )
+
+
 def _match_clause(clause: dict[str, Any], context: dict[str, Any]) -> bool:
     observation = context.get("observation", {})
     field = clause.get("field")
@@ -42,6 +75,12 @@ def _match_clause(clause: dict[str, Any], context: dict[str, Any]) -> bool:
     if "role_alerted" in clause:
         target = clause["role_alerted"]
         return any(item.get("role") == target for item in context.get("alerts", []))
+    if "planned_role_action" in clause:
+        return _has_planned_role_action(clause["planned_role_action"], context)
+    if "planned_role_action_absent" in clause:
+        return not _has_planned_role_action(
+            clause["planned_role_action_absent"], context
+        )
     if "time_after_sec" in clause:
         return float(context["time_sec"]) >= float(clause["time_after_sec"])
     return False

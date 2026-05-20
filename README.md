@@ -89,9 +89,6 @@ The repo now covers these AGENTS.md requirements in a reusable structure:
   metrics, reporting, and role implementations.
 - `configs/prompts/`
   Agentic prompt templates kept in files for reproducibility.
-- `runtime_defaults/`
-  Repo-tracked seed YAMLs used when the workspace `Artifact/` tree has not yet
-  been customized.
 - `../Artifact/Configs/`
   Live runtime config files such as `agent_profiles.yaml` and
   `scenario_catalog.yaml`.
@@ -214,8 +211,7 @@ List scenarios:
 python3 -m ics_agent.cli list-scenarios
 ```
 
-Experiment names are resolved from `../Artifact/Experiments/` first, with
-`runtime_defaults/Experiments/` kept only as repo-side seed fallback.
+Experiment names are resolved from `../Artifact/Experiments/`.
 
 Run the core smoke matrix:
 

@@ -5,6 +5,7 @@ import json
 
 import yaml
 
+from ics_agent.agents import ScriptedRoleAgent
 from ics_agent.orchestrator import ExperimentOrchestrator
 
 
@@ -602,3 +603,80 @@ def test_orchestrator_rebuilds_context_between_observer_and_defender(
     assert any(item["role"] == "observer" for item in alerts)
     assert defender_action["action"]["type"] == "select_process"
     assert float(defender_action["time_sec"]) == float(attacker_action["time_sec"])
+
+
+def test_scripted_blue_team_ignores_planned_nominal_p2_selection() -> None:
+    orchestrator = ExperimentOrchestrator()
+    scenario = orchestrator.catalog.get("normal/wt-p2-multi-dosing")
+    planned_events = orchestrator._build_plan(scenario)
+
+    observer = ScriptedRoleAgent(
+        "scripted_observer", orchestrator.agent_profiles["scripted_observer"]
+    )
+    defender = ScriptedRoleAgent(
+        "scripted_defender", orchestrator.agent_profiles["scripted_defender"]
+    )
+    observer.reset(scenario)
+    defender.reset(scenario)
+
+    context = {
+        "scenario": scenario,
+        "time_sec": 8.0,
+        "observation": {
+            "STATE_NAME": "RUNNING",
+            "P2_Selected": 1,
+        },
+        "observations": [],
+        "alerts": [],
+        "decisions": [],
+        "executed_actions": [],
+        "planned_events": planned_events,
+        "playbooks": planned_events,
+    }
+
+    assert observer.step(context) == []
+    assert defender.step(context) == []
+
+
+def test_scripted_blue_team_flags_unplanned_p2_selection() -> None:
+    orchestrator = ExperimentOrchestrator()
+    scenario = orchestrator.catalog.get("attack/wt-attack-p2-hcl-drain")
+    planned_events = orchestrator._build_plan(scenario)
+
+    observer = ScriptedRoleAgent(
+        "scripted_observer", orchestrator.agent_profiles["scripted_observer"]
+    )
+    defender = ScriptedRoleAgent(
+        "scripted_defender", orchestrator.agent_profiles["scripted_defender"]
+    )
+    observer.reset(scenario)
+    defender.reset(scenario)
+
+    context = {
+        "scenario": scenario,
+        "time_sec": 8.0,
+        "observation": {
+            "STATE_NAME": "RUNNING",
+            "P2_Selected": 1,
+        },
+        "observations": [],
+        "alerts": [],
+        "decisions": [],
+        "executed_actions": [],
+        "planned_events": planned_events,
+        "playbooks": planned_events,
+    }
+
+    observer_decisions = observer.step(context)
+    defender_decisions = defender.step(context)
+
+    assert any(item.decision_type == "alert" for item in observer_decisions)
+    assert any(
+        item.decision_type == "action"
+        and item.action == {
+            "process_id": "WT-P2",
+            "type": "select_process",
+            "active": False,
+        }
+        for item in defender_decisions
+    )

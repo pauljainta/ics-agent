@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .paths import REPO_ROOT, config_roots, experiment_roots, scenario_roots
+from .paths import REPO_ROOT, artifact_config_root, artifact_experiment_root, artifact_scenario_root
 from .utils import load_yaml
 
 
@@ -38,11 +38,11 @@ def resolve_runtime_config_path(value: str | Path) -> Path:
     search_plan: list[tuple[Path, tuple[Path, ...]]] = []
 
     for prefix, roots in (
-        (("configs", "experiments"), experiment_roots()),
-        (("experiments",), experiment_roots()),
-        (("configs", "scenarios"), scenario_roots()),
-        (("scenarios",), scenario_roots()),
-        (("configs",), config_roots()),
+        (("configs", "experiments"), (artifact_experiment_root(),)),
+        (("experiments",), (artifact_experiment_root(),)),
+        (("configs", "scenarios"), (artifact_scenario_root(),)),
+        (("scenarios",), (artifact_scenario_root(),)),
+        (("configs",), (artifact_config_root(),)),
     ):
         stripped = _strip_prefix(parts, prefix)
         if stripped is not None:
@@ -51,9 +51,9 @@ def resolve_runtime_config_path(value: str | Path) -> Path:
 
     if not search_plan:
         search_plan = [
-            (path, config_roots()),
-            (path, experiment_roots()),
-            (path, scenario_roots()),
+            (path, (artifact_config_root(),)),
+            (path, (artifact_experiment_root(),)),
+            (path, (artifact_scenario_root(),)),
         ]
 
     first_candidate: Path | None = None
@@ -67,7 +67,10 @@ def resolve_runtime_config_path(value: str | Path) -> Path:
 
     if first_candidate is None:
         raise ConfigError(f"unable to resolve runtime config path: {value}")
-    return first_candidate
+    raise ConfigError(
+        f"runtime config not found for `{value}` under Artifact roots: "
+        f"{artifact_config_root()}, {artifact_experiment_root()}, {artifact_scenario_root()}"
+    )
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
