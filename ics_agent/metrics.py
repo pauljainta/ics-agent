@@ -172,6 +172,7 @@ def _count_alerts(
     for alert in alerts:
         time_sec = float(alert.get("time_sec", 0.0))
         if attack_start is None:
+            false_positive_count += 1
             continue
         if time_sec >= float(attack_start):
             true_positive_count += 1
@@ -273,6 +274,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             "mitigation_actions", ["hmi_stop", "hmi_estop", "select_process"]
         )
     )
+    attacker_actions = [item for item in actions if item.get("role") == "attacker"]
     defender_actions = [item for item in actions if item.get("role") == "defender"]
     mitigation_actions = [
         item
@@ -347,6 +349,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     )
     operator_workload = sum(1 for item in decisions if item.get("role") == "operator")
     recovery_success_rate = 1.0 if bundle.get("passed") and safety_total == 0 else 0.0
+    first_false_alert_time = (
+        None if attack_start is not None else _first_time(blue_team_alerts, lambda _item: True)
+    )
+    first_false_intervention_time = (
+        None if attack_start is not None else _first_time(defender_actions, lambda _item: True)
+    )
 
     observer_detection_rate = (
         None if attack_start is None else float(observer_detection_time is not None)
@@ -367,6 +375,41 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             or mitigation_time <= float(first_safety_violation_time)
         )
     )
+    attacker_metrics = {
+        "action_count": len(attacker_actions),
+        "time_to_first_action_sec": _relative_time(
+            _first_time(attacker_actions, lambda _item: True),
+            attack_start=attack_start,
+        ),
+        "time_to_impact_sec": _relative_time(
+            first_safety_violation_time,
+            attack_start=attack_start,
+        ),
+        "execution_success_rate": (
+            None if attack_start is None else float(bool(bundle.get("passed")))
+        ),
+        "caused_safety_violation": (
+            None if attack_start is None else float(safety_total > 0)
+        ),
+        "undetected_impact": (
+            None
+            if attack_start is None
+            else float(safety_total > 0 and detection_time is None)
+        ),
+    }
+    nominal_metrics = {
+        "false_positive_episode": (
+            None if attack_start is not None else float(total_alerts > 0)
+        ),
+        "false_intervention_episode": (
+            None if attack_start is not None else float(len(defender_actions) > 0)
+        ),
+        "safety_violation_episode": (
+            None if attack_start is not None else float(safety_total > 0)
+        ),
+        "time_to_first_false_alert_sec": first_false_alert_time,
+        "time_to_first_false_intervention_sec": first_false_intervention_time,
+    }
 
     observer_metrics = {
         "time_to_detection_sec": _relative_time(
@@ -448,8 +491,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "true_positive_rate": (
             None if attack_start is None else float(detection_time is not None)
         ),
-        "false_negative_rate": float(false_negative_count),
-        "recognition_false_negative_rate": float(recognition_false_negative_count),
+        "false_negative_rate": (
+            None if attack_start is None else float(false_negative_count)
+        ),
+        "recognition_false_negative_rate": (
+            None if attack_start is None else float(recognition_false_negative_count)
+        ),
         "safety_violation_count": safety_total,
         "safety_violations_by_field": safety_by_field,
         "recovery_success_rate": recovery_success_rate,
@@ -463,7 +510,10 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "alert_count": total_alerts,
         "blue_team_alert_count": total_alerts,
         "planner_alert_count": len(planner_alerts),
+        "attacker_action_count": len(attacker_actions),
         "defender_action_count": len(defender_actions),
+        "attacker": attacker_metrics,
+        "nominal": nominal_metrics,
         "observer_detection": observer_metrics,
         "observer_recognition": observer_recognition_metrics,
         "defender_detection": defender_detection_metrics,

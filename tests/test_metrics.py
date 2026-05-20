@@ -187,3 +187,64 @@ def test_compute_metrics_excludes_planner_alerts_from_blue_team_alert_counts() -
     assert metrics["blue_team_alert_count"] == 1
     assert metrics["planner_alert_count"] == 1
     assert metrics["observer_detection"]["alert_count"] == 1
+
+
+def test_compute_metrics_treats_normal_run_alerts_as_false_positives() -> None:
+    bundle = {
+        "observations": [{"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 5.0}],
+        "decisions": [
+            {
+                "role": "defender",
+                "time_sec": 5.0,
+                "decision_type": "alert",
+                "diagnosis": "spurious_alarm",
+            }
+        ],
+        "alerts": [{"role": "defender", "time_sec": 5.0}],
+        "executed_actions": [],
+        "passed": True,
+    }
+    scenario = {
+        "metadata": {
+            "ground_truth": {"incident_type": "nominal"},
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        }
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["true_positive_rate"] is None
+    assert metrics["false_negative_rate"] is None
+    assert metrics["false_positive_count"] == 1
+    assert metrics["false_positive_rate"] == 1.0
+    assert metrics["nominal"]["false_positive_episode"] == 1.0
+    assert metrics["nominal"]["time_to_first_false_alert_sec"] == 5.0
+
+
+def test_compute_metrics_reports_attacker_scoring_fields() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 6.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1300, "elapsed_sec": 9.0},
+        ],
+        "decisions": [],
+        "alerts": [],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 7.0, "action": {"type": "set_sensor"}},
+        ],
+        "passed": True,
+    }
+    scenario = {
+        "metadata": {
+            "ground_truth": {"incident_start_time_sec": 7.0},
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        }
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["attacker_action_count"] == 1
+    assert metrics["attacker"]["action_count"] == 1
+    assert metrics["attacker"]["execution_success_rate"] == 1.0
+    assert metrics["attacker"]["caused_safety_violation"] == 1.0
+    assert metrics["attacker"]["time_to_impact_sec"] == 2.0

@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .agents import AgenticRoleAgent, ScriptedRoleAgent
+from .agents import AgenticRoleAgent, RuleBasedRoleAgent, ScriptedRoleAgent
 from .config import ConfigError, load_config, require_fields, resolve_repo_path
 from .environment import EnvironmentError, OpenPLCEnvironment
 from .knowledge import validate_manual_paths
@@ -175,12 +175,22 @@ class ExperimentOrchestrator:
                     if bundle["summary"]["status"] != "completed":
                         condition_summary["status"] = "failed"
                         suite_summary["status"] = "failed"
+            condition_summary["nominal_metrics"] = self._aggregate_nominal_metrics(
+                condition_summary["runs"]
+            )
             condition_summary["attack_metrics"] = self._aggregate_attack_metrics(
                 condition_summary["runs"]
             )
             write_json(condition_root / "condition_summary.json", condition_summary)
             suite_summary["conditions"].append(condition_summary)
 
+        suite_summary["nominal_metrics"] = self._aggregate_nominal_metrics(
+            [
+                run
+                for condition in suite_summary["conditions"]
+                for run in condition.get("runs", [])
+            ]
+        )
         suite_summary["attack_metrics"] = self._aggregate_attack_metrics(
             [
                 run
@@ -192,6 +202,10 @@ class ExperimentOrchestrator:
         write_json(
             experiment_root / "attack_metrics_summary.json",
             suite_summary["attack_metrics"],
+        )
+        write_json(
+            experiment_root / "nominal_metrics_summary.json",
+            suite_summary["nominal_metrics"],
         )
         return suite_summary
 
@@ -268,6 +282,8 @@ class ExperimentOrchestrator:
         family = str(profile.get("family", "scripted"))
         if family == "agentic":
             return AgenticRoleAgent(profile_id, profile)
+        if family == "rule_based":
+            return RuleBasedRoleAgent(profile_id, profile)
         return ScriptedRoleAgent(profile_id, profile)
 
     def _build_plan(
@@ -502,6 +518,18 @@ class ExperimentOrchestrator:
                 "time_to_mitigation_sec": run.get("metrics", {}).get(
                     "time_to_mitigation_sec"
                 ),
+                "attacker_action_count": run.get("metrics", {}).get(
+                    "attacker_action_count"
+                ),
+                "attacker_time_to_impact_sec": run.get("metrics", {})
+                .get("attacker", {})
+                .get("time_to_impact_sec"),
+                "attacker_execution_success_rate": run.get("metrics", {})
+                .get("attacker", {})
+                .get("execution_success_rate"),
+                "attacker_caused_safety_violation": run.get("metrics", {})
+                .get("attacker", {})
+                .get("caused_safety_violation"),
                 "true_positive_rate": run.get("metrics", {}).get("true_positive_rate"),
                 "observer_detection_rate": run.get("metrics", {})
                 .get("observer_detection", {})
@@ -645,6 +673,14 @@ class ExperimentOrchestrator:
                 "defender_time_to_recognition_sec"
             ),
             "time_to_mitigation_sec_avg": average("time_to_mitigation_sec"),
+            "attacker_action_count_avg": average("attacker_action_count"),
+            "attacker_time_to_impact_sec_avg": average("attacker_time_to_impact_sec"),
+            "attacker_execution_success_rate_avg": average(
+                "attacker_execution_success_rate"
+            ),
+            "attacker_caused_safety_violation_avg": average(
+                "attacker_caused_safety_violation"
+            ),
             "time_to_first_defender_action_sec_avg": average(
                 "time_to_first_defender_action_sec"
             ),
@@ -659,6 +695,103 @@ class ExperimentOrchestrator:
             "safety_violation_count_avg": average("safety_violation_count"),
             "recovery_success_rate_avg": average("recovery_success_rate"),
             "decision_correctness_avg": average("decision_correctness"),
+            "per_run_metrics": per_run_metrics,
+        }
+
+    def _aggregate_nominal_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
+        nominal_runs = [run for run in runs if run.get("suite") == "normal"]
+        completed = [run for run in nominal_runs if run.get("status") == "completed"]
+        per_run_metrics = [
+            {
+                "condition_name": run.get("condition_name"),
+                "scenario": run.get("scenario"),
+                "run_id": run.get("run_id"),
+                "status": run.get("status"),
+                "passed": run.get("passed"),
+                "blue_team_alert_count": run.get("metrics", {}).get(
+                    "blue_team_alert_count"
+                ),
+                "defender_action_count": run.get("metrics", {}).get(
+                    "defender_action_count"
+                ),
+                "safety_violation_count": run.get("metrics", {}).get(
+                    "safety_violation_count"
+                ),
+                "false_positive_episode": run.get("metrics", {})
+                .get("nominal", {})
+                .get("false_positive_episode"),
+                "false_intervention_episode": run.get("metrics", {})
+                .get("nominal", {})
+                .get("false_intervention_episode"),
+                "time_to_first_false_alert_sec": run.get("metrics", {})
+                .get("nominal", {})
+                .get("time_to_first_false_alert_sec"),
+                "time_to_first_false_intervention_sec": run.get("metrics", {})
+                .get("nominal", {})
+                .get("time_to_first_false_intervention_sec"),
+            }
+            for run in nominal_runs
+        ]
+
+        def average(metric_name: str) -> float | None:
+            values = [
+                float(run[metric_name])
+                for run in per_run_metrics
+                if run.get("status") == "completed" and run.get(metric_name) is not None
+            ]
+            if not values:
+                return None
+            return round(sum(values) / len(values), 4)
+
+        false_positive_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("nominal", {}).get("false_positive_episode")
+        ]
+        false_intervention_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {})
+            .get("nominal", {})
+            .get("false_intervention_episode")
+        ]
+        safety_violation_runs = [
+            run
+            for run in completed
+            if (run.get("metrics", {}).get("safety_violation_count") or 0) > 0
+        ]
+        passed_runs = [run for run in completed if run.get("passed")]
+
+        return {
+            "nominal_run_count": len(nominal_runs),
+            "completed_nominal_run_count": len(completed),
+            "failed_nominal_run_count": len(nominal_runs) - len(completed),
+            "passed_nominal_run_count": len(passed_runs),
+            "false_positive_nominal_run_count": len(false_positive_runs),
+            "false_intervention_nominal_run_count": len(false_intervention_runs),
+            "safety_violation_nominal_run_count": len(safety_violation_runs),
+            "nominal_pass_rate": (
+                None if not completed else round(len(passed_runs) / len(completed), 4)
+            ),
+            "false_positive_episode_rate": (
+                None
+                if not completed
+                else round(len(false_positive_runs) / len(completed), 4)
+            ),
+            "false_intervention_episode_rate": (
+                None
+                if not completed
+                else round(len(false_intervention_runs) / len(completed), 4)
+            ),
+            "blue_team_alert_count_avg": average("blue_team_alert_count"),
+            "defender_action_count_avg": average("defender_action_count"),
+            "safety_violation_count_avg": average("safety_violation_count"),
+            "time_to_first_false_alert_sec_avg": average(
+                "time_to_first_false_alert_sec"
+            ),
+            "time_to_first_false_intervention_sec_avg": average(
+                "time_to_first_false_intervention_sec"
+            ),
             "per_run_metrics": per_run_metrics,
         }
 

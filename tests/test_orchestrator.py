@@ -5,7 +5,7 @@ import json
 
 import yaml
 
-from ics_agent.agents import ScriptedRoleAgent
+from ics_agent.agents import RuleBasedRoleAgent, ScriptedRoleAgent
 from ics_agent.orchestrator import ExperimentOrchestrator
 
 
@@ -82,7 +82,7 @@ def test_orchestrator_runs_live_smoke_with_fake_environment(
     config_path = tmp_path / "live.yaml"
     config = {
         "experiment_name": "pytest_live",
-        "scenario_selectors": ["smoke/wt-smoke-rw-refill-spoof"],
+        "scenario_selectors": ["attack/wt-attack-sensor-rw-refill-spoof"],
         "repeats": 1,
         "resume": False,
         "results_root": str(tmp_path / "Results"),
@@ -91,8 +91,8 @@ def test_orchestrator_runs_live_smoke_with_fake_environment(
                 "name": "scripted_baseline",
                 "profiles": {
                     "attacker": "scripted_attacker",
-                    "defender": "scripted_defender",
-                    "observer": "scripted_observer",
+                    "defender": "rule_based_defender",
+                    "observer": "rule_based_observer",
                     "planner": "scripted_planner",
                     "operator": "scripted_operator",
                     "offline_analysis": "scripted_offline_analyst",
@@ -605,16 +605,16 @@ def test_orchestrator_rebuilds_context_between_observer_and_defender(
     assert float(defender_action["time_sec"]) == float(attacker_action["time_sec"])
 
 
-def test_scripted_blue_team_ignores_planned_nominal_p2_selection() -> None:
+def test_rule_based_blue_team_ignores_planned_nominal_p2_selection() -> None:
     orchestrator = ExperimentOrchestrator()
     scenario = orchestrator.catalog.get("normal/wt-p2-multi-dosing")
     planned_events = orchestrator._build_plan(scenario)
 
-    observer = ScriptedRoleAgent(
-        "scripted_observer", orchestrator.agent_profiles["scripted_observer"]
+    observer = RuleBasedRoleAgent(
+        "rule_based_observer", orchestrator.agent_profiles["rule_based_observer"]
     )
-    defender = ScriptedRoleAgent(
-        "scripted_defender", orchestrator.agent_profiles["scripted_defender"]
+    defender = RuleBasedRoleAgent(
+        "rule_based_defender", orchestrator.agent_profiles["rule_based_defender"]
     )
     observer.reset(scenario)
     defender.reset(scenario)
@@ -638,16 +638,16 @@ def test_scripted_blue_team_ignores_planned_nominal_p2_selection() -> None:
     assert defender.step(context) == []
 
 
-def test_scripted_blue_team_flags_unplanned_p2_selection() -> None:
+def test_rule_based_blue_team_flags_unplanned_p2_selection() -> None:
     orchestrator = ExperimentOrchestrator()
     scenario = orchestrator.catalog.get("attack/wt-attack-p2-hcl-drain")
     planned_events = orchestrator._build_plan(scenario)
 
-    observer = ScriptedRoleAgent(
-        "scripted_observer", orchestrator.agent_profiles["scripted_observer"]
+    observer = RuleBasedRoleAgent(
+        "rule_based_observer", orchestrator.agent_profiles["rule_based_observer"]
     )
-    defender = ScriptedRoleAgent(
-        "scripted_defender", orchestrator.agent_profiles["scripted_defender"]
+    defender = RuleBasedRoleAgent(
+        "rule_based_defender", orchestrator.agent_profiles["rule_based_defender"]
     )
     observer.reset(scenario)
     defender.reset(scenario)
@@ -680,3 +680,71 @@ def test_scripted_blue_team_flags_unplanned_p2_selection() -> None:
         }
         for item in defender_decisions
     )
+
+
+def test_scripted_defender_is_fixed_plan_and_non_reactive() -> None:
+    orchestrator = ExperimentOrchestrator()
+    scenario = orchestrator.catalog.get("attack/wt-attack-p2-hcl-drain")
+    defender = ScriptedRoleAgent(
+        "scripted_defender", orchestrator.agent_profiles["scripted_defender"]
+    )
+    defender.reset(scenario)
+
+    context = {
+        "scenario": scenario,
+        "time_sec": 8.0,
+        "observation": {
+            "STATE_NAME": "RUNNING",
+            "P2_Selected": 1,
+        },
+        "observations": [],
+        "alerts": [],
+        "decisions": [],
+        "executed_actions": [],
+        "planned_events": orchestrator._build_plan(scenario),
+        "playbooks": orchestrator._build_plan(scenario),
+    }
+
+    assert defender.step(context) == []
+
+
+def test_rule_based_attacker_waits_for_running_before_runtime_sensor_attack() -> None:
+    orchestrator = ExperimentOrchestrator()
+    scenario = orchestrator.catalog.get("attack/wt-attack-sensor-rw-refill-spoof")
+    attacker = RuleBasedRoleAgent(
+        "rule_based_attacker", orchestrator.agent_profiles["rule_based_attacker"]
+    )
+    attacker.reset(scenario)
+    planned_events = orchestrator._build_plan(scenario)
+
+    early_context = {
+        "scenario": scenario,
+        "time_sec": 15.0,
+        "observation": {
+            "STATE_NAME": "IDLE",
+            "RW_Tank_Level": 600,
+        },
+        "observations": [],
+        "alerts": [],
+        "decisions": [],
+        "executed_actions": [],
+        "planned_events": planned_events,
+        "playbooks": planned_events,
+    }
+
+    assert attacker.step(early_context) == []
+
+    ready_context = dict(early_context)
+    ready_context["observation"] = {
+        "STATE_NAME": "RUNNING",
+        "RW_Tank_Level": 600,
+    }
+
+    decisions = attacker.step(ready_context)
+
+    assert len(decisions) == 1
+    assert decisions[0].action == {
+        "type": "set_sensor",
+        "name": "RW_Tank_Level",
+        "value": 400,
+    }
