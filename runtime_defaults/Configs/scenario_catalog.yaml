@@ -157,7 +157,7 @@ suite_defaults:
     expected_outcomes:
       - The smoke run completes quickly and writes complete artifacts.
     success_conditions:
-      - Observations, actions, metrics, and summaries are created under Results.
+      - Observations, actions, metrics, and summaries are created under the configured runtime results root.
     failure_conditions:
       - The smoke run fails to produce artifacts.
     required_metrics: *global_required_metrics

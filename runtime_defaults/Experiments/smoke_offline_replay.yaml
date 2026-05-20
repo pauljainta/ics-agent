@@ -1,11 +1,10 @@
 experiment_name: smoke_offline_replay
 execution_mode: replay
-replay_source: ../Results/replay_seed/wt-smoke-rw-refill-spoof
+replay_source: replay_seed/wt-smoke-rw-refill-spoof
 scenario_selectors:
   - smoke/wt-smoke-rw-refill-spoof
 repeats: 1
 resume: true
-results_root: ../Results
 environment:
   loop_sleep_sec: 0.05
 role_matrix:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ics_agent.config import load_config
 from ics_agent.paths import RESULTS_ROOT, WORKSPACE_ROOT
 from ics_agent.scenarios import ScenarioCatalog
 
@@ -35,9 +36,15 @@ def test_catalog_applies_metadata_schema_defaults() -> None:
     assert metadata["ground_truth"]["incident_type"] == "attack"
 
 
-def test_smoke_nominal_bindings_assign_operator_and_workspace_results_root() -> None:
+def test_runtime_config_loader_resolves_experiment_aliases() -> None:
+    payload = load_config("smoke_core_matrix.yaml")
+    assert payload["experiment_name"] == "smoke_core_matrix"
+    assert Path(payload["_path"]).parent.name == "Experiments"
+
+
+def test_smoke_nominal_bindings_assign_operator_and_artifact_results_root() -> None:
     catalog = ScenarioCatalog()
     scenario = catalog.get("smoke/wt-smoke-p1-short-nominal")
     assert scenario.metadata["role_bindings"]["operator"] == [0, 1]
-    assert RESULTS_ROOT == WORKSPACE_ROOT / "Results"
+    assert RESULTS_ROOT == WORKSPACE_ROOT / "Artifact" / "Results"
     assert RESULTS_ROOT.name == "Results"

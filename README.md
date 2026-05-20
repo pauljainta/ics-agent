@@ -17,14 +17,14 @@ implemented and revalidated end to end.
   `ics_agent/`. There is no separate required `ics-agnt` package in the
   runtime path.
 - Fresh verified attack-only agentic artifacts live under:
-  `../Results/full_matrix/20260415T083154-133ee0fb/agentic_agents/attack/`
+  `../Artifact/Results/full_matrix/20260415T083154-133ee0fb/agentic_agents/attack/`
 - Fresh verified attack summary:
   `18/18` attack scenarios completed, `10/18` passed, blue-team detection
   fired in `16/18`, defender-side detection fired in `14/18`, defender
   interventions executed in `14/18`, containment landed before a safety
   violation in `14/18`, `8/18` scenarios recovered, and aggregate metrics were
   written to
-  `../Results/full_matrix/20260415T083154-133ee0fb/attack_metrics_summary.json`
+  `../Artifact/Results/full_matrix/20260415T083154-133ee0fb/attack_metrics_summary.json`
 - Key fixes applied during verification:
   live observer output is now handed to the defender in the same loop cycle,
   defender reasoning cooldown is bypassed on materially new evidence,
@@ -78,7 +78,8 @@ The repo now covers these AGENTS.md requirements in a reusable structure:
 - config-driven scenario catalog and experiment matrices
 - combination-matrix execution with named experimental conditions
 - metrics and report generation for each run
-- workspace-level `Agentic_ICS/Results/` output kept outside the `ics-agent` git repo
+- workspace-level `Agentic_ICS/Artifact/` runtime assets kept outside the
+  `ics-agent` git repo
 - automated validation and pytest coverage for config loading and orchestration
 
 ## Repo Layout
@@ -86,31 +87,31 @@ The repo now covers these AGENTS.md requirements in a reusable structure:
 - `ics_agent/`
   The Python package for runtime orchestration, environment integration,
   metrics, reporting, and role implementations.
-- `configs/scenarios/`
-  Repo-local execution scenario YAMLs. Add new scenarios here.
-- `configs/scenario_catalog.yaml`
-  Suite defaults plus per-scenario metadata overrides. Add intent,
-  prerequisites, expected outcomes, metrics, and ground truth here.
-- `configs/agent_profiles.yaml`
-  Configurable scripted, agentic, and offline role profiles.
-- `configs/experiments/`
-  Experiment launch configs, including smoke and full matrix examples.
 - `configs/prompts/`
   Agentic prompt templates kept in files for reproducibility.
+- `runtime_defaults/`
+  Repo-tracked seed YAMLs used when the workspace `Artifact/` tree has not yet
+  been customized.
+- `../Artifact/Configs/`
+  Live runtime config files such as `agent_profiles.yaml` and
+  `scenario_catalog.yaml`.
+- `../Artifact/Experiments/`
+  Live experiment launch YAMLs.
+- `../Artifact/Scenarios/`
+  Live scenario execution YAMLs grouped by suite.
 - `tests/`
   Unit and orchestration tests.
-- `../Results/`
-  Machine-readable and human-readable outputs for completed runs. This lives at
-  the workspace root so results stay outside the `ics-agent` git repo.
+- `../Artifact/Results/`
+  Machine-readable and human-readable outputs for completed runs.
 
 ## Scenario Model
 
 A scenario now has two layers:
 
-1. `configs/scenarios/<suite>/*.yaml`
+1. `../Artifact/Scenarios/<suite>/*.yaml`
    This is the execution spec: duration, initial conditions, timeline, and
    expectations.
-2. `configs/scenario_catalog.yaml`
+2. `../Artifact/Configs/scenario_catalog.yaml`
    This is the metadata schema: intent, prerequisites, attacker actions,
    defender responses, expected outcomes, success/failure conditions, metrics,
    safety bounds, and ground truth.
@@ -120,7 +121,7 @@ run with scripted, agentic, or offline analyses.
 
 ## Agent Model
 
-Profiles in `configs/agent_profiles.yaml` define each role:
+Profiles in `../Artifact/Configs/agent_profiles.yaml` define each role:
 
 - `attacker`
 - `defender`
@@ -135,7 +136,7 @@ Each role can be swapped at runtime by changing the experiment config, not code.
 
 Agentic profiles can now preload reusable water-treatment manuals before the
 run starts. These manuals live under `configs/knowledge/` and are attached per
-role through `configs/agent_profiles.yaml`.
+role through `../Artifact/Configs/agent_profiles.yaml`.
 
 - `shared_testbed_manual.md`
   Common process semantics, tags, actions, alarms, and mitigation doctrine.
@@ -213,10 +214,13 @@ List scenarios:
 python3 -m ics_agent.cli list-scenarios
 ```
 
+Experiment names are resolved from `../Artifact/Experiments/` first, with
+`runtime_defaults/Experiments/` kept only as repo-side seed fallback.
+
 Run the core smoke matrix:
 
 ```bash
-python3 -m ics_agent.cli run experiments/smoke_core_matrix.yaml
+python3 -m ics_agent.cli run smoke_core_matrix.yaml
 ```
 
 Bootstrap the local Qwen runtime for the all-agentic path:
@@ -224,20 +228,20 @@ Bootstrap the local Qwen runtime for the all-agentic path:
 ```bash
 bash scripts/setup_env.sh
 bash scripts/download_qwen_model.sh
-QWEN_MODEL_PATH=./models/local_models/qwen3.5-9b .venv/bin/python -m ics_agent.cli run experiments/smoke_full_agentic.yaml
+QWEN_MODEL_PATH=./models/local_models/qwen3.5-9b .venv/bin/python -m ics_agent.cli run smoke_full_agentic.yaml
 ```
 
 Run the verified attack-only all-agentic experiment:
 
 ```bash
-QWEN_MODEL_PATH=./models/local_models/qwen3.5-9b .venv/bin/python -m ics_agent.cli run experiments/attack_full_agentic.yaml
+QWEN_MODEL_PATH=./models/local_models/qwen3.5-9b .venv/bin/python -m ics_agent.cli run attack_full_agentic.yaml
 ```
 
 The latest verified attack-only agentic output is the 2026-04-15 run
 `20260415T083154-133ee0fb`:
 
 ```text
-../Results/full_matrix/20260415T083154-133ee0fb/agentic_agents/attack/
+../Artifact/Results/full_matrix/20260415T083154-133ee0fb/agentic_agents/attack/
 ```
 
 Compared with the most recent matching scripted baseline run
@@ -262,16 +266,16 @@ violations before shutdown.
 Run mixed observer / planner smoke combinations:
 
 ```bash
-python3 -m ics_agent.cli run experiments/smoke_mixed_roles.yaml
+python3 -m ics_agent.cli run smoke_mixed_roles.yaml
 ```
 
 Run the full combination matrix:
 
 ```bash
-python3 -m ics_agent.cli run experiments/full_matrix.yaml
+python3 -m ics_agent.cli run full_matrix.yaml
 ```
 
-`experiments/full_matrix.yaml` is the fresh combined run: it executes all
+`Artifact/Experiments/full_matrix.yaml` is the fresh combined run: it executes all
 scenario suites with three conditions:
 
 - `scripted_baseline`
@@ -281,7 +285,7 @@ scenario suites with three conditions:
 Results are written under:
 
 ```text
-../Results/<experiment_name>/<experiment_id>/<condition>/<suite>/<scenario_id>/trial-001/
+../Artifact/Results/<experiment_name>/<experiment_id>/<condition>/<suite>/<scenario_id>/trial-001/
 ```
 
 Each run directory includes:
@@ -305,11 +309,11 @@ Replay mode lets offline agents operate only on saved logs.
 Workflow:
 
 1. Run a live experiment and choose one run directory.
-2. Copy or link that run directory into `../Results/replay_seed/<name>/`.
+2. Copy or link that run directory into `../Artifact/Results/replay_seed/<name>/`.
 3. Run:
 
 ```bash
-python3 -m ics_agent.cli run experiments/smoke_offline_replay.yaml
+python3 -m ics_agent.cli run smoke_offline_replay.yaml
 ```
 
 ## Testing

@@ -11,7 +11,7 @@ from .config import ConfigError, load_config, require_fields, resolve_repo_path
 from .environment import EnvironmentError, OpenPLCEnvironment
 from .knowledge import validate_manual_paths
 from .metrics import compute_metrics
-from .paths import REPO_ROOT, RESULTS_ROOT, portable_path
+from .paths import REPO_ROOT, portable_path, results_root
 from .reporting import write_json, write_run_bundle
 from .scenarios import ScenarioCatalog
 from .types import RunBundle, ScenarioDefinition
@@ -111,10 +111,13 @@ class ExperimentOrchestrator:
         conditions = self._enumerate_conditions(config)
         timestamp = utc_now().replace(":", "").replace("-", "").replace(".", "")
         experiment_id = f"{timestamp[:15]}-{stable_hash({'config': portable_path(config['_path']), 'conditions': conditions})}"
-        results_root = resolve_repo_path(
-            config.get("results_root", str(RESULTS_ROOT)), base_dir=REPO_ROOT
+        results_base_dir = (
+            Path(config["_path"]).parent if "results_root" in config else REPO_ROOT
         )
-        experiment_root = results_root / experiment_name / experiment_id
+        resolved_results_root = resolve_repo_path(
+            config.get("results_root", str(results_root())), base_dir=results_base_dir
+        )
+        experiment_root = resolved_results_root / experiment_name / experiment_id
         experiment_root.mkdir(parents=True, exist_ok=True)
 
         suite_summary: dict[str, Any] = {
@@ -395,7 +398,12 @@ class ExperimentOrchestrator:
                 if not replay_source:
                     raise ConfigError("replay execution requires replay_source")
                 self._run_replay_loop(
-                    bundle, scenario, agents, resolve_repo_path(replay_source)
+                    bundle,
+                    scenario,
+                    agents,
+                    self._resolve_replay_source_path(
+                        replay_source, config_path=Path(config["_path"])
+                    ),
                 )
             bundle.status = "completed"
         except Exception as exc:  # pragma: no cover - exercised in live runs
@@ -905,6 +913,21 @@ class ExperimentOrchestrator:
                 )
         return executed_action
 
+    def _resolve_replay_source_path(
+        self, replay_source: str | Path, *, config_path: Path
+    ) -> Path:
+        path = Path(replay_source)
+        if path.is_absolute():
+            return path.resolve()
+        if path.exists():
+            return path.resolve()
+
+        for base_dir in (config_path.parent, results_root(), REPO_ROOT):
+            candidate = (base_dir / path).resolve()
+            if candidate.exists():
+                return candidate
+        return (config_path.parent / path).resolve()
+
     def _run_replay_loop(
         self,
         bundle: RunBundle,
@@ -912,7 +935,7 @@ class ExperimentOrchestrator:
         agents: dict[str, Any],
         replay_source: Path,
     ) -> None:
-        source = resolve_repo_path(replay_source)
+        source = replay_source.resolve()
         observations_path = source / "observations.csv"
         metrics_path = source / "metrics.json"
         if not observations_path.exists():

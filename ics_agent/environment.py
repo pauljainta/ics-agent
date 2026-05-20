@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+import importlib.machinery
+import importlib.util
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,6 +12,29 @@ from .paths import SPHERE_WT_OPENPLC_DIR, SPHERE_WT_OPENPLC_SCRIPTS
 
 class EnvironmentError(RuntimeError):
     """Raised when an environment backend cannot satisfy a request."""
+
+
+def _import_openplc_module(module_name: str):
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        pyc_path = (
+            SPHERE_WT_OPENPLC_SCRIPTS
+            / "__pycache__"
+            / f"{module_name}.cpython-310.pyc"
+        )
+        if not pyc_path.exists():
+            raise
+        loader = importlib.machinery.SourcelessFileLoader(module_name, str(pyc_path))
+        spec = importlib.util.spec_from_loader(module_name, loader)
+        if spec is None:
+            raise ModuleNotFoundError(
+                f"unable to create import spec for compiled module {module_name}"
+            )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        loader.exec_module(module)
+        return module
 
 
 class OpenPLCEnvironment:
@@ -22,11 +48,13 @@ class OpenPLCEnvironment:
         scripts_path = str(SPHERE_WT_OPENPLC_SCRIPTS)
         sys.path = [entry for entry in sys.path if entry not in ("", scripts_path)]
         sys.path.insert(0, scripts_path)
-        from openplc_testbed import OpenPLCWaterTreatmentTestbed, TestbedError  # type: ignore
+        _import_openplc_module("modbus_raw")
+        _import_openplc_module("native_plc_runtime")
+        openplc_testbed = _import_openplc_module("openplc_testbed")
 
-        self._testbed_cls = OpenPLCWaterTreatmentTestbed
-        self._testbed_error = TestbedError
-        self.testbed = OpenPLCWaterTreatmentTestbed(
+        self._testbed_cls = openplc_testbed.OpenPLCWaterTreatmentTestbed
+        self._testbed_error = openplc_testbed.TestbedError
+        self.testbed = self._testbed_cls(
             base_dir=Path(cfg.get("base_dir", SPHERE_WT_OPENPLC_DIR)),
             controller_host=cfg.get("controller_host", "127.0.0.1"),
             controller_port=cfg.get("controller_port") or None,

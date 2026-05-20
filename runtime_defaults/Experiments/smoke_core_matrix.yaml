@@ -4,7 +4,6 @@ scenario_selectors:
   - smoke/wt-smoke-rw-refill-spoof
 repeats: 1
 resume: true
-results_root: ../Results
 environment:
   backend: auto
   keep_running: false

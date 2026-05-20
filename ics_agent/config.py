@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .paths import CONFIG_ROOT, REPO_ROOT
+from .paths import REPO_ROOT, config_roots, experiment_roots, scenario_roots
 from .utils import load_yaml
 
 
@@ -19,8 +19,59 @@ def resolve_repo_path(value: str | Path, *, base_dir: Path | None = None) -> Pat
     return (anchor / path).resolve()
 
 
+def _strip_prefix(parts: tuple[str, ...], prefix: tuple[str, ...]) -> Path | None:
+    if parts[: len(prefix)] != prefix:
+        return None
+    suffix = parts[len(prefix) :]
+    return Path(*suffix) if suffix else Path()
+
+
+def resolve_runtime_config_path(value: str | Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve()
+    if path.exists():
+        return path.resolve()
+
+    normalized = path.as_posix().lstrip("./")
+    parts = Path(normalized).parts
+    search_plan: list[tuple[Path, tuple[Path, ...]]] = []
+
+    for prefix, roots in (
+        (("configs", "experiments"), experiment_roots()),
+        (("experiments",), experiment_roots()),
+        (("configs", "scenarios"), scenario_roots()),
+        (("scenarios",), scenario_roots()),
+        (("configs",), config_roots()),
+    ):
+        stripped = _strip_prefix(parts, prefix)
+        if stripped is not None:
+            search_plan = [(stripped, roots)]
+            break
+
+    if not search_plan:
+        search_plan = [
+            (path, config_roots()),
+            (path, experiment_roots()),
+            (path, scenario_roots()),
+        ]
+
+    first_candidate: Path | None = None
+    for relative_path, roots in search_plan:
+        for root in roots:
+            candidate = (root / relative_path).resolve()
+            if first_candidate is None:
+                first_candidate = candidate
+            if candidate.exists():
+                return candidate
+
+    if first_candidate is None:
+        raise ConfigError(f"unable to resolve runtime config path: {value}")
+    return first_candidate
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
-    resolved = resolve_repo_path(path, base_dir=CONFIG_ROOT)
+    resolved = resolve_runtime_config_path(path)
     payload = load_yaml(resolved)
     if not isinstance(payload, dict):
         raise ConfigError(f"expected mapping at {resolved}")

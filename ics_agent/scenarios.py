@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ConfigError, load_config
-from .paths import SCENARIO_CONFIG_ROOT
+from .paths import active_scenario_config_root
 from .types import ScenarioDefinition
 from .utils import load_yaml
 
@@ -95,7 +95,8 @@ class ScenarioCatalog:
         scenario_overrides = self.config.get("scenario_overrides", {})
         definitions: dict[str, ScenarioDefinition] = {}
 
-        for path in sorted(SCENARIO_CONFIG_ROOT.rglob("*.yaml")):
+        scenario_root = active_scenario_config_root()
+        for path in sorted(scenario_root.rglob("*.yaml")):
             if path.name.startswith("."):
                 continue
             execution = load_yaml(path)

@@ -69,6 +69,11 @@ profiles:
         action_summary: Deselect Process 2 to constrain unauthorized chemical actuation.
         diagnosis: unauthorized_chemical_dosing
         action: { process_id: WT-P2, type: select_process, active: false }
+  silent_defender:
+    role: defender
+    family: scripted
+    mode: online
+    allowed_action_types: [noop]
   agentic_defender:
     role: defender
     family: agentic
@@ -128,6 +133,11 @@ profiles:
             - { time_after_sec: 6 }
         alert: Observer detected sustained Process 2 actuation.
         diagnosis: unauthorized_chemical_dosing
+  silent_observer:
+    role: observer
+    family: scripted
+    mode: online
+    allowed_action_types: [noop]
   agentic_observer:
     role: observer
     family: agentic

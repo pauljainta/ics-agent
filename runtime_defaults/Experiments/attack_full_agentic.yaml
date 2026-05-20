@@ -3,7 +3,6 @@ scenario_selectors:
   - attack/*
 repeats: 1
 resume: false
-results_root: ../Results
 environment:
   backend: auto
   keep_running: true

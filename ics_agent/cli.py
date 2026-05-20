@@ -23,7 +23,10 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--catalog", default="scenario_catalog.yaml")
 
     run_parser = sub.add_parser("run", help="Run an experiment config")
-    run_parser.add_argument("config", help="Experiment YAML relative to configs/")
+    run_parser.add_argument(
+        "config",
+        help="Experiment YAML path, filename, or experiments/<name>.yaml alias",
+    )
     return parser
 
 
