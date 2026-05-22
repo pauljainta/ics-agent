@@ -173,10 +173,10 @@ class CachedQwenDecisionEngine:
             "observation": context.get("observation"),
             "candidate_actions": context.get("candidate_actions", []),
             "remaining_playbook": context.get("remaining_playbook", []),
-            "recent_observations": context.get("recent_observations", []),
-            "recent_actions": context.get("recent_actions", []),
-            "recent_decisions": context.get("recent_decisions", []),
-            "recent_alerts": context.get("recent_alerts", []),
+            "recent_observations": context.get("recent_observations", [])[-3:],
+            "recent_actions": context.get("recent_actions", [])[-6:],
+            "recent_alerts": context.get("recent_alerts", [])[-4:],
+            "recent_action_effects": context.get("recent_action_effects", []),
             "active_alarms": context.get("active_alarms", []),
             "active_states": context.get("active_states", []),
             "active_commands": context.get("active_commands", []),
@@ -184,13 +184,17 @@ class CachedQwenDecisionEngine:
             "relationship_notes": context.get("relationship_notes", []),
             "risk_flags": context.get("risk_flags", []),
             "incident": context.get("incident"),
+            "structured_memory": context.get("structured_memory"),
+            "decision_epoch": context.get("decision_epoch"),
             "role_goal": context.get("role_goal"),
             "role_constraints": context.get("role_constraints", []),
             "expected_outcomes": context.get("expected_outcomes", []),
             "safety_bounds": context.get("safety_bounds", {}),
-            "metrics": context.get("metrics"),
-            "passed": context.get("passed"),
         }
+        if self.role == "offline_analysis":
+            payload["recent_decisions"] = context.get("recent_decisions", [])
+            payload["metrics"] = context.get("metrics")
+            payload["passed"] = context.get("passed")
         operational_knowledge = self.operational_knowledge.strip()
         knowledge_block = (
             f"Operational manuals:\n{operational_knowledge}\n\n"
@@ -207,6 +211,8 @@ class CachedQwenDecisionEngine:
             "- Never invent a new action or a new candidate id.\n"
             "- Use decision_type of note, alert, action, or analysis.\n"
             "- diagnosis must be null or a short snake_case style label, never a sentence.\n"
+            "- summary must stay under 18 words and should not restate the full prompt context.\n"
+            "- Avoid extra keys unless they are strictly necessary for the role memory.\n"
             "- Infer any diagnosis from the provided telemetry and history only.\n"
             "- If the evidence is weak, set diagnosis to null instead of guessing.\n"
             "- If you want to hold position, prefer the noop candidate when available.\n\n"
@@ -430,11 +436,16 @@ class AgenticRoleAgent(RoleAgent):
     def __init__(self, profile_name: str, profile: dict[str, Any]) -> None:
         super().__init__(profile_name, profile)
         self.engine = CachedQwenDecisionEngine(profile, self.role)
+        self.knowledge_mode = str(profile.get("knowledge_mode", "standard")).strip().lower()
         memory = profile.get("memory", {})
         self.observation_window = int(memory.get("observation_window", 8))
         self.decision_window = int(memory.get("decision_window", 8))
         self.action_window = int(memory.get("action_window", 8))
         self.alert_window = int(memory.get("alert_window", 6))
+        self.summary_window = int(memory.get("summary_window", 6))
+        self.attacker_candidate_window = int(
+            memory.get("attacker_candidate_window", 4)
+        )
         self.action_cooldown_sec = float(profile.get("action_cooldown_sec", 1.5))
         self.note_cooldown_sec = float(profile.get("note_cooldown_sec", 5.0))
         self.playbook_anticipation_sec = float(
@@ -442,12 +453,33 @@ class AgenticRoleAgent(RoleAgent):
         )
         self.reasoning_cooldown_sec = float(profile.get("reasoning_cooldown_sec", 2.0))
         self.reasoning_refresh_sec = float(profile.get("reasoning_refresh_sec", 6.0))
+        self.abort_on_backend_error = bool(
+            profile.get(
+                "abort_on_backend_error",
+                self.role in {"attacker", "observer", "defender", "planner"},
+            )
+        )
+
+    def reset(self, scenario: Any) -> None:
+        super().reset(scenario)
+        self._state.update(
+            {
+                "role_memory": {},
+                "decision_journal": [],
+                "action_effect_journal": [],
+            }
+        )
+
+    def _is_practical_black_box_attacker(self) -> bool:
+        return self.role == "attacker" and self.knowledge_mode == "practical_black_box"
 
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
             return []
-        if self.role in {"operator", "attacker"}:
-            return self._step_action_role(context)
+        if self.role == "operator":
+            return self._step_operator_role(context)
+        if self.role == "attacker":
+            return self._step_attacker_role(context)
         if self.role in {"observer", "defender"}:
             return self._step_monitoring_role(context)
         if self.role == "planner":
@@ -492,7 +524,7 @@ class AgenticRoleAgent(RoleAgent):
             )
         ]
 
-    def _step_action_role(self, context: dict[str, Any]) -> list[Any]:
+    def _step_operator_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
         if self._due_playbook_action(agent_context) is None and self._only_noop_candidates(
             agent_context
@@ -512,6 +544,22 @@ class AgenticRoleAgent(RoleAgent):
         )
         return fallback or decisions
 
+    def _step_attacker_role(self, context: dict[str, Any]) -> list[Any]:
+        agent_context = self._build_online_context(context)
+        if self._only_noop_candidates(agent_context):
+            return []
+        if not self._should_reason(agent_context, channel="action"):
+            return []
+        try:
+            payload = self.engine.decide(agent_context)
+        except Exception as exc:
+            if self.abort_on_backend_error:
+                raise RuntimeError(
+                    f"agentic attacker backend failure: {exc}"
+                ) from exc
+            return []
+        return self._payload_to_decisions(payload, agent_context)
+
     def _step_monitoring_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
         if not self._should_monitor(agent_context):
@@ -524,7 +572,11 @@ class AgenticRoleAgent(RoleAgent):
             )
         try:
             payload = self.engine.decide(agent_context)
-        except Exception:
+        except Exception as exc:
+            if self.abort_on_backend_error:
+                raise RuntimeError(
+                    f"agentic {self.role} backend failure: {exc}"
+                ) from exc
             return self._apply_defender_guardrail(
                 agent_context,
                 [],
@@ -545,49 +597,97 @@ class AgenticRoleAgent(RoleAgent):
             return []
         try:
             payload = self.engine.decide(agent_context)
-        except Exception:
+        except Exception as exc:
+            if self.abort_on_backend_error:
+                raise RuntimeError(
+                    f"agentic planner backend failure: {exc}"
+                ) from exc
             return []
         return self._payload_to_decisions(payload, agent_context)
 
     def _build_online_context(self, context: dict[str, Any]) -> dict[str, Any]:
         scenario = context["scenario"]
+        now = float(context["time_sec"])
+        practical_black_box = self._is_practical_black_box_attacker()
+        raw_recent_actions = context.get("executed_actions", [])[-self.action_window :]
+        raw_recent_decisions = context.get("decisions", [])[-self.decision_window :]
+        raw_recent_alerts = context.get("alerts", [])[-self.alert_window :]
         recent_observations = [
             self._compact_observation(item)
             for item in context.get("observations", [])[-self.observation_window :]
         ]
-        recent_actions = context.get("executed_actions", [])[-self.action_window :]
-        recent_decisions = context.get("decisions", [])[-self.decision_window :]
-        recent_alerts = context.get("alerts", [])[-self.alert_window :]
+        recent_actions = self._visible_recent_actions(raw_recent_actions, now=now)
+        recent_decisions = self._visible_recent_decisions(
+            raw_recent_decisions,
+            now=now,
+        )
+        recent_alerts = self._visible_recent_alerts(raw_recent_alerts, now=now)
         observation = context["observation"]
+        compact_observation = self._compact_observation(observation)
         remaining_playbook = self._remaining_playbook(context)
+        visible_remaining_playbook = [] if practical_black_box else remaining_playbook
+        planned_relationship_notes = (
+            [] if practical_black_box else self._planned_relationship_notes(context)
+        )
         telemetry_summary = self._summarize_telemetry(
             observation=observation,
             recent_observations=context.get("observations", []),
+            planned_relationship_notes=planned_relationship_notes,
+        )
+        recent_action_effects = self._recent_action_effects(
+            observation=observation,
+            recent_actions=recent_actions,
         )
         incident = self._incident_context(
             context=context,
             telemetry_summary=telemetry_summary,
         )
-        candidate_actions = self._candidate_actions(
-            context,
-            remaining_playbook,
+        structured_memory = self._role_memory_context(
+            context=context,
+            scenario=scenario,
+            observation=observation,
             telemetry_summary=telemetry_summary,
+            remaining_playbook=visible_remaining_playbook,
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
+            recent_action_effects=recent_action_effects,
             incident=incident,
         )
+        candidate_actions = self._candidate_actions(
+            context,
+            visible_remaining_playbook,
+            telemetry_summary=telemetry_summary,
+            incident=incident,
+            structured_memory=structured_memory,
+        )
+        scenario_id = self._visible_scenario_id(scenario)
+        process_id = scenario.execution.get("process_id")
+        intent = self._live_intent(scenario)
+        role_goal = self._live_role_goals(scenario)
+        expected_outcomes = self._live_expected_outcomes(scenario)
+        safety_bounds = scenario.metadata.get("safety_bounds", {})
+        if practical_black_box:
+            scenario_id = "attack-live"
+            process_id = None
+            intent = self._practical_black_box_attacker_intent()
+            role_goal = self._practical_black_box_attacker_goals()
+            expected_outcomes = []
+            safety_bounds = {}
         return {
             "role": self.role,
-            "scenario_id": self._visible_scenario_id(scenario),
+            "scenario_id": scenario_id,
             "suite": scenario.suite,
-            "process_id": scenario.execution.get("process_id"),
-            "intent": self._live_intent(scenario),
-            "time_sec": float(context["time_sec"]),
+            "process_id": process_id,
+            "intent": intent,
+            "time_sec": now,
             "state_name": observation.get("STATE_NAME")
             or observation.get("state_name"),
-            "observation": self._compact_observation(observation),
+            "observation": compact_observation,
             "recent_observations": recent_observations,
             "recent_actions": recent_actions,
             "recent_decisions": recent_decisions,
             "recent_alerts": recent_alerts,
+            "recent_action_effects": recent_action_effects,
             "active_alarms": telemetry_summary["active_alarms"],
             "active_states": telemetry_summary["active_states"],
             "active_commands": telemetry_summary["active_commands"],
@@ -595,22 +695,31 @@ class AgenticRoleAgent(RoleAgent):
             "relationship_notes": telemetry_summary["relationship_notes"],
             "risk_flags": telemetry_summary["risk_flags"],
             "incident": incident,
+            "structured_memory": structured_memory,
+            "decision_epoch": {
+                "observation_count": len(context.get("observations", [])),
+                "action_count": len(context.get("executed_actions", [])),
+                "decision_count": len(context.get("decisions", [])),
+                "alert_count": len(context.get("alerts", [])),
+            },
             "candidate_actions": candidate_actions,
-            "remaining_playbook": remaining_playbook,
-            "role_goal": self._live_role_goals(scenario),
+            "remaining_playbook": visible_remaining_playbook,
+            "role_goal": role_goal,
             "role_constraints": [
                 "Use recent telemetry and state to justify the decision.",
                 "Choose only from candidate_actions or emit a note/alert with no live action.",
                 "Do not assume hidden attack plans, ground truth labels, or future timeline steps.",
+                "Use structured_memory as the durable role state instead of replaying long transcripts.",
                 "Keep summaries concise and specific to the water-treatment environment.",
                 "Escalate incidents from suspected to confirmed to containing when evidence persists or worsens.",
             ],
-            "expected_outcomes": self._live_expected_outcomes(scenario),
-            "safety_bounds": scenario.metadata.get("safety_bounds", {}),
+            "expected_outcomes": expected_outcomes,
+            "safety_bounds": safety_bounds,
         }
 
     def _build_offline_context(self, context: dict[str, Any]) -> dict[str, Any]:
         scenario = context["scenario"]
+        now = float(context.get("duration_sec", 0.0))
         return {
             "role": self.role,
             "scenario_id": scenario.scenario_id,
@@ -618,18 +727,25 @@ class AgenticRoleAgent(RoleAgent):
             "intent": scenario.metadata.get(
                 "intent", scenario.execution.get("description", "")
             ),
-            "time_sec": float(context.get("duration_sec", 0.0)),
+            "time_sec": now,
             "candidate_actions": [],
             "remaining_playbook": [],
             "recent_observations": [
                 self._compact_observation(item)
                 for item in context.get("observations", [])[-self.observation_window :]
             ],
-            "recent_actions": context.get("executed_actions", [])[
-                -self.action_window :
-            ],
-            "recent_decisions": context.get("decisions", [])[-self.decision_window :],
-            "recent_alerts": context.get("alerts", [])[-self.alert_window :],
+            "recent_actions": self._visible_recent_actions(
+                context.get("executed_actions", [])[-self.action_window :],
+                now=now,
+            ),
+            "recent_decisions": self._visible_recent_decisions(
+                context.get("decisions", [])[-self.decision_window :],
+                now=now,
+            ),
+            "recent_alerts": self._visible_recent_alerts(
+                context.get("alerts", [])[-self.alert_window :],
+                now=now,
+            ),
             "role_goal": [
                 "Summarize detection, mitigation, residual risk, and likely diagnosis from stored logs only."
             ],
@@ -714,11 +830,836 @@ class AgenticRoleAgent(RoleAgent):
         }
         return expected.get(self.role, [])
 
+    @staticmethod
+    def _practical_black_box_attacker_intent() -> str:
+        return (
+            "Discover controllable surfaces and create disruptive physical effect "
+            "while minimizing defender attention."
+        )
+
+    @staticmethod
+    def _practical_black_box_attacker_goals() -> list[str]:
+        return [
+            "Infer what each candidate action can influence from live plant response only.",
+            "Use early turns to probe controllability, then exploit the most effective discovered surface.",
+            "Treat alarms, state transitions, and defender reaction as observable success proxies rather than hidden ground truth.",
+        ]
+
+    def _recent_action_effects(
+        self,
+        *,
+        observation: dict[str, Any],
+        recent_actions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        effects: list[dict[str, Any]] = []
+        for item in recent_actions[-self.summary_window :]:
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            effects.append(
+                {
+                    "role": item.get("role"),
+                    "time_sec": item.get("time_sec"),
+                    "action_type": action.get("type"),
+                    "effect": self._describe_action_effect(
+                        action,
+                        observation=observation,
+                    ),
+                }
+            )
+        return effects[-max(1, min(self.summary_window, 4)) :]
+
+    def _describe_action_effect(
+        self,
+        action: dict[str, Any],
+        *,
+        observation: dict[str, Any],
+    ) -> str:
+        action_type = str(action.get("type", "unknown"))
+        state_name = str(observation.get("STATE_NAME", "UNKNOWN"))
+        if action_type in {"hmi_start", "hmi_stop", "hmi_estop", "hmi_reset"}:
+            return f"state_now_{state_name.lower()}"
+        if action_type == "select_process":
+            return f"p2_selected={int(self._is_active_flag(observation.get('P2_Selected')))}"
+        if action_type == "set_manual_valve":
+            chemical = str(action.get("chemical", "unknown"))
+            valve_field = f"ChemTreat_{chemical}_Valve_Sts"
+            level_field = f"ChemTreat_{chemical}_Level"
+            valve_state = int(self._is_active_flag(observation.get(valve_field)))
+            level_value = observation.get(level_field)
+            return f"{chemical}_valve={valve_state},level={level_value}"
+        if action_type == "set_sensor":
+            sensor_name = str(action.get("name", "sensor"))
+            return f"{sensor_name}={observation.get(sensor_name)}"
+        return f"state_now_{state_name.lower()}"
+
+    def _role_memory_context(
+        self,
+        *,
+        context: dict[str, Any],
+        scenario: Any,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        remaining_playbook: list[dict[str, Any]],
+        recent_actions: list[dict[str, Any]],
+        recent_alerts: list[dict[str, Any]],
+        recent_action_effects: list[dict[str, Any]],
+        incident: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if self.role == "attacker":
+            memory = self._attacker_memory(
+                context=context,
+                scenario=scenario,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                remaining_playbook=remaining_playbook,
+                recent_actions=recent_actions,
+                recent_alerts=recent_alerts,
+                recent_action_effects=recent_action_effects,
+            )
+        elif self.role == "observer":
+            memory = self._observer_memory(
+                context=context,
+                telemetry_summary=telemetry_summary,
+            )
+        elif self.role == "defender":
+            memory = self._defender_memory(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                recent_alerts=recent_alerts,
+                incident=incident,
+            )
+        elif self.role == "planner":
+            memory = self._planner_memory(
+                context=context,
+                telemetry_summary=telemetry_summary,
+            )
+        elif self.role == "operator":
+            memory = self._operator_memory(
+                context=context,
+                remaining_playbook=remaining_playbook,
+                observation=observation,
+            )
+        else:
+            memory = self._state.setdefault("role_memory", {})
+        return self._visible_memory(memory)
+
+    def _attacker_memory(
+        self,
+        *,
+        context: dict[str, Any],
+        scenario: Any,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        remaining_playbook: list[dict[str, Any]],
+        recent_actions: list[dict[str, Any]],
+        recent_alerts: list[dict[str, Any]],
+        recent_action_effects: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if self._is_practical_black_box_attacker():
+            return self._practical_black_box_attacker_memory(
+                context=context,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                recent_actions=recent_actions,
+                recent_alerts=recent_alerts,
+                recent_action_effects=recent_action_effects,
+            )
+        state = self._state.setdefault("role_memory", {})
+        total_objective_steps = len(context.get("playbooks", {}).get("attacker", []))
+        remaining_steps = len(remaining_playbook)
+        leverage_hypothesis = self._attacker_leverage_hypothesis(
+            remaining_playbook=remaining_playbook,
+            recent_actions=recent_actions,
+        )
+        defender_attention = self._attention_estimate(
+            recent_alerts=recent_alerts,
+            recent_actions=recent_actions,
+        )
+        objective_progress = "inactive"
+        if total_objective_steps:
+            completed_steps = max(total_objective_steps - remaining_steps, 0)
+            if completed_steps == 0:
+                objective_progress = "not_started"
+            elif remaining_steps == 0:
+                objective_progress = "sequence_complete"
+            elif completed_steps >= max(1, total_objective_steps // 2):
+                objective_progress = "mid_operation"
+            else:
+                objective_progress = "initial_foothold"
+
+        process2_selected = self._is_active_flag(observation.get("P2_Selected"))
+        manual_dosing_active = "process2_manual_dosing_active" in telemetry_summary[
+            "relationship_notes"
+        ]
+        if leverage_hypothesis == "process2_manual_path":
+            if manual_dosing_active:
+                tactic_phase = "exploitation"
+            elif process2_selected:
+                tactic_phase = "positioning"
+            elif defender_attention == "high":
+                tactic_phase = "repositioning"
+            else:
+                tactic_phase = "access_setup"
+        elif leverage_hypothesis == "sensor_spoofing":
+            tactic_phase = (
+                "impact_assessment"
+                if telemetry_summary["active_alarms"] or telemetry_summary["risk_flags"]
+                else "spoofing"
+            )
+        elif leverage_hypothesis == "availability_disruption":
+            tactic_phase = "availability_pressure"
+        else:
+            tactic_phase = "probing"
+
+        if defender_attention == "high":
+            stealth_posture = "contested"
+        elif manual_dosing_active or telemetry_summary["active_alarms"]:
+            stealth_posture = "impact_focused"
+        else:
+            stealth_posture = "balanced"
+
+        attacker_effects = [
+            item["effect"]
+            for item in recent_action_effects
+            if item.get("role") == "attacker" and item.get("effect")
+        ][-3:]
+        next_objective_steps = [
+            self._canonical_action_descriptor(item.get("action"))
+            for item in remaining_playbook[: self.attacker_candidate_window]
+        ]
+        state.update(
+            {
+                "mission_objective": state.get("mission_objective")
+                or scenario.metadata.get("intent", scenario.execution.get("description", "")),
+                "current_tactic_phase": tactic_phase,
+                "leverage_hypothesis": leverage_hypothesis,
+                "last_observed_effects": attacker_effects,
+                "stealth_vs_impact_posture": stealth_posture,
+                "defender_attention_estimate": defender_attention,
+                "objective_progress": objective_progress,
+                "next_objective_steps": next_objective_steps,
+                "last_visible_risk_flags": telemetry_summary["risk_flags"][:6],
+                "rolling_summary": (
+                    f"{tactic_phase} via {leverage_hypothesis}; "
+                    f"attention={defender_attention}; progress={objective_progress}."
+                ),
+            }
+        )
+        return state
+
+    def _practical_black_box_attacker_memory(
+        self,
+        *,
+        context: dict[str, Any],
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        recent_actions: list[dict[str, Any]],
+        recent_alerts: list[dict[str, Any]],
+        recent_action_effects: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        state = self._state.setdefault("role_memory", {})
+        surface_state = state.setdefault(
+            "_surface_state",
+            {
+                "process2_manual_path": {"score": 0.0, "last_effect": None},
+                "sensor_manipulation": {"score": 0.0, "last_effect": None},
+                "availability_disruption": {"score": 0.0, "last_effect": None},
+            },
+        )
+        discovered_controls = state.setdefault("_discovered_controls", {})
+        defender_attention = self._attention_estimate(
+            recent_alerts=recent_alerts,
+            recent_actions=recent_actions,
+        )
+        action_effects = [
+            item for item in recent_action_effects if item.get("role") == "attacker"
+        ]
+        for item in action_effects:
+            surface = self._attacker_surface_from_action_type(
+                str(item.get("action_type", ""))
+            )
+            if surface == "unknown":
+                continue
+            entry = surface_state.setdefault(surface, {"score": 0.0, "last_effect": None})
+            entry["score"] = round(float(entry.get("score", 0.0)) + 1.0, 3)
+            entry["last_effect"] = item.get("effect")
+
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        risk_flags = telemetry_summary["risk_flags"]
+        if "process2_selected" in relationship_notes:
+            surface_state["process2_manual_path"]["score"] = round(
+                float(surface_state["process2_manual_path"].get("score", 0.0)) + 0.5,
+                3,
+            )
+        if "process2_manual_dosing_active" in relationship_notes or any(
+            flag.endswith("_depleting") for flag in risk_flags
+        ):
+            surface_state["process2_manual_path"]["score"] = round(
+                float(surface_state["process2_manual_path"].get("score", 0.0)) + 1.0,
+                3,
+            )
+        if telemetry_summary["active_alarms"] or any(
+            note.startswith("abrupt_change:")
+            for note in telemetry_summary["relationship_notes"]
+        ):
+            surface_state["sensor_manipulation"]["score"] = round(
+                float(surface_state["sensor_manipulation"].get("score", 0.0)) + 0.5,
+                3,
+            )
+        if str(observation.get("STATE_NAME", "")).upper() in {"SHUTDOWN", "STOPPED"}:
+            surface_state["availability_disruption"]["score"] = round(
+                float(surface_state["availability_disruption"].get("score", 0.0)) + 0.5,
+                3,
+            )
+
+        effect_by_action_type = {
+            str(item.get("action_type", "")): item.get("effect") for item in action_effects
+        }
+        for item in recent_actions:
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            descriptor = self._canonical_action_descriptor(action)
+            entry = discovered_controls.setdefault(
+                descriptor,
+                {"action": descriptor, "count": 0, "last_effect": None},
+            )
+            entry["count"] = int(entry.get("count", 0)) + 1
+            entry["last_effect"] = effect_by_action_type.get(
+                str(action.get("type", "")),
+                entry.get("last_effect"),
+            )
+
+        surface_rank = sorted(
+            (
+                (
+                    surface,
+                    round(float(payload.get("score", 0.0)), 3),
+                    payload.get("last_effect"),
+                )
+                for surface, payload in surface_state.items()
+            ),
+            key=lambda item: (item[1], item[0]),
+            reverse=True,
+        )
+        best_surface = "unknown"
+        best_score = 0.0
+        last_successful_effect = None
+        if surface_rank and surface_rank[0][1] >= 1.0:
+            best_surface, best_score, last_successful_effect = surface_rank[0]
+
+        attacker_action_count = sum(
+            1 for item in recent_actions if item.get("role") == "attacker"
+        )
+        if attacker_action_count == 0:
+            current_phase = "initial_observation"
+        elif defender_attention == "high" and best_surface != "unknown":
+            current_phase = "evasion_or_exploitation"
+        elif best_surface == "unknown":
+            current_phase = "probing"
+        elif best_score >= 2.0:
+            current_phase = "exploitation"
+        else:
+            current_phase = "surface_validation"
+
+        visible_controls = [
+            {
+                "action": str(entry.get("action")),
+                "count": int(entry.get("count", 0)),
+                "last_effect": entry.get("last_effect"),
+            }
+            for entry in sorted(
+                discovered_controls.values(),
+                key=lambda item: (
+                    int(item.get("count", 0)),
+                    str(item.get("action", "")),
+                ),
+                reverse=True,
+            )[:5]
+        ]
+        observed_effect_map = [
+            {
+                "surface": surface,
+                "score": score,
+                "last_effect": effect,
+            }
+            for surface, score, effect in surface_rank
+            if score > 0
+        ]
+        state.update(
+            {
+                "mission_objective": state.get("mission_objective")
+                or self._practical_black_box_attacker_intent(),
+                "current_phase": current_phase,
+                "discovered_controls": visible_controls,
+                "observed_effect_map": observed_effect_map,
+                "detection_pressure": defender_attention,
+                "best_known_attack_surface": best_surface,
+                "last_successful_effect": last_successful_effect,
+                "rolling_summary": (
+                    f"phase={current_phase}; surface={best_surface}; "
+                    f"pressure={defender_attention}."
+                ),
+            }
+        )
+        return state
+
+    def _observer_memory(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = float(context.get("time_sec", 0.0))
+        state = self._state.setdefault("role_memory", {})
+        ledger = state.setdefault("_evidence_ledger_map", {})
+        evidence_tokens = self._observer_evidence_tokens(telemetry_summary)
+        for token in evidence_tokens:
+            entry = ledger.setdefault(
+                token,
+                {"count": 0, "first_seen_time_sec": now, "last_seen_time_sec": now},
+            )
+            entry["count"] += 1
+            entry["last_seen_time_sec"] = now
+        for token, entry in list(ledger.items()):
+            if token in evidence_tokens:
+                continue
+            if now - float(entry.get("last_seen_time_sec", now)) > 20.0:
+                del ledger[token]
+
+        hypotheses = self._observer_hypotheses(telemetry_summary)
+        top_hypothesis = hypotheses[0] if hypotheses else None
+        suspicion_level = "low"
+        suspicion_score = 0.0
+        if top_hypothesis is not None:
+            suspicion_score = float(top_hypothesis.get("confidence", 0.0))
+            if suspicion_score >= 0.8:
+                suspicion_level = "high"
+            elif suspicion_score >= 0.55:
+                suspicion_level = "medium"
+
+        evidence_ledger = [
+            {
+                "token": token,
+                "count": int(entry.get("count", 0)),
+                "first_seen_time_sec": round(float(entry.get("first_seen_time_sec", 0.0)), 3),
+                "last_seen_time_sec": round(float(entry.get("last_seen_time_sec", 0.0)), 3),
+            }
+            for token, entry in sorted(
+                ledger.items(),
+                key=lambda item: (
+                    float(item[1].get("last_seen_time_sec", 0.0)),
+                    int(item[1].get("count", 0)),
+                    item[0],
+                ),
+                reverse=True,
+            )[:6]
+        ]
+        why_it_matters = None
+        attention_target = "plant_overview"
+        if top_hypothesis is not None:
+            why_it_matters = str(top_hypothesis.get("why_it_matters"))
+            attention_target = str(top_hypothesis.get("attention_target"))
+        state.update(
+            {
+                "anomaly_hypotheses": hypotheses[:3],
+                "evidence_ledger": evidence_ledger,
+                "suspicion_level": suspicion_level,
+                "suspicion_score": round(suspicion_score, 2),
+                "why_it_matters": why_it_matters,
+                "recommended_attention_target": attention_target,
+                "rolling_summary": (
+                    f"suspicion={suspicion_level}; target={attention_target}; "
+                    f"signals={len(evidence_tokens)}."
+                ),
+            }
+        )
+        return state
+
+    def _defender_memory(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        recent_alerts: list[dict[str, Any]],
+        incident: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        incident = dict(incident or {})
+        state = self._state.setdefault("role_memory", {})
+        recent_actions = context.get("executed_actions", [])[-max(self.action_window, 12) :]
+        prior_mitigations = [
+            self._canonical_action_descriptor(item.get("action"))
+            for item in recent_actions
+            if item.get("role") == "defender" and item.get("action") is not None
+        ][-4:]
+        observer_handoff = next(
+            (
+                {
+                    "summary": item.get("summary"),
+                    "diagnosis": item.get("diagnosis"),
+                    "age_sec": round(
+                        float(context.get("time_sec", 0.0))
+                        - float(item.get("time_sec", 0.0)),
+                        3,
+                    ),
+                }
+                for item in reversed(recent_alerts)
+                if item.get("role") == "observer"
+            ),
+            None,
+        )
+        containment_effective = self._containment_effective(
+            incident=incident,
+            telemetry_summary=telemetry_summary,
+            observation=context.get("observation", {}),
+            prior_mitigations=prior_mitigations,
+        )
+        confidence = self._defender_confidence(incident=incident)
+        escalation_required = self._defender_escalation_required(
+            incident=incident,
+            containment_effective=containment_effective,
+        )
+        state.update(
+            {
+                "incident_hypothesis": incident.get("type", "none"),
+                "incident_type": incident.get("diagnosis") or incident.get("type"),
+                "severity": int(incident.get("severity", 0) or 0),
+                "confidence": confidence,
+                "lifecycle_state": incident.get("status", "none"),
+                "prior_mitigations_attempted": prior_mitigations,
+                "containment_effective": containment_effective,
+                "escalation_required": escalation_required,
+                "observer_handoff": observer_handoff,
+                "why_it_matters": self._incident_consequence(incident),
+                "rolling_summary": (
+                    f"{incident.get('status', 'none')} {incident.get('type', 'none')}; "
+                    f"confidence={confidence}; escalation_required={escalation_required}."
+                ),
+            }
+        )
+        return state
+
+    def _planner_memory(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = self._state.setdefault("role_memory", {})
+        state.update(
+            {
+                "engagement_phase": context.get("observation", {}).get("STATE_NAME"),
+                "risk_posture": "elevated"
+                if telemetry_summary["active_alarms"] or telemetry_summary["risk_flags"]
+                else "steady",
+                "branch_points": telemetry_summary["risk_flags"][:4],
+            }
+        )
+        return state
+
+    def _operator_memory(
+        self,
+        *,
+        context: dict[str, Any],
+        remaining_playbook: list[dict[str, Any]],
+        observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = self._state.setdefault("role_memory", {})
+        state.update(
+            {
+                "plant_state": observation.get("STATE_NAME"),
+                "next_due_actions": [
+                    self._canonical_action_descriptor(item.get("action"))
+                    for item in remaining_playbook[:3]
+                ],
+                "playbook_cursor_remaining": len(remaining_playbook),
+            }
+        )
+        return state
+
+    def _visible_memory(self, memory: dict[str, Any]) -> dict[str, Any]:
+        hidden_keys = {
+            "last_rationale",
+            "last_decision_type",
+            "last_diagnosis",
+            "last_action",
+            "last_action_type",
+            "last_decision_time_sec",
+            "model_tactic_phase",
+            "model_attention_target",
+            "model_why_it_matters",
+        }
+        return {
+            key: value
+            for key, value in memory.items()
+            if not str(key).startswith("_")
+            and key not in hidden_keys
+            and value not in (None, "")
+        }
+
+    def _attacker_leverage_hypothesis(
+        self,
+        *,
+        remaining_playbook: list[dict[str, Any]],
+        recent_actions: list[dict[str, Any]],
+    ) -> str:
+        relevant_actions = [
+            normalize_action(item.get("action"))
+            for item in remaining_playbook[: self.attacker_candidate_window]
+        ]
+        relevant_actions.extend(
+            normalize_action(item.get("action"))
+            for item in recent_actions
+            if item.get("role") == "attacker"
+        )
+        action_types = {
+            str(action.get("type"))
+            for action in relevant_actions
+            if action is not None and action.get("type")
+        }
+        if "set_manual_valve" in action_types or "select_process" in action_types:
+            return "process2_manual_path"
+        if "set_sensor" in action_types:
+            return "sensor_spoofing"
+        if action_types.intersection({"hmi_stop", "hmi_estop"}):
+            return "availability_disruption"
+        return "hold_and_probe"
+
+    def _observer_evidence_tokens(
+        self,
+        telemetry_summary: dict[str, Any],
+    ) -> list[str]:
+        tokens = list(telemetry_summary["active_alarms"])
+        tokens.extend(telemetry_summary["risk_flags"])
+        tokens.extend(
+            note
+            for note in telemetry_summary["relationship_notes"]
+            if note in {"process2_selected", "process2_manual_dosing_active"}
+            or note.startswith("command_status_mismatch:")
+            or note.startswith("abrupt_change:")
+        )
+        return sorted(set(tokens))
+
+    def _observer_hypotheses(
+        self,
+        telemetry_summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        hypotheses: list[dict[str, Any]] = []
+        risk_flags = set(telemetry_summary["risk_flags"])
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        active_alarms = set(telemetry_summary["active_alarms"])
+        planned_nominal_process2 = "planned_process2_operation" in relationship_notes
+        planned_nominal_refill = "planned_refill_response" in relationship_notes
+        process2_signals = int("process2_selected" in relationship_notes) + int(
+            "process2_manual_dosing_active" in relationship_notes
+        ) + sum(flag.endswith("_depleting") for flag in risk_flags)
+        if process2_signals and not planned_nominal_process2:
+            confidence = min(0.95, 0.45 + (0.12 * process2_signals))
+            hypotheses.append(
+                {
+                    "diagnosis": "unauthorized_chemical_dosing",
+                    "confidence": round(confidence, 2),
+                    "evidence_tokens": [
+                        token
+                        for token in telemetry_summary["relationship_notes"]
+                        if token == "process2_selected"
+                        or token == "process2_manual_dosing_active"
+                    ]
+                    + [
+                        token
+                        for token in telemetry_summary["risk_flags"]
+                        if token.endswith("_depleting")
+                    ],
+                    "why_it_matters": "Unauthorized Process 2 actuation can drain chemical inventory and alter downstream dosing.",
+                    "attention_target": "WT-P2_manual_path",
+                }
+            )
+        if {
+            "raw_water_protection_risk",
+            "raw_water_low_band",
+        }.intersection(risk_flags) or "Alarm_RW_Tank_LL" in active_alarms:
+            if not (planned_nominal_refill and "Alarm_RW_Tank_LL" not in active_alarms):
+                confidence = 0.62 if "Alarm_RW_Tank_LL" in active_alarms else 0.54
+                hypotheses.append(
+                    {
+                        "diagnosis": "raw_water_low_or_spoof",
+                        "confidence": round(confidence, 2),
+                        "evidence_tokens": [
+                            token
+                            for token in telemetry_summary["risk_flags"]
+                            if token in {"raw_water_protection_risk", "raw_water_low_band"}
+                        ]
+                        + [
+                            token
+                            for token in telemetry_summary["active_alarms"]
+                            if token == "Alarm_RW_Tank_LL"
+                        ],
+                        "why_it_matters": "Low raw-water level or a spoofed low reading can force unsafe refill and shutdown logic.",
+                        "attention_target": "WT-P1_raw_water",
+                    }
+                )
+        if {
+            "overflow_risk",
+            "raw_water_high_high_band",
+        }.intersection(risk_flags) or "Alarm_RW_Tank_HH" in active_alarms:
+            confidence = 0.7 if "Alarm_RW_Tank_HH" in active_alarms else 0.58
+            hypotheses.append(
+                {
+                    "diagnosis": "raw_water_alarm_condition",
+                    "confidence": round(confidence, 2),
+                    "evidence_tokens": [
+                        token
+                        for token in telemetry_summary["risk_flags"]
+                        if token in {"overflow_risk", "raw_water_high_high_band"}
+                    ]
+                    + [
+                        token
+                        for token in telemetry_summary["active_alarms"]
+                        if token == "Alarm_RW_Tank_HH"
+                    ],
+                    "why_it_matters": "High-high raw-water behavior can cascade into overflow pressure and immediate safety action.",
+                    "attention_target": "WT-P1_high_high",
+                }
+            )
+        if {
+            "sensor_or_process_jump",
+            "command_status_divergence",
+        }.intersection(risk_flags):
+            hypotheses.append(
+                {
+                    "diagnosis": "sensor_or_process_jump",
+                    "confidence": 0.52,
+                    "evidence_tokens": [
+                        token
+                        for token in telemetry_summary["risk_flags"]
+                        if token in {"sensor_or_process_jump", "command_status_divergence"}
+                    ],
+                    "why_it_matters": "Abrupt jumps or command-status mismatch can indicate spoofing or actuator inconsistency.",
+                    "attention_target": "telemetry_integrity",
+                }
+            )
+        hypotheses.sort(
+            key=lambda item: (
+                float(item.get("confidence", 0.0)),
+                len(item.get("evidence_tokens", [])),
+                str(item.get("diagnosis")),
+            ),
+            reverse=True,
+        )
+        return hypotheses
+
+    def _attention_estimate(
+        self,
+        *,
+        recent_alerts: list[dict[str, Any]],
+        recent_actions: list[dict[str, Any]],
+    ) -> str:
+        alert_pressure = sum(
+            1
+            for item in recent_alerts
+            if item.get("role") in {"observer", "defender"}
+        )
+        defender_pressure = sum(
+            1 for item in recent_actions if item.get("role") == "defender"
+        )
+        if defender_pressure or alert_pressure >= 2:
+            return "high"
+        if alert_pressure == 1:
+            return "medium"
+        return "low"
+
+    def _containment_effective(
+        self,
+        *,
+        incident: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        observation: dict[str, Any],
+        prior_mitigations: list[str],
+    ) -> bool | None:
+        if not prior_mitigations:
+            return None
+        incident_type = str(incident.get("type", "none"))
+        if incident_type == "process2_manual_dosing":
+            return (
+                not self._is_active_flag(observation.get("P2_Selected"))
+                and "process2_manual_dosing_active"
+                not in telemetry_summary["relationship_notes"]
+                and not any(
+                    flag.endswith("_depleting")
+                    for flag in telemetry_summary["risk_flags"]
+                )
+            )
+        if incident_type in {"raw_water_overflow", "raw_water_low_protection"}:
+            return not self._is_active_flag(observation.get("RW_Pump_Sts"))
+        if incident_type == "telemetry_anomaly":
+            return not telemetry_summary["active_alarms"]
+        return None
+
+    def _defender_confidence(self, *, incident: dict[str, Any]) -> float:
+        severity = int(incident.get("severity", 0) or 0)
+        evidence_count = int(incident.get("evidence_count", 0) or 0)
+        observer_alert_count = int(incident.get("observer_alert_count", 0) or 0)
+        status_bonus = 0.12 if str(incident.get("status")) in {"confirmed", "containing"} else 0.0
+        confidence = 0.18 + (0.12 * severity) + (0.05 * min(evidence_count, 4)) + (
+            0.08 * min(observer_alert_count, 2)
+        ) + status_bonus
+        return round(min(0.97, confidence), 2)
+
+    def _defender_escalation_required(
+        self,
+        *,
+        incident: dict[str, Any],
+        containment_effective: bool | None,
+    ) -> bool:
+        if int(incident.get("severity", 0) or 0) >= 4:
+            return True
+        if containment_effective is False:
+            return True
+        return (
+            str(incident.get("status")) == "confirmed"
+            and float(incident.get("persistence_sec", 0.0) or 0.0) >= 8.0
+        )
+
+    def _incident_consequence(self, incident: dict[str, Any]) -> str | None:
+        incident_type = str(incident.get("type", "none"))
+        mapping = {
+            "process2_manual_dosing": "Chemical inventory can be drained while unauthorized manual dosing remains active.",
+            "raw_water_overflow": "High-high raw-water behavior can outrun a controlled stop and become an immediate safety issue.",
+            "raw_water_low_protection": "Low raw-water protection can force unsafe permissives, refill behavior, or shutdown logic.",
+            "telemetry_anomaly": "Telemetry inconsistency can hide the real process state and delay safe intervention.",
+        }
+        return mapping.get(incident_type)
+
+    def _canonical_action_descriptor(
+        self,
+        action: dict[str, Any] | str | None,
+    ) -> str:
+        normalized = normalize_action(action)
+        if normalized is None:
+            return "noop"
+        action_type = str(normalized.get("type", "unknown"))
+        if action_type == "select_process":
+            return (
+                "select_process:on"
+                if normalized.get("active", True)
+                else "select_process:off"
+            )
+        if action_type == "set_manual_valve":
+            state = "open" if normalized.get("open", True) else "close"
+            return f"set_manual_valve:{normalized.get('chemical', 'unknown')}:{state}"
+        if action_type == "set_sensor":
+            return f"set_sensor:{normalized.get('name', 'unknown')}:{normalized.get('value')}"
+        return action_type
+
     def _summarize_telemetry(
         self,
         *,
         observation: dict[str, Any],
         recent_observations: list[dict[str, Any]],
+        planned_relationship_notes: list[str] | None = None,
     ) -> dict[str, Any]:
         active_alarms = self._active_flags(observation, prefix="Alarm_")
         active_states = self._active_flags(observation, prefix="SYS_")
@@ -727,6 +1668,9 @@ class AgenticRoleAgent(RoleAgent):
         relationship_notes = self._derive_relationship_notes(
             observation,
             short_horizon_trends,
+        )
+        relationship_notes = sorted(
+            set(relationship_notes).union(planned_relationship_notes or [])
         )
         risk_flags = self._derive_risk_flags(
             observation,
@@ -742,6 +1686,42 @@ class AgenticRoleAgent(RoleAgent):
             "relationship_notes": relationship_notes,
             "risk_flags": risk_flags,
         }
+
+    def _planned_relationship_notes(self, context: dict[str, Any]) -> list[str]:
+        if context["scenario"].suite not in {"normal", "readiness", "recheck", "smoke"}:
+            return []
+        now = float(context.get("time_sec", 0.0))
+        planned = context.get("playbooks", {}).get("operator", [])
+        executed_actions = context.get("executed_actions", [])
+        notes: list[str] = []
+        has_nominal_p2_plan = any(
+            (
+                normalize_action(item.get("action")) or {}
+            ).get("type")
+            in {"select_process", "set_manual_valve"}
+            and float(item.get("time_sec", 0.0)) <= now + 2.0
+            for item in planned
+        )
+        has_operator_p2_history = any(
+            item.get("role") == "operator"
+            and str((normalize_action(item.get("action")) or {}).get("type"))
+            in {"select_process", "set_manual_valve"}
+            for item in executed_actions
+        )
+        if has_nominal_p2_plan or has_operator_p2_history:
+            notes.append("planned_process2_operation")
+        scenario_text = " ".join(
+            filter(
+                None,
+                [
+                    str(getattr(context["scenario"], "scenario_id", "")),
+                    str(getattr(context["scenario"], "catalog_id", "")),
+                ],
+            )
+        ).lower()
+        if "refill" in scenario_text:
+            notes.append("planned_refill_response")
+        return sorted(set(notes))
 
     def _incident_context(
         self,
@@ -920,13 +1900,18 @@ class AgenticRoleAgent(RoleAgent):
         diagnoses: list[str],
     ) -> str:
         diagnosis_set = set(diagnoses)
+        planned_nominal_process2 = "planned_process2_operation" in relationship_notes
+        planned_nominal_refill = "planned_refill_response" in relationship_notes
         if (
-            "unauthorized_chemical_dosing" in diagnosis_set
-            or "process2_manual_path_active" in risk_flags
-            or "unauthorized_manual_dosing_possible" in risk_flags
-            or any(flag.endswith("_depleting") for flag in risk_flags)
-            or "process2_selected" in relationship_notes
-            or "process2_manual_dosing_active" in relationship_notes
+            not planned_nominal_process2
+            and (
+                "unauthorized_chemical_dosing" in diagnosis_set
+                or "process2_manual_path_active" in risk_flags
+                or "unauthorized_manual_dosing_possible" in risk_flags
+                or any(flag.endswith("_depleting") for flag in risk_flags)
+                or "process2_selected" in relationship_notes
+                or "process2_manual_dosing_active" in relationship_notes
+            )
         ):
             return "process2_manual_dosing"
         if (
@@ -938,10 +1923,15 @@ class AgenticRoleAgent(RoleAgent):
         ):
             return "raw_water_overflow"
         if (
-            "raw_water_low_or_spoof" in diagnosis_set
-            or "raw_water_protection_risk" in risk_flags
-            or "raw_water_low_band" in risk_flags
-            or "Alarm_RW_Tank_LL" in active_alarms
+            "Alarm_RW_Tank_LL" in active_alarms
+            or (
+                not planned_nominal_refill
+                and (
+                    "raw_water_low_or_spoof" in diagnosis_set
+                    or "raw_water_protection_risk" in risk_flags
+                    or "raw_water_low_band" in risk_flags
+                )
+            )
         ):
             return "raw_water_low_protection"
         if active_alarms or "sensor_or_process_jump" in risk_flags:
@@ -1193,9 +2183,13 @@ class AgenticRoleAgent(RoleAgent):
             risks.append("raw_water_protection_risk")
         if "raw_water_high_high_alarm_active" in relationship_notes:
             risks.append("overflow_risk")
-        if "process2_selected" in relationship_notes:
+        planned_nominal_process2 = "planned_process2_operation" in relationship_notes
+        if "process2_selected" in relationship_notes and not planned_nominal_process2:
             risks.append("process2_manual_path_active")
-        if "process2_manual_dosing_active" in relationship_notes:
+        if (
+            "process2_manual_dosing_active" in relationship_notes
+            and not planned_nominal_process2
+        ):
             risks.append("unauthorized_manual_dosing_possible")
         if any(note.startswith("command_status_mismatch:") for note in relationship_notes):
             risks.append("command_status_divergence")
@@ -1210,7 +2204,7 @@ class AgenticRoleAgent(RoleAgent):
 
         for field in ("ChemTreat_NaCl_Level", "ChemTreat_NaOCl_Level", "ChemTreat_HCl_Level"):
             trend = trends.get(field)
-            if trend and trend.get("direction") == "falling":
+            if trend and trend.get("direction") == "falling" and not planned_nominal_process2:
                 risks.append(f"{field}_depleting")
 
         return sorted(set(risks))
@@ -1290,8 +2284,9 @@ class AgenticRoleAgent(RoleAgent):
         *,
         telemetry_summary: dict[str, Any],
         incident: dict[str, Any] | None,
+        structured_memory: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        if self.role in {"operator", "attacker"}:
+        if self.role == "operator":
             return self._strict_playbook_candidates(
                 remaining_playbook, now=float(context["time_sec"])
             )
@@ -1299,11 +2294,25 @@ class AgenticRoleAgent(RoleAgent):
             self.role == "attacker"
             and not remaining_playbook
             and not context["scenario"].metadata.get("attacker_actions")
+            and not self._is_practical_black_box_attacker()
         ):
             noop_candidate = self._noop_candidate(
                 "No attacker objective is active in this scenario."
             )
             return [noop_candidate] if noop_candidate is not None else []
+        if self.role == "attacker":
+            if self._is_practical_black_box_attacker():
+                return self._practical_black_box_attacker_candidates(
+                    context=context,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=structured_memory,
+                )
+            return self._adaptive_attacker_candidates(
+                context=context,
+                remaining_playbook=remaining_playbook,
+                telemetry_summary=telemetry_summary,
+                structured_memory=structured_memory,
+            )
         return build_candidate_actions(
             role=self.role,
             allowed_action_types=list(self.profile.get("allowed_action_types", [])),
@@ -1318,6 +2327,542 @@ class AgenticRoleAgent(RoleAgent):
             now=float(context["time_sec"]),
             playbook_anticipation_sec=self.playbook_anticipation_sec,
         )
+
+    def _adaptive_attacker_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        remaining_playbook: list[dict[str, Any]],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        allowed = set(self.profile.get("allowed_action_types", []))
+        now = float(context["time_sec"])
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            summary: str,
+            action: dict[str, Any] | str | None,
+            *,
+            source: str,
+            priority: int,
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", ""))
+            if action_type not in allowed:
+                return
+            candidate_id = action_key(normalized)
+            payload = {
+                "id": candidate_id,
+                "summary": summary,
+                "action": normalized,
+                "source": source,
+                "priority": priority,
+            }
+            existing = candidates_by_id.get(candidate_id)
+            if existing is None or int(payload["priority"]) > int(
+                existing.get("priority", 0)
+            ):
+                candidates_by_id[candidate_id] = payload
+
+        next_objective_actions: list[dict[str, Any]] = []
+        planned_keys: set[str] = set()
+        for index, item in enumerate(remaining_playbook[: self.attacker_candidate_window]):
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            planned_keys.add(action_key(action))
+            due_delta = float(item.get("time_sec", 0.0)) - now
+            priority = 100 - (index * 8)
+            if due_delta > 8.0:
+                priority -= 18
+            elif due_delta > 2.0:
+                priority -= 8
+            summary = self._attacker_candidate_summary(
+                action=action,
+                structured_memory=structured_memory,
+                due_delta=due_delta,
+                source_summary="Advance the next objective step.",
+            )
+            add_candidate(
+                summary,
+                action,
+                source="attack_objective",
+                priority=priority,
+            )
+            next_objective_actions.append(action)
+            for support_action in self._attacker_support_actions(
+                action=action,
+                observation=context.get("observation", {}),
+            ):
+                add_candidate(
+                    self._attacker_candidate_summary(
+                        action=support_action,
+                        structured_memory=structured_memory,
+                        due_delta=due_delta,
+                        source_summary="Restore or preserve the leverage needed for the next objective step.",
+                    ),
+                    support_action,
+                    source="attack_support",
+                    priority=priority - 5,
+                )
+
+        base_candidates = build_candidate_actions(
+            role=self.role,
+            allowed_action_types=list(self.profile.get("allowed_action_types", [])),
+            scenario=context["scenario"],
+            observation=context["observation"],
+            risk_flags=telemetry_summary["risk_flags"],
+            active_alarms=telemetry_summary["active_alarms"],
+            relationship_notes=telemetry_summary["relationship_notes"],
+            recent_alerts=context.get("alerts", [])[-self.alert_window :],
+            incident=None,
+            remaining_playbook=remaining_playbook,
+            now=now,
+            playbook_anticipation_sec=self.playbook_anticipation_sec,
+        )
+        for candidate in base_candidates:
+            action = normalize_action(candidate.get("action"))
+            if action is None:
+                continue
+            if not self._attacker_candidate_relevant(
+                action=action,
+                planned_keys=planned_keys,
+                structured_memory=structured_memory,
+                observation=context.get("observation", {}),
+            ):
+                continue
+            add_candidate(
+                self._attacker_candidate_summary(
+                    action=action,
+                    structured_memory=structured_memory,
+                    due_delta=0.0,
+                    source_summary=str(candidate.get("summary", "")),
+                ),
+                action,
+                source=str(candidate.get("source", "action_space")),
+                priority=int(candidate.get("priority", 0)) + 40,
+            )
+
+        noop_candidate = self._noop_candidate(
+            "Hold position if preserving access or waiting for a better opening is more useful than forcing the next move immediately."
+        )
+        if noop_candidate is not None:
+            noop_candidate["priority"] = 10
+            candidates_by_id.setdefault(noop_candidate["id"], noop_candidate)
+
+        return sorted(
+            candidates_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                item["id"],
+            ),
+            reverse=True,
+        )
+
+    def _practical_black_box_attacker_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        allowed = set(self.profile.get("allowed_action_types", []))
+        observation = context.get("observation", {})
+        state_name = str(observation.get("STATE_NAME", "")).upper()
+        p2_selected = self._is_active_flag(observation.get("P2_Selected"))
+        best_surface = str(
+            structured_memory.get("best_known_attack_surface", "unknown")
+        )
+        current_phase = str(structured_memory.get("current_phase", "probing"))
+        detection_pressure = str(
+            structured_memory.get("detection_pressure", "low")
+        ).lower()
+        prior_actions = {
+            action_key(normalize_action(item.get("action")))
+            for item in context.get("executed_actions", [])
+            if item.get("role") == "attacker" and item.get("action") is not None
+        }
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            summary: str,
+            action: dict[str, Any] | str | None,
+            *,
+            source: str,
+            priority: int,
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", ""))
+            if action_type not in allowed:
+                return
+            candidate_id = action_key(normalized)
+            payload = {
+                "id": candidate_id,
+                "summary": summary,
+                "action": normalized,
+                "source": source,
+                "priority": priority,
+            }
+            existing = candidates_by_id.get(candidate_id)
+            if existing is None or int(payload["priority"]) > int(
+                existing.get("priority", 0)
+            ):
+                candidates_by_id[candidate_id] = payload
+
+        def base_priority(action: dict[str, Any]) -> int:
+            action_type = str(action.get("type", ""))
+            novelty_bonus = 12 if action_key(action) not in prior_actions else 0
+            if action_type == "hmi_start":
+                priority = 82 if state_name not in {"RUNNING", "STARTING"} else 24
+                if best_surface == "availability_disruption":
+                    priority += 10
+                return priority + novelty_bonus
+            if action_type == "hmi_stop":
+                priority = 78 if state_name in {"RUNNING", "STARTING"} else 20
+                if best_surface == "availability_disruption":
+                    priority += 14
+                return priority + novelty_bonus
+            if action_type == "hmi_estop":
+                priority = 36
+                if state_name in {"RUNNING", "STARTING"} and detection_pressure == "high":
+                    priority += 18
+                if best_surface == "availability_disruption":
+                    priority += 8
+                return priority + novelty_bonus
+            if action_type == "select_process":
+                active = bool(action.get("active", True))
+                if active:
+                    priority = 76 if not p2_selected else 18
+                    if best_surface in {"unknown", "process2_manual_path"}:
+                        priority += 14
+                    return priority + novelty_bonus
+                priority = 18 if p2_selected else 8
+                return priority + novelty_bonus
+            if action_type == "set_manual_valve":
+                open_valve = bool(action.get("open", True))
+                priority = 70 if (p2_selected and open_valve) else 26
+                if best_surface == "process2_manual_path":
+                    priority += 16 if open_valve else 4
+                return priority + novelty_bonus
+            if action_type == "set_sensor":
+                priority = 64
+                if best_surface in {"unknown", "sensor_manipulation"}:
+                    priority += 16
+                return priority + novelty_bonus
+            if action_type == "noop":
+                priority = 14 if detection_pressure == "high" else 8
+                if current_phase == "initial_observation":
+                    priority += 4
+                return priority
+            return 10 + novelty_bonus
+
+        generic_actions: list[dict[str, Any]] = []
+        if "hmi_start" in allowed:
+            generic_actions.append({"type": "hmi_start", "process_id": "WT-P1"})
+        if "hmi_stop" in allowed:
+            generic_actions.append({"type": "hmi_stop", "process_id": "WT-P1"})
+        if "hmi_estop" in allowed:
+            generic_actions.append({"type": "hmi_estop", "process_id": "WT-P1"})
+        if "select_process" in allowed:
+            generic_actions.extend(
+                [
+                    {"process_id": "WT-P2", "type": "select_process", "active": True},
+                    {
+                        "process_id": "WT-P2",
+                        "type": "select_process",
+                        "active": False,
+                    },
+                ]
+            )
+        if "set_manual_valve" in allowed:
+            for chemical in self._available_chemicals(observation):
+                generic_actions.extend(
+                    [
+                        {
+                            "process_id": "WT-P2",
+                            "type": "set_manual_valve",
+                            "chemical": chemical,
+                            "open": True,
+                        },
+                        {
+                            "process_id": "WT-P2",
+                            "type": "set_manual_valve",
+                            "chemical": chemical,
+                            "open": False,
+                        },
+                    ]
+                )
+        if "set_sensor" in allowed:
+            for field, values in self._practical_black_box_sensor_profiles(observation):
+                generic_actions.extend(
+                    [
+                        {
+                            "type": "set_sensor",
+                            "name": field,
+                            "value": values["low"],
+                        },
+                        {
+                            "type": "set_sensor",
+                            "name": field,
+                            "value": values["high"],
+                        },
+                    ]
+                )
+        if "noop" in allowed:
+            generic_actions.append({"type": "noop"})
+
+        for action in generic_actions:
+            add_candidate(
+                self._practical_black_box_candidate_summary(
+                    action=action,
+                    best_surface=best_surface,
+                    current_phase=current_phase,
+                    detection_pressure=detection_pressure,
+                    previously_tried=action_key(action) in prior_actions,
+                ),
+                action,
+                source="practical_black_box",
+                priority=base_priority(action),
+            )
+
+        return sorted(
+            candidates_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                item["id"],
+            ),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _attacker_surface_from_action_type(action_type: str) -> str:
+        if action_type in {"select_process", "set_manual_valve"}:
+            return "process2_manual_path"
+        if action_type == "set_sensor":
+            return "sensor_manipulation"
+        if action_type in {"hmi_start", "hmi_stop", "hmi_estop"}:
+            return "availability_disruption"
+        return "unknown"
+
+    def _practical_black_box_sensor_profiles(
+        self,
+        observation: dict[str, Any],
+    ) -> list[tuple[str, dict[str, int]]]:
+        preferred = ["RW_Tank_Level", "UF_UFFT_Tank_Level"]
+        candidates: list[str] = []
+        for field in preferred:
+            if field in observation:
+                candidates.append(field)
+        for field in observation:
+            if field in candidates:
+                continue
+            if field.startswith("Alarm_") or field.endswith("_Sts") or field.endswith("_Cmd"):
+                continue
+            if "Level" not in field:
+                continue
+            if self._coerce_number(observation.get(field)) is None:
+                continue
+            candidates.append(field)
+
+        profiles: list[tuple[str, dict[str, int]]] = []
+        for field in candidates[:6]:
+            current = self._coerce_number(observation.get(field))
+            if current is None:
+                continue
+            delta = max(abs(current) * 0.25, 25.0)
+            low_value = int(round(max(0.0, current - delta)))
+            high_value = int(round(current + delta))
+            if low_value == high_value:
+                high_value += 1
+            profiles.append((field, {"low": low_value, "high": high_value}))
+        return profiles
+
+    @staticmethod
+    def _available_chemicals(observation: dict[str, Any]) -> list[str]:
+        chemicals: list[str] = []
+        for chemical in ("NaCl", "NaOCl", "HCl"):
+            level_field = f"ChemTreat_{chemical}_Level"
+            if level_field in observation:
+                chemicals.append(chemical)
+        return chemicals or ["NaCl", "NaOCl", "HCl"]
+
+    def _practical_black_box_candidate_summary(
+        self,
+        *,
+        action: dict[str, Any],
+        best_surface: str,
+        current_phase: str,
+        detection_pressure: str,
+        previously_tried: bool,
+    ) -> str:
+        action_type = str(action.get("type", "unknown"))
+        stance = "exploit" if best_surface != "unknown" else "probe"
+        if previously_tried and stance == "probe":
+            stance = "revisit"
+        if action_type == "hmi_start":
+            return (
+                "Start WT-P1 so later probes can reveal process-side effects."
+                if current_phase in {"initial_observation", "probing"}
+                else "Restart WT-P1 to reopen the availability surface for follow-on disruption."
+            )
+        if action_type == "hmi_stop":
+            return (
+                "Test whether a controlled stop yields direct availability disruption."
+                if best_surface != "availability_disruption"
+                else "Press the strongest known availability surface with a controlled stop."
+            )
+        if action_type == "hmi_estop":
+            return (
+                "Escalate to estop only if immediate disruption is worth the exposure."
+            )
+        if action_type == "select_process":
+            if action.get("active", True):
+                return (
+                    "Probe whether enabling Process 2 unlocks a controllable dosing path."
+                    if best_surface in {"unknown", "process2_manual_path"}
+                    else "Reopen Process 2 to compare it with the currently strongest discovered surface."
+                )
+            return (
+                "Disable Process 2 to see whether the current effect depends on manual-path access."
+            )
+        if action_type == "set_manual_valve":
+            chemical = str(action.get("chemical", "unknown"))
+            state = "open" if action.get("open", True) else "close"
+            if action.get("open", True):
+                return (
+                    f"Open the {chemical} manual valve to test whether Process 2 causes observable physical change."
+                )
+            return (
+                f"Close the {chemical} manual valve to test whether the observed effect collapses when the path is removed."
+            )
+        if action_type == "set_sensor":
+            sensor_name = str(action.get("name", "sensor"))
+            if detection_pressure == "high" and best_surface == "sensor_manipulation":
+                return (
+                    f"Reuse {sensor_name} manipulation to preserve the strongest known telemetry-based surface."
+                )
+            return (
+                f"{stance.capitalize()} whether biasing {sensor_name} changes plant behavior or defender attention."
+            )
+        return "Hold position if another sample is needed before forcing a noisier move."
+
+    def _attacker_candidate_relevant(
+        self,
+        *,
+        action: dict[str, Any],
+        planned_keys: set[str],
+        structured_memory: dict[str, Any],
+        observation: dict[str, Any],
+    ) -> bool:
+        if action_key(action) in planned_keys:
+            return True
+        action_type = str(action.get("type", ""))
+        leverage = str(structured_memory.get("leverage_hypothesis", ""))
+        if action_type == "noop":
+            return True
+        if leverage == "process2_manual_path":
+            if action_type == "select_process":
+                return True
+            if action_type == "set_manual_valve":
+                chemical = str(action.get("chemical", ""))
+                return bool(chemical)
+        if leverage == "sensor_spoofing":
+            if action_type == "set_sensor":
+                sensor_name = str(action.get("name", ""))
+                return sensor_name.startswith("RW_") or sensor_name.startswith("UF_")
+        if leverage == "availability_disruption":
+            return action_type in {"hmi_start", "hmi_stop", "hmi_estop"}
+        if action_type == "select_process" and not self._is_active_flag(
+            observation.get("P2_Selected")
+        ):
+            return True
+        return False
+
+    def _attacker_support_actions(
+        self,
+        *,
+        action: dict[str, Any],
+        observation: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        support: list[dict[str, Any]] = []
+        action_type = str(action.get("type", ""))
+        if action_type == "set_manual_valve" and not self._is_active_flag(
+            observation.get("P2_Selected")
+        ):
+            support.append(
+                {
+                    "type": "select_process",
+                    "process_id": "WT-P2",
+                    "active": True,
+                }
+            )
+        if action_type in {"hmi_stop", "hmi_estop"} and str(
+            observation.get("STATE_NAME", "")
+        ).upper() not in {"RUNNING", "STARTING"}:
+            support.append({"type": "hmi_start", "process_id": "WT-P1"})
+        return support
+
+    def _attacker_candidate_summary(
+        self,
+        *,
+        action: dict[str, Any],
+        structured_memory: dict[str, Any],
+        due_delta: float,
+        source_summary: str,
+    ) -> str:
+        action_type = str(action.get("type", "unknown"))
+        leverage = str(structured_memory.get("leverage_hypothesis", "current_access"))
+        attention = str(
+            structured_memory.get("defender_attention_estimate", "low")
+        ).lower()
+        timing = "now" if due_delta <= 0.5 else "early"
+        if action_type == "select_process":
+            if action.get("active", True):
+                return (
+                    f"Re-enable Process 2 {timing} so the {leverage} path remains usable "
+                    f"even with defender attention {attention}. {source_summary}"
+                )
+            return (
+                f"Drop Process 2 selection {timing} to reduce exposure after the current "
+                f"objective branch. {source_summary}"
+            )
+        if action_type == "set_manual_valve":
+            chemical = str(action.get("chemical", "unknown"))
+            state = "open" if action.get("open", True) else "close"
+            return (
+                f"{state.capitalize()} the {chemical} manual valve {timing} to translate "
+                f"Process 2 access into physical effect while attention is {attention}. "
+                f"{source_summary}"
+            )
+        if action_type == "set_sensor":
+            sensor_name = str(action.get("name", "sensor"))
+            return (
+                f"Bias {sensor_name} {timing} to keep the {leverage} hypothesis active "
+                f"and test whether the defender reacts. {source_summary}"
+            )
+        if action_type == "hmi_start":
+            return (
+                f"Start WT-P1 {timing} so later interference has real process effect. "
+                f"{source_summary}"
+            )
+        if action_type == "hmi_stop":
+            return (
+                f"Stop WT-P1 {timing} to create direct availability impact while "
+                f"attention is {attention}. {source_summary}"
+            )
+        if action_type == "hmi_estop":
+            return (
+                f"Escalate to estop {timing} if direct disruption is worth the exposure. "
+                f"{source_summary}"
+            )
+        return source_summary
 
     def _strict_playbook_candidates(
         self, remaining_playbook: list[dict[str, Any]], *, now: float
@@ -1424,6 +2969,19 @@ class AgenticRoleAgent(RoleAgent):
             decision_type = "note"
             action = None
 
+        if self._planned_refill_guardrail_active(context):
+            if decision_type == "alert":
+                decision_type = "note"
+            if (
+                self.role == "defender"
+                and action is not None
+                and str(action.get("type")) in {"hmi_stop", "hmi_estop"}
+            ):
+                action = None
+                decision_type = "note"
+                if not summary:
+                    summary = "Planned refill response remains within expected nominal bounds."
+
         if action is not None:
             if self._action_satisfied(action, observation=context.get("observation", {})):
                 return []
@@ -1444,21 +3002,58 @@ class AgenticRoleAgent(RoleAgent):
         if not summary and action is None:
             return []
 
-        return [
-            self.decision(
-                decision_type=decision_type,
-                summary=summary or f"{self.role} decision",
-                time_sec=now,
-                action=action,
-                confidence=float(payload.get("confidence", 0.65)),
-                diagnosis=payload.get("diagnosis"),
-                labels=list(payload.get("labels", ["agentic", self.role])),
-                metadata={
-                    "backend": self.engine.last_mode,
-                    "error": self.engine.last_error,
-                },
-            )
-        ]
+        decision = self.decision(
+            decision_type=decision_type,
+            summary=summary or f"{self.role} decision",
+            time_sec=now,
+            action=action,
+            confidence=float(payload.get("confidence", 0.65)),
+            diagnosis=payload.get("diagnosis"),
+            labels=list(payload.get("labels", ["agentic", self.role])),
+            metadata={
+                "backend": self.engine.last_mode,
+                "error": self.engine.last_error,
+            },
+        )
+        self._record_role_decision(
+            payload=payload,
+            decision=decision,
+            context=context,
+        )
+        return [decision]
+
+    def _record_role_decision(
+        self,
+        *,
+        payload: dict[str, Any],
+        decision: Any,
+        context: dict[str, Any],
+    ) -> None:
+        memory = self._state.setdefault("role_memory", {})
+        action = normalize_action(decision.action)
+        memory["last_rationale"] = decision.summary
+        memory["last_decision_type"] = decision.decision_type
+        memory["last_diagnosis"] = decision.diagnosis
+        memory["last_action"] = action
+        memory["last_action_type"] = action.get("type") if action is not None else None
+        memory["last_decision_time_sec"] = round(float(context.get("time_sec", 0.0)), 3)
+        if payload.get("tactic_phase"):
+            memory["model_tactic_phase"] = payload.get("tactic_phase")
+        if payload.get("attention_target"):
+            memory["model_attention_target"] = payload.get("attention_target")
+        if payload.get("why_it_matters"):
+            memory["model_why_it_matters"] = payload.get("why_it_matters")
+        journal = self._state.setdefault("decision_journal", [])
+        journal.append(
+            {
+                "time_sec": round(float(context.get("time_sec", 0.0)), 3),
+                "decision_type": decision.decision_type,
+                "summary": decision.summary,
+                "action": action,
+                "diagnosis": decision.diagnosis,
+            }
+        )
+        del journal[:-self.summary_window]
 
     def _apply_defender_guardrail(
         self,
@@ -1604,20 +3199,35 @@ class AgenticRoleAgent(RoleAgent):
         last_signature = channel_state.get("signature")
         last_time = float(channel_state.get("time_sec", -10_000.0))
         evidence = self._reasoning_evidence(context)
+        has_new_evidence = self._has_material_new_evidence(
+            evidence,
+            previous=channel_state.get("evidence", {}),
+        )
 
-        if signature == last_signature and now - last_time < self.reasoning_refresh_sec:
-            return False
         if (
-            now - last_time < self.reasoning_cooldown_sec
-            and not self._has_material_new_evidence(
-                evidence,
-                previous=channel_state.get("evidence", {}),
-            )
+            signature == last_signature
+            and now - last_time < self.reasoning_refresh_sec
+            and not has_new_evidence
         ):
+            return False
+        if now - last_time < self.reasoning_cooldown_sec and not has_new_evidence:
             return False
 
         state[channel] = {"signature": signature, "time_sec": now, "evidence": evidence}
         return True
+
+    @staticmethod
+    def _planned_refill_guardrail_active(context: dict[str, Any]) -> bool:
+        relationship_notes = set(context.get("relationship_notes", []))
+        if "planned_refill_response" not in relationship_notes:
+            return False
+        active_alarms = set(context.get("active_alarms", []))
+        risk_flags = set(context.get("risk_flags", []))
+        return (
+            "Alarm_RW_Tank_LL" not in active_alarms
+            and "command_status_divergence" not in risk_flags
+            and "sensor_or_process_jump" not in risk_flags
+        )
 
     def _should_monitor(self, context: dict[str, Any]) -> bool:
         if context.get("active_alarms") or context.get("risk_flags"):
@@ -1679,27 +3289,20 @@ class AgenticRoleAgent(RoleAgent):
         return False
 
     def _reasoning_signature(self, context: dict[str, Any], *, channel: str) -> str:
-        safety_bounds = context.get("safety_bounds", {})
-        observation = dict(context.get("observation") or {})
-        signature_observation: dict[str, Any] = {}
-        for key, value in observation.items():
-            if key in {"timestamp_utc", "elapsed_sec", "sample_phase"}:
-                continue
-            numeric_value = self._coerce_number(value)
-            bounds = safety_bounds.get(key)
-            if numeric_value is not None and isinstance(bounds, dict):
-                minimum = self._coerce_number(bounds.get("min"))
-                maximum = self._coerce_number(bounds.get("max"))
-                if minimum is not None and maximum is not None and maximum > minimum:
-                    bucket = max(1.0, (maximum - minimum) / 20.0)
-                    signature_observation[key] = round(numeric_value / bucket, 2)
-                    continue
-            signature_observation[key] = value
+        incident = context.get("incident") or {}
+        signature_incident = None
+        if incident:
+            signature_incident = {
+                "type": incident.get("type"),
+                "status": incident.get("status"),
+                "severity": incident.get("severity"),
+                "diagnosis": incident.get("diagnosis"),
+                "recommended_action": incident.get("recommended_action"),
+            }
 
         payload = {
             "channel": channel,
             "state_name": context.get("state_name"),
-            "observation": signature_observation,
             "candidate_ids": [
                 item["id"] for item in context.get("candidate_actions", [])
             ],
@@ -1710,31 +3313,31 @@ class AgenticRoleAgent(RoleAgent):
                 }
                 for item in context.get("remaining_playbook", [])[:2]
             ],
-            "recent_alert_count": len(context.get("recent_alerts", [])),
-            "recent_action_count": len(context.get("recent_actions", [])),
-            "recent_decision_count": len(context.get("recent_decisions", [])),
             "active_alarms": context.get("active_alarms", []),
             "risk_flags": context.get("risk_flags", []),
-            "incident": context.get("incident"),
+            "incident": signature_incident,
             "relationship_notes": context.get("relationship_notes", [])[:8],
-            "trend_directions": {
-                field: item.get("direction")
-                for field, item in context.get("short_horizon_trends", {}).items()
-            },
             "metrics": context.get("metrics"),
             "passed": context.get("passed"),
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
     def _reasoning_evidence(self, context: dict[str, Any]) -> dict[str, Any]:
+        structured_memory = context.get("structured_memory") or {}
         return {
             "active_alarms": tuple(context.get("active_alarms", [])),
             "risk_flags": tuple(context.get("risk_flags", [])),
             "observer_alert_count": sum(
                 1 for item in context.get("recent_alerts", []) if item.get("role") == "observer"
             ),
+            "defender_alert_count": sum(
+                1 for item in context.get("recent_alerts", []) if item.get("role") == "defender"
+            ),
             "attacker_action_count": sum(
                 1 for item in context.get("recent_actions", []) if item.get("role") == "attacker"
+            ),
+            "defender_action_count": sum(
+                1 for item in context.get("recent_actions", []) if item.get("role") == "defender"
             ),
             "process2_signal_count": sum(
                 1
@@ -1745,6 +3348,12 @@ class AgenticRoleAgent(RoleAgent):
             "incident_type": (context.get("incident") or {}).get("type"),
             "incident_status": (context.get("incident") or {}).get("status"),
             "incident_severity": int((context.get("incident") or {}).get("severity", 0) or 0),
+            "memory_focus": structured_memory.get("recommended_attention_target")
+            or structured_memory.get("leverage_hypothesis")
+            or structured_memory.get("incident_hypothesis"),
+            "memory_status": structured_memory.get("suspicion_level")
+            or structured_memory.get("lifecycle_state")
+            or structured_memory.get("current_tactic_phase"),
         }
 
     def _has_material_new_evidence(
@@ -1757,7 +3366,11 @@ class AgenticRoleAgent(RoleAgent):
             return True
         if current.get("observer_alert_count", 0) > previous.get("observer_alert_count", 0):
             return True
+        if current.get("defender_alert_count", 0) > previous.get("defender_alert_count", 0):
+            return True
         if current.get("attacker_action_count", 0) > previous.get("attacker_action_count", 0):
+            return True
+        if current.get("defender_action_count", 0) > previous.get("defender_action_count", 0):
             return True
         if current.get("process2_signal_count", 0) > previous.get("process2_signal_count", 0):
             return True
@@ -1767,6 +3380,8 @@ class AgenticRoleAgent(RoleAgent):
             return True
         if current.get("incident_severity", 0) > previous.get("incident_severity", 0):
             return True
+        if current.get("memory_focus") != previous.get("memory_focus"):
+            return True
         status_order = {
             "none": 0,
             "stabilized": 0,
@@ -1774,10 +3389,12 @@ class AgenticRoleAgent(RoleAgent):
             "confirmed": 2,
             "containing": 3,
         }
-        return status_order.get(str(current.get("incident_status")), 0) > status_order.get(
+        if status_order.get(str(current.get("incident_status")), 0) > status_order.get(
             str(previous.get("incident_status")),
             0,
-        )
+        ):
+            return True
+        return current.get("memory_status") != previous.get("memory_status")
 
     @staticmethod
     def _coerce_number(value: Any) -> float | None:
@@ -1829,3 +3446,72 @@ class AgenticRoleAgent(RoleAgent):
         return {
             field: observation.get(field) for field in fields if field in observation
         }
+
+    def _visible_recent_actions(
+        self,
+        recent_actions: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_actions:
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            rendered: dict[str, Any] = {
+                "role": item.get("role"),
+                "action": action,
+            }
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            state_after = item.get("state_after")
+            if state_after:
+                rendered["state_after"] = state_after
+            visible.append(rendered)
+        return visible
+
+    def _visible_recent_decisions(
+        self,
+        recent_decisions: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_decisions:
+            rendered: dict[str, Any] = {
+                "role": item.get("role"),
+                "decision_type": item.get("decision_type"),
+                "summary": item.get("summary"),
+                "diagnosis": item.get("diagnosis"),
+            }
+            action = normalize_action(item.get("action"))
+            if action is not None:
+                rendered["action"] = action
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            visible.append(rendered)
+        return visible
+
+    def _visible_recent_alerts(
+        self,
+        recent_alerts: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_alerts:
+            rendered: dict[str, Any] = {
+                "role": item.get("role"),
+                "summary": item.get("summary"),
+                "diagnosis": item.get("diagnosis"),
+            }
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            visible.append(rendered)
+        return visible

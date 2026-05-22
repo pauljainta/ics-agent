@@ -293,7 +293,9 @@ def test_due_playbook_action_falls_back_when_model_only_notes(monkeypatch) -> No
     assert decisions[0].metadata["fallback"] == "due_playbook_action"
 
 
-def test_due_redundant_playbook_action_is_skipped_when_state_already_satisfied() -> None:
+def test_due_redundant_playbook_action_is_skipped_when_state_already_satisfied(
+    monkeypatch,
+) -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-hh-alarm")
     profile = {
         "role": "attacker",
@@ -306,6 +308,15 @@ def test_due_redundant_playbook_action_is_skipped_when_state_already_satisfied()
     }
     agent = AgenticRoleAgent("pytest_agentic_attacker", profile)
     agent.reset(scenario)
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda context: {
+            "summary": "Force the stop anyway.",
+            "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+            "decision_type": "action",
+        },
+    )
 
     decisions = agent.step(
         {
@@ -355,6 +366,433 @@ def test_due_redundant_playbook_action_is_skipped_when_state_already_satisfied()
     assert decisions == []
 
 
+def test_attacker_context_exposes_structured_memory_and_recovery_candidates() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "allowed_action_types": [
+            "select_process",
+            "set_manual_valve",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 12.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 0,
+                "ChemTreat_HCl_Level": 790,
+                "RW_Tank_Level": 610,
+                "RW_Pump_Sts": 1,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "P2_Selected": 1, "ChemTreat_HCl_Level": 800},
+                {"STATE_NAME": "RUNNING", "P2_Selected": 0, "ChemTreat_HCl_Level": 790},
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 8.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 11.5,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": False,
+                    },
+                },
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 11.5,
+                    "decision_type": "alert",
+                    "summary": "Observer saw Process 2 toggled off after suspicious use.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                }
+            ],
+            "playbooks": {
+                "attacker": [
+                    {
+                        "time_sec": 8.0,
+                        "action": {
+                            "type": "select_process",
+                            "process_id": "WT-P2",
+                            "active": True,
+                        },
+                    },
+                    {
+                        "time_sec": 10.0,
+                        "action": {
+                            "type": "set_manual_valve",
+                            "process_id": "WT-P2",
+                            "chemical": "HCl",
+                            "open": True,
+                        },
+                    },
+                ]
+            },
+        }
+    )
+
+    assert context["structured_memory"]["leverage_hypothesis"] == "process2_manual_path"
+    assert context["structured_memory"]["defender_attention_estimate"] == "high"
+    assert any(
+        item["action"]
+        == {
+            "type": "select_process",
+            "process_id": "WT-P2",
+            "active": True,
+        }
+        for item in context["candidate_actions"]
+    )
+    assert any(
+        item["action"]
+        == {
+            "type": "set_manual_valve",
+            "process_id": "WT-P2",
+            "chemical": "HCl",
+            "open": True,
+        }
+        for item in context["candidate_actions"]
+    )
+
+
+def test_observer_memory_tracks_evidence_and_attention_target() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-naocl-drain")
+    profile = {
+        "role": "observer",
+        "family": "agentic",
+        "allowed_action_types": ["noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_observer", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 12.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "ChemTreat_NaOCl_Level": 760,
+                "ChemTreat_NaOCl_Valve_Sts": 1,
+                "RW_Tank_Level": 610,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "ChemTreat_NaOCl_Level": 800},
+                {"STATE_NAME": "RUNNING", "ChemTreat_NaOCl_Level": 780},
+                {"STATE_NAME": "RUNNING", "ChemTreat_NaOCl_Level": 760},
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 8.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                }
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    memory = context["structured_memory"]
+    assert memory["anomaly_hypotheses"][0]["diagnosis"] == "unauthorized_chemical_dosing"
+    assert memory["recommended_attention_target"] == "WT-P2_manual_path"
+    assert memory["evidence_ledger"]
+
+
+def test_defender_memory_tracks_prior_mitigations_and_escalation() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 16.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "ChemTreat_HCl_Level": 730,
+                "ChemTreat_HCl_Valve_Sts": 1,
+                "RW_Pump_Sts": 1,
+                "RW_Tank_Level": 620,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "ChemTreat_HCl_Level": 780, "P2_Selected": 1},
+                {"STATE_NAME": "RUNNING", "ChemTreat_HCl_Level": 755, "P2_Selected": 1},
+                {"STATE_NAME": "RUNNING", "ChemTreat_HCl_Level": 730, "P2_Selected": 1},
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 8.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 12.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": False,
+                    },
+                },
+            ],
+            "decisions": [
+                {
+                    "role": "observer",
+                    "time_sec": 15.0,
+                    "decision_type": "alert",
+                    "summary": "Repeated HCl drain evidence remains active.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                }
+            ],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 15.0,
+                    "decision_type": "alert",
+                    "summary": "Repeated HCl drain evidence remains active.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                }
+            ],
+            "playbooks": {},
+        }
+    )
+
+    memory = context["structured_memory"]
+    assert memory["prior_mitigations_attempted"] == ["select_process:off"]
+    assert memory["containment_effective"] is False
+    assert memory["escalation_required"] is True
+
+
+def test_practical_black_box_attacker_context_strips_privileged_scenario_fields() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "practical_black_box",
+        "allowed_action_types": [
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 7.0,
+            "observation": {
+                "STATE_NAME": "IDLE",
+                "P2_Selected": 0,
+                "RW_Tank_Level": 620,
+                "UF_UFFT_Tank_Level": 420,
+                "ChemTreat_HCl_Level": 810,
+            },
+            "observations": [],
+            "executed_actions": [],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {
+                "attacker": [
+                    {
+                        "time_sec": 8.0,
+                        "action": {
+                            "type": "select_process",
+                            "process_id": "WT-P2",
+                            "active": True,
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+    assert context["scenario_id"] == "attack-live"
+    assert context["process_id"] is None
+    assert context["remaining_playbook"] == []
+    assert context["expected_outcomes"] == []
+    assert context["safety_bounds"] == {}
+    assert context["intent"].startswith("Discover controllable surfaces")
+    assert context["role_goal"][0].startswith("Infer what each candidate action")
+
+
+def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "practical_black_box",
+        "allowed_action_types": [
+            "select_process",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 0.0,
+            "observation": {
+                "STATE_NAME": "IDLE",
+                "P2_Selected": 0,
+                "RW_Tank_Level": 600,
+                "UF_UFFT_Tank_Level": 400,
+            },
+            "observations": [],
+            "executed_actions": [],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert any(
+        item["action"] == {"type": "hmi_start", "process_id": "WT-P1"}
+        for item in context["candidate_actions"]
+    )
+    assert any(
+        item["action"]
+        == {"process_id": "WT-P2", "type": "select_process", "active": True}
+        for item in context["candidate_actions"]
+    )
+    assert any(
+        item["action"].get("type") == "set_sensor"
+        and item["action"].get("name") == "RW_Tank_Level"
+        for item in context["candidate_actions"]
+    )
+
+
+def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "practical_black_box",
+        "allowed_action_types": [
+            "select_process",
+            "set_manual_valve",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 10.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "RW_Tank_Level": 610,
+                "ChemTreat_HCl_Level": 790,
+            },
+            "observations": [],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 8.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                }
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 9.5,
+                    "decision_type": "alert",
+                    "summary": "Process 2 was toggled unexpectedly.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                }
+            ],
+            "playbooks": {},
+        }
+    )
+
+    memory = context["structured_memory"]
+    assert memory["best_known_attack_surface"] == "process2_manual_path"
+    assert memory["detection_pressure"] in {"medium", "high"}
+    assert memory["current_phase"] in {
+        "surface_validation",
+        "evasion_or_exploitation",
+        "exploitation",
+    }
+
+
 def test_defender_does_not_offer_process2_selection_in_p1_scenarios() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-hmi-forced-stop")
     profile = {
@@ -392,6 +830,163 @@ def test_defender_does_not_offer_process2_selection_in_p1_scenarios() -> None:
         for item in context["candidate_actions"]
         if item.get("action")
     )
+
+
+def test_agentic_blue_team_ignores_planned_nominal_process2_operation() -> None:
+    scenario = ScenarioCatalog().get("normal/wt-p2-hcl-dosing")
+    profile = {
+        "role": "observer",
+        "family": "agentic",
+        "allowed_action_types": ["noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_observer", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 9.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "ChemTreat_HCl_Valve_Sts": 1,
+                "ChemTreat_HCl_Level": 790,
+                "RW_Tank_Level": 620,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "ChemTreat_HCl_Level": 800},
+                {"STATE_NAME": "RUNNING", "ChemTreat_HCl_Level": 790},
+            ],
+            "executed_actions": [
+                {
+                    "role": "operator",
+                    "time_sec": 8.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                }
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {
+                "operator": [
+                    {
+                        "time_sec": 5.0,
+                        "action": {"type": "hmi_start", "process_id": "WT-P1"},
+                    },
+                    {
+                        "time_sec": 8.0,
+                        "action": {
+                            "type": "select_process",
+                            "process_id": "WT-P2",
+                            "active": True,
+                        },
+                    },
+                    {
+                        "time_sec": 9.0,
+                        "action": {
+                            "type": "set_manual_valve",
+                            "process_id": "WT-P2",
+                            "chemical": "HCl",
+                            "open": True,
+                        },
+                    },
+                ]
+            },
+        }
+    )
+
+    assert "planned_process2_operation" in context["relationship_notes"]
+    assert "process2_manual_path_active" not in context["risk_flags"]
+    assert context["structured_memory"]["anomaly_hypotheses"] == []
+
+
+def test_agentic_blue_team_ignores_planned_nominal_refill_response() -> None:
+    scenario = ScenarioCatalog().get("normal/wt-p1-refill-response")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 23.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 451,
+                "UF_UFFT_Tank_Level": 430,
+                "Alarm_RW_Tank_L": 1,
+                "Alarm_RW_Tank_LL": 0,
+                "RW_Pump_Sts": 1,
+                "RW_Tank_PR_Valve_Cmd": 1,
+                "RW_Tank_PR_Valve_Sts": 1,
+                "P2_Selected": 0,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 475},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 471},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 460},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 451},
+            ],
+            "executed_actions": [
+                {
+                    "role": "operator",
+                    "time_sec": 5.0,
+                    "action": {"type": "hmi_start", "process_id": "WT-P1"},
+                }
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {
+                "operator": [
+                    {
+                        "time_sec": 5.0,
+                        "action": {"type": "hmi_start", "process_id": "WT-P1"},
+                    },
+                    {
+                        "time_sec": 55.0,
+                        "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+                    },
+                ]
+            },
+        }
+    )
+
+    assert "planned_refill_response" in context["relationship_notes"]
+    assert context["incident"]["type"] == "telemetry_anomaly"
+    assert not any(
+        item.get("action", {}).get("type") == "hmi_stop"
+        for item in context["candidate_actions"]
+        if item.get("action")
+    )
+
+    decisions = agent._payload_to_decisions(
+        {
+            "summary": "Escalate to controlled stop.",
+            "decision_type": "action",
+            "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+            "diagnosis": "raw_water_low_or_spoof",
+        },
+        context,
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].decision_type == "note"
+    assert decisions[0].action is None
 
 
 def test_offline_analysis_falls_back_when_backend_errors() -> None:
@@ -498,6 +1093,144 @@ def test_live_context_is_sanitized_and_enriched() -> None:
     assert "RW_Tank_Level" in context["short_horizon_trends"]
     assert context["incident"]["type"] == "raw_water_low_protection"
     assert context["incident"]["status"] in {"suspected", "confirmed"}
+
+
+def test_live_context_compacts_history_and_hides_transient_memory() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-hmi-forced-stop")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "allowed_action_types": [
+            "hmi_start",
+            "hmi_stop",
+            "hmi_estop",
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_attacker", profile)
+    agent.reset(scenario)
+    agent._state["role_memory"] = {
+        "mission_objective": "Disrupt WT-P1 availability.",
+        "current_tactic_phase": "availability_pressure",
+        "last_rationale": "previous hold note",
+        "last_decision_time_sec": 4.0,
+    }
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 12.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 640,
+                "UF_UFFT_Tank_Level": 430,
+                "P2_Selected": 0,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 650},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 640},
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 10.0,
+                    "action": {"type": "hmi_stop"},
+                    "state_after": "SHUTDOWN",
+                    "agent_name": "attacker",
+                }
+            ],
+            "decisions": [
+                {
+                    "role": "observer",
+                    "time_sec": 11.0,
+                    "decision_type": "alert",
+                    "summary": "Observer flagged abrupt shutdown.",
+                    "diagnosis": "availability_pressure",
+                    "labels": ["observer"],
+                    "metadata": {"backend": "qwen_langgraph"},
+                }
+            ],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 11.0,
+                    "decision_type": "alert",
+                    "summary": "Observer flagged abrupt shutdown.",
+                    "diagnosis": "availability_pressure",
+                    "metadata": {"backend": "qwen_langgraph"},
+                }
+            ],
+            "playbooks": {},
+        }
+    )
+
+    assert "last_rationale" not in context["structured_memory"]
+    assert "last_decision_time_sec" not in context["structured_memory"]
+    assert context["recent_actions"][0]["age_sec"] == 2.0
+    assert context["recent_decisions"][0]["age_sec"] == 1.0
+    assert "labels" not in context["recent_decisions"][0]
+    assert "metadata" not in context["recent_decisions"][0]
+
+
+def test_reasoning_signature_ignores_transient_incident_counters() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 16.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 400,
+                "UF_UFFT_Tank_Level": 420,
+                "RW_Tank_PR_Valve_Cmd": 1,
+                "RW_Tank_PR_Valve_Sts": 1,
+                "RW_Pump_Sts": 1,
+                "Alarm_RW_Tank_LL": 1,
+                "P2_Selected": 0,
+            },
+            "observations": [
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600},
+                {"STATE_NAME": "RUNNING", "RW_Tank_Level": 400},
+            ],
+            "executed_actions": [],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+    mutated = dict(context)
+    mutated["incident"] = {
+        **(context["incident"] or {}),
+        "persistence_sec": 99.0,
+        "evidence_count": 9,
+        "last_seen_time_sec": 99.0,
+        "new_evidence": ["extra"],
+        "evidence_tokens": ["extra"],
+    }
+
+    assert agent._reasoning_signature(
+        context,
+        channel="monitor",
+    ) == agent._reasoning_signature(mutated, channel="monitor")
 
 
 def test_defender_guardrail_contains_process2_drain_when_model_only_recognizes(
