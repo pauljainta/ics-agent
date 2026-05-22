@@ -617,6 +617,7 @@ def test_practical_black_box_attacker_context_strips_privileged_scenario_fields(
         "family": "agentic",
         "knowledge_mode": "practical_black_box",
         "allowed_action_types": [
+            "inspect_surface",
             "select_process",
             "set_manual_valve",
             "set_sensor",
@@ -678,6 +679,7 @@ def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
         "family": "agentic",
         "knowledge_mode": "practical_black_box",
         "allowed_action_types": [
+            "inspect_surface",
             "select_process",
             "set_sensor",
             "hmi_start",
@@ -724,6 +726,10 @@ def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
         and item["action"].get("name") == "RW_Tank_Level"
         for item in context["candidate_actions"]
     )
+    assert any(
+        item["action"] == {"type": "inspect_surface", "surface": "process2_control_plane"}
+        for item in context["candidate_actions"]
+    )
 
 
 def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None:
@@ -733,6 +739,7 @@ def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None
         "family": "agentic",
         "knowledge_mode": "practical_black_box",
         "allowed_action_types": [
+            "inspect_surface",
             "select_process",
             "set_manual_valve",
             "hmi_start",
@@ -759,6 +766,24 @@ def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None
             },
             "observations": [],
             "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 7.5,
+                    "action": {
+                        "type": "inspect_surface",
+                        "surface": "process2_control_plane",
+                    },
+                    "result": {
+                        "category": "reconnaissance",
+                        "surface": "process2_control_plane",
+                        "summary": "process2_control_plane: state=RUNNING; process2_selected; P2_HCl_Cmd=1",
+                        "findings": [
+                            "state=RUNNING",
+                            "process2_selected",
+                            "P2_HCl_Cmd=1",
+                        ],
+                    },
+                },
                 {
                     "role": "attacker",
                     "time_sec": 8.0,
@@ -791,6 +816,8 @@ def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None
         "evasion_or_exploitation",
         "exploitation",
     }
+    assert memory["reconnaissance_findings"][0]["surface"] == "process2_control_plane"
+    assert memory["candidate_leverage_hypotheses"][0]["surface"] == "process2_manual_path"
 
 
 def test_defender_does_not_offer_process2_selection_in_p1_scenarios() -> None:

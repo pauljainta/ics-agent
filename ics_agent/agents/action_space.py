@@ -215,6 +215,7 @@ def _add_defender_candidates(
     incident_severity = int(incident.get("severity", 0) or 0)
     recent_observer_alert = any(item.get("role") == "observer" for item in recent_alerts)
     pump_running = _is_active_flag(observation.get("RW_Pump_Sts"))
+    planned_refill_response = "planned_refill_response" in relationship_notes
 
     process2_selected = "process2_selected" in relationship_notes
     process2_manual_dosing = "process2_manual_dosing_active" in relationship_notes
@@ -235,8 +236,13 @@ def _add_defender_candidates(
 
     raw_water_low = (
         "Alarm_RW_Tank_LL" in active_alarms
-        or "raw_water_protection_risk" in risk_flags
-        or "raw_water_low_band" in risk_flags
+        or (
+            not planned_refill_response
+            and (
+                "raw_water_protection_risk" in risk_flags
+                or "raw_water_low_band" in risk_flags
+            )
+        )
     )
     raw_water_high = (
         "Alarm_RW_Tank_HH" in active_alarms

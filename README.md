@@ -35,6 +35,56 @@ implemented and revalidated end to end.
   Qwen/LangGraph path, and observer/defender/intervention metrics are split
   cleanly
 
+## 2026-05-21 Formalized Agentic Refresh
+
+The current working tree now formalizes the live roles around:
+
+`observe -> update structured role memory -> choose bounded candidate action -> act or hold -> record rationale`
+
+Key implementation changes in this refresh:
+
+- the OpenPLC environment remains autonomous and external to the agents
+- attacker, observer, defender, and planner prompts now use concise live state
+  plus structured memory instead of replaying long transcripts
+- the practical black-box attacker now has bounded `inspect_surface`
+  reconnaissance actions for tags, registers, I/O image, alarm bits,
+  actuator-state bits, and Process 2 control-plane inspection
+- attacker memory tracks objective progress, tactic phase, leverage
+  hypothesis, prior action effects, reconnaissance findings, and inferred
+  defender attention
+- observer memory tracks anomaly hypotheses, evidence tokens, suspicion level,
+  and recommended attention target
+- defender memory tracks incident hypothesis, severity, confidence, lifecycle
+  stage, prior mitigations, containment effectiveness, and escalation need
+- nominal Process 2 operations and nominal refill-response behavior now have
+  explicit context guards so they do not get mislabeled as attacks
+- metrics now separate nominal and attack semantics and expose canonicalized
+  trajectories for honest repeated-run diversity measurement
+- attacker success is now scored from actual safety-bound violation / unsafe
+  state achievement rather than authored scenario `passed`, while the old
+  scenario-expectation signal remains available separately
+
+Fresh verified normal-suite artifacts for this refresh:
+
+- fresh result root for this rerun:
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/`
+- root:
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/formalized_agentic_normal/20260522T041232-0a543781/`
+- results:
+  `10/10` nominal scenarios completed and passed, `0` false-positive
+  episodes, `0` false-intervention episodes, and `0` nominal safety
+  violations
+
+Attack and repeated-run experiment note:
+
+- the GPU-backed local Qwen path is working and the formalized attack suite
+  starts cleanly without backend/parser failure
+- fresh attack-family outputs for this rerun are written under
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/formalized_agentic_attack/`
+  and
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/`
+  instead of being overwritten
+
 ## Current Performance Note
 
 Using the fresh 2026-04-15 attack-only `agentic_agents` batch and the current

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -31,6 +32,8 @@ def canonical_action_name(action: dict[str, Any] | str) -> str:
         return action
     action_type = action.get("type", "unknown")
     process_id = action.get("process_id")
+    if action_type == "inspect_surface":
+        return f"inspect_surface:{action.get('surface', 'unknown')}"
     if action_type == "set_manual_valve":
         chemical = action.get("chemical", "unknown")
         state = "open" if action.get("open", True) else "close"
@@ -44,9 +47,30 @@ def canonical_action_name(action: dict[str, Any] | str) -> str:
 class ExperimentOrchestrator:
     def __init__(self, catalog: ScenarioCatalog | None = None) -> None:
         self.catalog = catalog or ScenarioCatalog()
-        self.agent_profiles = load_config("agent_profiles.yaml").get("profiles", {})
+        raw_profiles = load_config("agent_profiles.yaml").get("profiles", {})
+        self.agent_profiles = {
+            profile_id: self._normalized_profile(profile)
+            for profile_id, profile in raw_profiles.items()
+        }
         if not isinstance(self.agent_profiles, dict):
             raise ConfigError("agent_profiles.yaml must define a `profiles` mapping")
+
+    @staticmethod
+    def _normalized_profile(profile: Any) -> Any:
+        if not isinstance(profile, dict):
+            return profile
+        normalized = dict(profile)
+        role = str(normalized.get("role", "")).strip().lower()
+        knowledge_mode = str(normalized.get("knowledge_mode", "")).strip().lower()
+        if role == "attacker" and knowledge_mode == "practical_black_box":
+            allowed = list(normalized.get("allowed_action_types", []))
+            if "inspect_surface" not in allowed:
+                insertion_index = (
+                    allowed.index("hmi_estop") + 1 if "hmi_estop" in allowed else 0
+                )
+                allowed.insert(insertion_index, "inspect_surface")
+                normalized["allowed_action_types"] = allowed
+        return normalized
 
     def validate_runtime(self) -> dict[str, Any]:
         agentic_profile_count = 0
@@ -128,6 +152,8 @@ class ExperimentOrchestrator:
             "status": "completed",
             "conditions": [],
         }
+        suite_trajectory_baseline_runs: list[dict[str, Any]] = []
+        trajectory_baseline_roots = self._trajectory_baseline_roots(config)
 
         for condition_spec in conditions:
             condition = condition_spec["profiles"]
@@ -175,13 +201,33 @@ class ExperimentOrchestrator:
                     if bundle["summary"]["status"] != "completed":
                         condition_summary["status"] = "failed"
                         suite_summary["status"] = "failed"
+            trajectory_baseline_runs = self._load_trajectory_baseline_runs(
+                trajectory_baseline_roots,
+                condition_name=condition_name,
+            )
+            suite_trajectory_baseline_runs.extend(trajectory_baseline_runs)
             condition_summary["nominal_metrics"] = self._aggregate_nominal_metrics(
                 condition_summary["runs"]
             )
             condition_summary["attack_metrics"] = self._aggregate_attack_metrics(
                 condition_summary["runs"]
             )
+            condition_summary["trajectory_metrics"] = self._aggregate_trajectory_metrics(
+                condition_summary["runs"] + trajectory_baseline_runs,
+                condition=condition,
+            )
+            if trajectory_baseline_roots:
+                condition_summary["trajectory_metrics"]["baseline_roots"] = [
+                    portable_path(path) for path in trajectory_baseline_roots
+                ]
+                condition_summary["trajectory_metrics"]["baseline_run_count"] = len(
+                    trajectory_baseline_runs
+                )
             write_json(condition_root / "condition_summary.json", condition_summary)
+            write_json(
+                condition_root / "trajectory_metrics_summary.json",
+                condition_summary["trajectory_metrics"],
+            )
             suite_summary["conditions"].append(condition_summary)
 
         suite_summary["nominal_metrics"] = self._aggregate_nominal_metrics(
@@ -198,6 +244,21 @@ class ExperimentOrchestrator:
                 for run in condition.get("runs", [])
             ]
         )
+        suite_summary["trajectory_metrics"] = self._aggregate_trajectory_metrics(
+            [
+                run
+                for condition in suite_summary["conditions"]
+                for run in condition.get("runs", [])
+            ]
+            + suite_trajectory_baseline_runs
+        )
+        if trajectory_baseline_roots:
+            suite_summary["trajectory_metrics"]["baseline_roots"] = [
+                portable_path(path) for path in trajectory_baseline_roots
+            ]
+            suite_summary["trajectory_metrics"]["baseline_run_count"] = len(
+                suite_trajectory_baseline_runs
+            )
         write_json(experiment_root / "experiment_summary.json", suite_summary)
         write_json(
             experiment_root / "attack_metrics_summary.json",
@@ -207,7 +268,55 @@ class ExperimentOrchestrator:
             experiment_root / "nominal_metrics_summary.json",
             suite_summary["nominal_metrics"],
         )
+        write_json(
+            experiment_root / "trajectory_metrics_summary.json",
+            suite_summary["trajectory_metrics"],
+        )
         return suite_summary
+
+    def _trajectory_baseline_roots(self, config: dict[str, Any]) -> list[Path]:
+        baseline_roots = config.get("trajectory_baseline_roots", [])
+        if baseline_roots in (None, []):
+            return []
+        if not isinstance(baseline_roots, list):
+            raise ConfigError("trajectory_baseline_roots must be a list when provided")
+        config_base_dir = Path(config["_path"]).parent
+        resolved: list[Path] = []
+        for index, item in enumerate(baseline_roots):
+            if not isinstance(item, (str, Path)):
+                raise ConfigError(
+                    f"trajectory_baseline_roots[{index}] must be a path-like value"
+                )
+            resolved_path = resolve_repo_path(item, base_dir=config_base_dir)
+            if not resolved_path.exists():
+                raise ConfigError(
+                    f"trajectory baseline root does not exist: {resolved_path}"
+                )
+            resolved.append(resolved_path)
+        return resolved
+
+    def _load_trajectory_baseline_runs(
+        self,
+        baseline_roots: list[Path],
+        *,
+        condition_name: str,
+    ) -> list[dict[str, Any]]:
+        loaded_runs: list[dict[str, Any]] = []
+        for root in baseline_roots:
+            summary_path = root / condition_name / "condition_summary.json"
+            if not summary_path.exists():
+                continue
+            payload = json.loads(summary_path.read_text())
+            runs = payload.get("runs", [])
+            if not isinstance(runs, list):
+                continue
+            for item in runs:
+                if not isinstance(item, dict):
+                    continue
+                run = deepcopy(item)
+                run["trajectory_source_root"] = portable_path(root)
+                loaded_runs.append(run)
+        return loaded_runs
 
     def _enumerate_conditions(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         explicit_conditions = config.get("conditions")
@@ -338,6 +447,7 @@ class ExperimentOrchestrator:
                     "hmi_stop",
                     "hmi_reset",
                     "hmi_estop",
+                    "inspect_surface",
                     "select_process",
                     "set_manual_valve",
                     "set_sensor",
@@ -439,7 +549,12 @@ class ExperimentOrchestrator:
                     )
 
         bundle.metrics = compute_metrics(
-            bundle.__dict__, {"metadata": scenario.metadata}
+            bundle.__dict__,
+            {
+                "metadata": scenario.metadata,
+                "suite": scenario.suite,
+                "scenario_id": scenario.scenario_id,
+            },
         )
         offline_context = {
             "scenario": scenario,
@@ -521,12 +636,18 @@ class ExperimentOrchestrator:
                 "attacker_action_count": run.get("metrics", {}).get(
                     "attacker_action_count"
                 ),
+                "attacker_recon_action_count": run.get("metrics", {}).get(
+                    "attacker_recon_action_count"
+                ),
                 "attacker_time_to_impact_sec": run.get("metrics", {})
                 .get("attacker", {})
                 .get("time_to_impact_sec"),
                 "attacker_execution_success_rate": run.get("metrics", {})
                 .get("attacker", {})
                 .get("execution_success_rate"),
+                "attacker_scenario_expectation_passed": run.get("metrics", {})
+                .get("attacker", {})
+                .get("scenario_expectation_passed"),
                 "attacker_caused_safety_violation": run.get("metrics", {})
                 .get("attacker", {})
                 .get("caused_safety_violation"),
@@ -674,9 +795,15 @@ class ExperimentOrchestrator:
             ),
             "time_to_mitigation_sec_avg": average("time_to_mitigation_sec"),
             "attacker_action_count_avg": average("attacker_action_count"),
+            "attacker_recon_action_count_avg": average(
+                "attacker_recon_action_count"
+            ),
             "attacker_time_to_impact_sec_avg": average("attacker_time_to_impact_sec"),
             "attacker_execution_success_rate_avg": average(
                 "attacker_execution_success_rate"
+            ),
+            "attacker_scenario_expectation_passed_avg": average(
+                "attacker_scenario_expectation_passed"
             ),
             "attacker_caused_safety_violation_avg": average(
                 "attacker_caused_safety_violation"
@@ -794,6 +921,145 @@ class ExperimentOrchestrator:
             ),
             "per_run_metrics": per_run_metrics,
         }
+
+    def _aggregate_trajectory_metrics(
+        self,
+        runs: list[dict[str, Any]],
+        *,
+        condition: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for run in runs:
+            metrics = run.get("metrics", {})
+            if run.get("status") != "completed":
+                continue
+            if metrics.get("suite_type") != "attack" and run.get("suite") != "attack":
+                continue
+            key = (str(run.get("condition_name", "")), str(run.get("scenario", "")))
+            grouped.setdefault(key, []).append(run)
+
+        repeated_groups = {
+            key: value for key, value in grouped.items() if len(value) > 1
+        }
+        configured_sources = self._trajectory_variation_sources(condition)
+        if not repeated_groups:
+            return {
+                "status": "not_meaningful_yet",
+                "reason": "Each scenario-condition pair was executed once; repeated same-scenario runs are required for honest diversity measurement.",
+                "configured_variation_sources": configured_sources,
+                "per_scenario": [],
+            }
+
+        per_scenario: list[dict[str, Any]] = []
+        diversity_rates: list[float] = []
+        pairwise_distances: list[float] = []
+        unique_counts: list[float] = []
+        for (condition_name, scenario_name), scenario_runs in sorted(repeated_groups.items()):
+            trajectories = [
+                tuple(
+                    item
+                    for item in run.get("metrics", {})
+                    .get("trajectory", {})
+                    .get("paired_sequence", [])
+                )
+                for run in scenario_runs
+            ]
+            unique_count = len(set(trajectories))
+            diversity_rate = round(unique_count / len(trajectories), 4)
+            avg_edit_distance = self._average_pairwise_edit_distance(trajectories)
+            per_scenario.append(
+                {
+                    "condition_name": condition_name,
+                    "scenario": scenario_name,
+                    "run_count": len(trajectories),
+                    "unique_trajectory_count": unique_count,
+                    "trajectory_diversity_rate": diversity_rate,
+                    "avg_pairwise_edit_distance": avg_edit_distance,
+                    "trajectories": [list(item) for item in trajectories],
+                }
+            )
+            diversity_rates.append(diversity_rate)
+            unique_counts.append(float(unique_count))
+            if avg_edit_distance is not None:
+                pairwise_distances.append(avg_edit_distance)
+
+        return {
+            "status": "computed",
+            "configured_variation_sources": configured_sources,
+            "repeated_scenario_count": len(per_scenario),
+            "average_unique_trajectory_count": round(
+                sum(unique_counts) / len(unique_counts),
+                4,
+            ),
+            "average_trajectory_diversity_rate": round(
+                sum(diversity_rates) / len(diversity_rates),
+                4,
+            ),
+            "average_pairwise_edit_distance": (
+                None
+                if not pairwise_distances
+                else round(sum(pairwise_distances) / len(pairwise_distances), 4)
+            ),
+            "per_scenario": per_scenario,
+        }
+
+    def _trajectory_variation_sources(
+        self,
+        condition: dict[str, str] | None,
+    ) -> list[str]:
+        if not condition:
+            return []
+        sources = ["environment_nondeterminism"]
+        sampled_roles = [
+            role
+            for role, profile_id in condition.items()
+            if float(
+                self.agent_profiles.get(profile_id, {})
+                .get("llm", {})
+                .get("temperature", 0.0)
+                or 0.0
+            )
+            > 0.0
+        ]
+        if sampled_roles:
+            sources.insert(0, "model_sampling")
+        return sources
+
+    @staticmethod
+    def _average_pairwise_edit_distance(
+        trajectories: list[tuple[str, ...]],
+    ) -> float | None:
+        if len(trajectories) < 2:
+            return None
+        distances: list[int] = []
+        for index, left in enumerate(trajectories):
+            for right in trajectories[index + 1 :]:
+                distances.append(ExperimentOrchestrator._trajectory_edit_distance(left, right))
+        if not distances:
+            return None
+        return round(sum(distances) / len(distances), 4)
+
+    @staticmethod
+    def _trajectory_edit_distance(
+        left: tuple[str, ...],
+        right: tuple[str, ...],
+    ) -> int:
+        rows = len(left) + 1
+        cols = len(right) + 1
+        dp = [[0] * cols for _ in range(rows)]
+        for row in range(rows):
+            dp[row][0] = row
+        for col in range(cols):
+            dp[0][col] = col
+        for row in range(1, rows):
+            for col in range(1, cols):
+                cost = 0 if left[row - 1] == right[col - 1] else 1
+                dp[row][col] = min(
+                    dp[row - 1][col] + 1,
+                    dp[row][col - 1] + 1,
+                    dp[row - 1][col - 1] + cost,
+                )
+        return dp[-1][-1]
 
     def _run_live_loop(
         self,
@@ -1031,19 +1297,21 @@ class ExperimentOrchestrator:
 
                 state_after = env.act(action)
                 executed_action = True
-                bundle.executed_actions.append(
-                    {
-                        "timestamp_utc": utc_now(),
-                        "time_sec": round(elapsed, 3),
-                        "role": role,
-                        "agent_name": decision.agent_name,
-                        "action": action,
-                        "state_after": state_after.get("state_name")
-                        or state_after.get("STATE_NAME"),
-                        "labels": decision.labels,
-                        "diagnosis": decision.diagnosis,
-                    }
-                )
+                record = {
+                    "timestamp_utc": utc_now(),
+                    "time_sec": round(elapsed, 3),
+                    "role": role,
+                    "agent_name": decision.agent_name,
+                    "action": action,
+                    "state_after": state_after.get("state_name")
+                    or state_after.get("STATE_NAME"),
+                    "labels": decision.labels,
+                    "diagnosis": decision.diagnosis,
+                }
+                recon_result = state_after.get("reconnaissance")
+                if isinstance(recon_result, dict):
+                    record["result"] = recon_result
+                bundle.executed_actions.append(record)
         return executed_action
 
     def _resolve_replay_source_path(

@@ -434,6 +434,7 @@ class CachedQwenDecisionEngine:
 
 class AgenticRoleAgent(RoleAgent):
     def __init__(self, profile_name: str, profile: dict[str, Any]) -> None:
+        profile = self._normalized_agentic_profile(profile)
         super().__init__(profile_name, profile)
         self.engine = CachedQwenDecisionEngine(profile, self.role)
         self.knowledge_mode = str(profile.get("knowledge_mode", "standard")).strip().lower()
@@ -459,6 +460,21 @@ class AgenticRoleAgent(RoleAgent):
                 self.role in {"attacker", "observer", "defender", "planner"},
             )
         )
+
+    @staticmethod
+    def _normalized_agentic_profile(profile: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(profile)
+        role = str(normalized.get("role", "")).strip().lower()
+        knowledge_mode = str(normalized.get("knowledge_mode", "")).strip().lower()
+        if role == "attacker" and knowledge_mode == "practical_black_box":
+            allowed = list(normalized.get("allowed_action_types", []))
+            if "inspect_surface" not in allowed:
+                insertion_index = (
+                    allowed.index("hmi_estop") + 1 if "hmi_estop" in allowed else 0
+                )
+                allowed.insert(insertion_index, "inspect_surface")
+                normalized["allowed_action_types"] = allowed
+        return normalized
 
     def reset(self, scenario: Any) -> None:
         super().reset(scenario)
@@ -841,6 +857,7 @@ class AgenticRoleAgent(RoleAgent):
     def _practical_black_box_attacker_goals() -> list[str]:
         return [
             "Infer what each candidate action can influence from live plant response only.",
+            "Use bounded reconnaissance reads to inspect tags, registers, alarms, and control-plane state without assuming hidden truth.",
             "Use early turns to probe controllability, then exploit the most effective discovered surface.",
             "Treat alarms, state transitions, and defender reaction as observable success proxies rather than hidden ground truth.",
         ]
@@ -864,6 +881,7 @@ class AgenticRoleAgent(RoleAgent):
                     "effect": self._describe_action_effect(
                         action,
                         observation=observation,
+                        result=item.get("result"),
                     ),
                 }
             )
@@ -874,6 +892,7 @@ class AgenticRoleAgent(RoleAgent):
         action: dict[str, Any],
         *,
         observation: dict[str, Any],
+        result: dict[str, Any] | None = None,
     ) -> str:
         action_type = str(action.get("type", "unknown"))
         state_name = str(observation.get("STATE_NAME", "UNKNOWN"))
@@ -891,6 +910,11 @@ class AgenticRoleAgent(RoleAgent):
         if action_type == "set_sensor":
             sensor_name = str(action.get("name", "sensor"))
             return f"{sensor_name}={observation.get(sensor_name)}"
+        if action_type == "inspect_surface":
+            surface = str(action.get("surface", "unknown"))
+            if isinstance(result, dict) and result.get("summary"):
+                return str(result.get("summary"))
+            return f"recon:{surface}"
         return f"state_now_{state_name.lower()}"
 
     def _role_memory_context(
@@ -1068,6 +1092,10 @@ class AgenticRoleAgent(RoleAgent):
             },
         )
         discovered_controls = state.setdefault("_discovered_controls", {})
+        recon_history = state.setdefault("_reconnaissance_history", {})
+        processed_effects = state.setdefault("_processed_action_effects", set())
+        processed_controls = state.setdefault("_processed_controls", set())
+        processed_recon = state.setdefault("_processed_recon", set())
         defender_attention = self._attention_estimate(
             recent_alerts=recent_alerts,
             recent_actions=recent_actions,
@@ -1076,6 +1104,12 @@ class AgenticRoleAgent(RoleAgent):
             item for item in recent_action_effects if item.get("role") == "attacker"
         ]
         for item in action_effects:
+            effect_marker = (
+                f"{item.get('time_sec')}:{item.get('action_type')}:{item.get('effect')}"
+            )
+            if effect_marker in processed_effects:
+                continue
+            processed_effects.add(effect_marker)
             surface = self._attacker_surface_from_action_type(
                 str(item.get("action_type", ""))
             )
@@ -1085,8 +1119,57 @@ class AgenticRoleAgent(RoleAgent):
             entry["score"] = round(float(entry.get("score", 0.0)) + 1.0, 3)
             entry["last_effect"] = item.get("effect")
 
+        recon_action_count = 0
+        last_attacker_action_type = None
+        for item in recent_actions:
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            last_attacker_action_type = str(action.get("type", ""))
+            if last_attacker_action_type != "inspect_surface":
+                continue
+            recon_action_count += 1
+            recon_marker = (
+                f"{item.get('time_sec')}:{self._canonical_action_descriptor(action)}"
+            )
+            if recon_marker in processed_recon:
+                continue
+            processed_recon.add(recon_marker)
+            result = item.get("result") if isinstance(item.get("result"), dict) else {}
+            surface = str(action.get("surface") or result.get("surface") or "unknown")
+            findings = [
+                str(token).strip()
+                for token in result.get("findings", [])
+                if str(token).strip()
+            ][:6]
+            entry = recon_history.setdefault(
+                surface,
+                {
+                    "surface": surface,
+                    "count": 0,
+                    "summary": None,
+                    "findings": [],
+                    "last_time_sec": None,
+                },
+            )
+            entry["count"] = int(entry.get("count", 0)) + 1
+            if result.get("summary"):
+                entry["summary"] = str(result.get("summary"))
+            if findings:
+                entry["findings"] = findings
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                entry["last_time_sec"] = round(time_sec, 3)
+
         relationship_notes = set(telemetry_summary["relationship_notes"])
         risk_flags = telemetry_summary["risk_flags"]
+        recon_tokens = [
+            str(token)
+            for entry in recon_history.values()
+            for token in entry.get("findings", [])
+        ]
         if "process2_selected" in relationship_notes:
             surface_state["process2_manual_path"]["score"] = round(
                 float(surface_state["process2_manual_path"].get("score", 0.0)) + 0.5,
@@ -1112,6 +1195,31 @@ class AgenticRoleAgent(RoleAgent):
                 float(surface_state["availability_disruption"].get("score", 0.0)) + 0.5,
                 3,
             )
+        if any(
+            token == "process2_selected"
+            or token.startswith("P2_")
+            or (
+                token.startswith("ChemTreat_") and token.endswith("_Valve_Sts=1")
+            )
+            for token in recon_tokens
+        ):
+            surface_state["process2_manual_path"]["score"] = round(
+                float(surface_state["process2_manual_path"].get("score", 0.0)) + 0.8,
+                3,
+            )
+        if any(
+            token.startswith("active_alarms=") or token.startswith("RW_Tank_Level=")
+            for token in recon_tokens
+        ):
+            surface_state["sensor_manipulation"]["score"] = round(
+                float(surface_state["sensor_manipulation"].get("score", 0.0)) + 0.4,
+                3,
+            )
+        if any(token.startswith("state=RUNNING") for token in recon_tokens):
+            surface_state["availability_disruption"]["score"] = round(
+                float(surface_state["availability_disruption"].get("score", 0.0)) + 0.2,
+                3,
+            )
 
         effect_by_action_type = {
             str(item.get("action_type", "")): item.get("effect") for item in action_effects
@@ -1123,15 +1231,26 @@ class AgenticRoleAgent(RoleAgent):
             if action is None:
                 continue
             descriptor = self._canonical_action_descriptor(action)
+            control_marker = f"{item.get('time_sec')}:{descriptor}"
+            if control_marker in processed_controls:
+                continue
+            processed_controls.add(control_marker)
             entry = discovered_controls.setdefault(
                 descriptor,
                 {"action": descriptor, "count": 0, "last_effect": None},
             )
             entry["count"] = int(entry.get("count", 0)) + 1
-            entry["last_effect"] = effect_by_action_type.get(
-                str(action.get("type", "")),
-                entry.get("last_effect"),
-            )
+            if (
+                str(action.get("type", "")) == "inspect_surface"
+                and isinstance(item.get("result"), dict)
+                and item["result"].get("summary")
+            ):
+                entry["last_effect"] = str(item["result"]["summary"])
+            else:
+                entry["last_effect"] = effect_by_action_type.get(
+                    str(action.get("type", "")),
+                    entry.get("last_effect"),
+                )
 
         surface_rank = sorted(
             (
@@ -1156,12 +1275,16 @@ class AgenticRoleAgent(RoleAgent):
         )
         if attacker_action_count == 0:
             current_phase = "initial_observation"
+        elif recon_action_count and best_surface == "unknown":
+            current_phase = "reconnaissance"
         elif defender_attention == "high" and best_surface != "unknown":
             current_phase = "evasion_or_exploitation"
         elif best_surface == "unknown":
             current_phase = "probing"
         elif best_score >= 2.0:
             current_phase = "exploitation"
+        elif last_attacker_action_type == "inspect_surface":
+            current_phase = "surface_validation"
         else:
             current_phase = "surface_validation"
 
@@ -1189,6 +1312,57 @@ class AgenticRoleAgent(RoleAgent):
             for surface, score, effect in surface_rank
             if score > 0
         ]
+        reconnaissance_findings = [
+            {
+                "surface": surface,
+                "count": int(entry.get("count", 0)),
+                "summary": entry.get("summary"),
+                "findings": list(entry.get("findings", []))[:4],
+            }
+            for surface, entry in sorted(
+                recon_history.items(),
+                key=lambda item: (
+                    int(item[1].get("count", 0)),
+                    float(item[1].get("last_time_sec") or 0.0),
+                    item[0],
+                ),
+                reverse=True,
+            )[:4]
+        ]
+        candidate_leverage_hypotheses = []
+        for surface, score, effect in surface_rank:
+            if score <= 0:
+                continue
+            basis: list[str] = []
+            if effect:
+                basis.append(f"last_effect={effect}")
+            if surface == "process2_manual_path":
+                if "process2_selected" in relationship_notes or "process2_selected" in recon_tokens:
+                    basis.append("process2_selected")
+                basis.extend(
+                    flag for flag in risk_flags if str(flag).endswith("_depleting")
+                )
+            elif surface == "sensor_manipulation":
+                basis.extend(telemetry_summary["active_alarms"][:2])
+                basis.extend(
+                    note
+                    for note in telemetry_summary["relationship_notes"]
+                    if str(note).startswith("abrupt_change:")
+                )
+            elif surface == "availability_disruption":
+                if str(observation.get("STATE_NAME", "")).upper() in {
+                    "RUNNING",
+                    "SHUTDOWN",
+                    "STOPPED",
+                }:
+                    basis.append(f"state={observation.get('STATE_NAME')}")
+            candidate_leverage_hypotheses.append(
+                {
+                    "surface": surface,
+                    "confidence": round(min(0.95, 0.25 + (score * 0.18)), 2),
+                    "basis": basis[:3],
+                }
+            )
         state.update(
             {
                 "mission_objective": state.get("mission_objective")
@@ -1196,12 +1370,14 @@ class AgenticRoleAgent(RoleAgent):
                 "current_phase": current_phase,
                 "discovered_controls": visible_controls,
                 "observed_effect_map": observed_effect_map,
+                "reconnaissance_findings": reconnaissance_findings,
                 "detection_pressure": defender_attention,
                 "best_known_attack_surface": best_surface,
                 "last_successful_effect": last_successful_effect,
+                "candidate_leverage_hypotheses": candidate_leverage_hypotheses[:3],
                 "rolling_summary": (
                     f"phase={current_phase}; surface={best_surface}; "
-                    f"pressure={defender_attention}."
+                    f"pressure={defender_attention}; recon={recon_action_count}."
                 ),
             }
         )
@@ -1641,6 +1817,8 @@ class AgenticRoleAgent(RoleAgent):
         if normalized is None:
             return "noop"
         action_type = str(normalized.get("type", "unknown"))
+        if action_type == "inspect_surface":
+            return f"inspect_surface:{normalized.get('surface', 'unknown')}"
         if action_type == "select_process":
             return (
                 "select_process:on"
@@ -2275,6 +2453,8 @@ class AgenticRoleAgent(RoleAgent):
             return self._is_active_flag(observation.get(field)) == bool(
                 action.get("open", True)
             )
+        if action_type == "inspect_surface":
+            return False
         return False
 
     def _candidate_actions(
@@ -2518,6 +2698,21 @@ class AgenticRoleAgent(RoleAgent):
         def base_priority(action: dict[str, Any]) -> int:
             action_type = str(action.get("type", ""))
             novelty_bonus = 12 if action_key(action) not in prior_actions else 0
+            if action_type == "inspect_surface":
+                surface = str(action.get("surface", "unknown"))
+                priority = 86 if current_phase in {
+                    "initial_observation",
+                    "probing",
+                    "reconnaissance",
+                } else 46
+                if surface == "process2_control_plane" and best_surface in {
+                    "unknown",
+                    "process2_manual_path",
+                }:
+                    priority += 10
+                if surface == "alarm_bits" and detection_pressure == "high":
+                    priority += 4
+                return priority + novelty_bonus
             if action_type == "hmi_start":
                 priority = 82 if state_name not in {"RUNNING", "STARTING"} else 24
                 if best_surface == "availability_disruption":
@@ -2614,6 +2809,8 @@ class AgenticRoleAgent(RoleAgent):
                         },
                     ]
                 )
+        if "inspect_surface" in allowed:
+            generic_actions.extend(self._practical_black_box_recon_actions())
         if "noop" in allowed:
             generic_actions.append({"type": "noop"})
 
@@ -2650,6 +2847,17 @@ class AgenticRoleAgent(RoleAgent):
         if action_type in {"hmi_start", "hmi_stop", "hmi_estop"}:
             return "availability_disruption"
         return "unknown"
+
+    @staticmethod
+    def _practical_black_box_recon_actions() -> list[dict[str, Any]]:
+        return [
+            {"type": "inspect_surface", "surface": "tags"},
+            {"type": "inspect_surface", "surface": "registers"},
+            {"type": "inspect_surface", "surface": "io_image"},
+            {"type": "inspect_surface", "surface": "alarm_bits"},
+            {"type": "inspect_surface", "surface": "process2_control_plane"},
+            {"type": "inspect_surface", "surface": "actuator_state_bits"},
+        ]
 
     def _practical_black_box_sensor_profiles(
         self,
@@ -2706,6 +2914,20 @@ class AgenticRoleAgent(RoleAgent):
         stance = "exploit" if best_surface != "unknown" else "probe"
         if previously_tried and stance == "probe":
             stance = "revisit"
+        if action_type == "inspect_surface":
+            surface = str(action.get("surface", "unknown"))
+            surface_summaries = {
+                "tags": "Read the live tag snapshot to map current levels, alarms, and process-selection state.",
+                "registers": "Read raw register windows to map which simulator values and control words matter.",
+                "io_image": "Inspect the live I/O image to correlate command bits, states, alarms, and HMI state.",
+                "alarm_bits": "Read alarm bits directly to see which thresholds are already driving detection pressure.",
+                "process2_control_plane": "Inspect Process 2 selection and manual-valve control bits before committing to dosing abuse.",
+                "actuator_state_bits": "Inspect command-versus-status bits to identify actuator surfaces that may diverge or persist.",
+            }
+            return surface_summaries.get(
+                surface,
+                f"Inspect the `{surface}` surface to refine the current attack hypothesis.",
+            )
         if action_type == "hmi_start":
             return (
                 "Start WT-P1 so later probes can reveal process-side effects."
@@ -3469,8 +3691,24 @@ class AgenticRoleAgent(RoleAgent):
             state_after = item.get("state_after")
             if state_after:
                 rendered["state_after"] = state_after
+            result = self._visible_action_result(item.get("result"))
+            if result is not None:
+                rendered["result"] = result
             visible.append(rendered)
         return visible
+
+    @staticmethod
+    def _visible_action_result(result: Any) -> dict[str, Any] | None:
+        if not isinstance(result, dict):
+            return None
+        if str(result.get("category", "")).strip().lower() != "reconnaissance":
+            return None
+        return {
+            "category": "reconnaissance",
+            "surface": result.get("surface"),
+            "summary": result.get("summary"),
+            "findings": list(result.get("findings", []))[:4],
+        }
 
     def _visible_recent_decisions(
         self,

@@ -200,6 +200,47 @@ def _recognition_metrics(
     }
 
 
+def _canonicalize_action(action: dict[str, Any] | None) -> str:
+    if action is None:
+        return "noop"
+    action_type = str(action.get("type", "unknown"))
+    if action_type == "inspect_surface":
+        return f"{action_type}:{action.get('surface', 'unknown')}"
+    if action_type == "set_manual_valve":
+        chemical = str(action.get("chemical", "unknown"))
+        state = "open" if action.get("open", True) else "close"
+        return f"{action_type}:{chemical}:{state}"
+    if action_type == "select_process":
+        state = "on" if action.get("active", True) else "off"
+        return f"{action_type}:{state}"
+    if action_type == "set_sensor":
+        return f"{action_type}:{action.get('name', 'unknown')}"
+    return action_type
+
+
+def _trajectory_sequences(actions: list[dict[str, Any]]) -> dict[str, list[str]]:
+    attacker_sequence = [
+        _canonicalize_action(item.get("action"))
+        for item in actions
+        if item.get("role") == "attacker" and item.get("action") is not None
+    ]
+    defender_sequence = [
+        _canonicalize_action(item.get("action"))
+        for item in actions
+        if item.get("role") == "defender" and item.get("action") is not None
+    ]
+    paired_sequence = [
+        f"{item.get('role')}:{_canonicalize_action(item.get('action'))}"
+        for item in actions
+        if item.get("role") in {"attacker", "defender"} and item.get("action") is not None
+    ]
+    return {
+        "attacker_sequence": attacker_sequence,
+        "defender_sequence": defender_sequence,
+        "paired_sequence": paired_sequence,
+    }
+
+
 def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
     observations = bundle.get("observations", [])
     decisions = bundle.get("decisions", [])
@@ -209,9 +250,18 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         item for item in alerts if item.get("role") in BLUE_TEAM_ALERT_ROLES
     ]
     planner_alerts = [item for item in alerts if item.get("role") == "planner"]
+    scenario_suite = str(scenario.get("suite", "")).strip().lower()
     ground_truth = scenario.get("metadata", {}).get("ground_truth", {})
-    attack_start = ground_truth.get("incident_start_time_sec")
-    if attack_start is None:
+    incident_type = str(ground_truth.get("incident_type", "")).strip().lower()
+    configured_attack_start = ground_truth.get("incident_start_time_sec")
+    attacker_actions = [item for item in actions if item.get("role") == "attacker"]
+    is_attack_condition = scenario_suite == "attack" or incident_type in {
+        "attack",
+        "smoke",
+    } or configured_attack_start is not None or bool(attacker_actions)
+    is_nominal_condition = scenario_suite == "normal" or incident_type == "nominal"
+    attack_start = configured_attack_start
+    if attack_start is None and is_attack_condition:
         attack_start = _first_time(actions, lambda item: item.get("role") == "attacker")
 
     observer_detections = _detection_candidates(
@@ -274,8 +324,17 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             "mitigation_actions", ["hmi_stop", "hmi_estop", "select_process"]
         )
     )
-    attacker_actions = [item for item in actions if item.get("role") == "attacker"]
     defender_actions = [item for item in actions if item.get("role") == "defender"]
+    attacker_recon_actions = [
+        item
+        for item in attacker_actions
+        if str((item.get("action") or {}).get("type")) == "inspect_surface"
+    ]
+    attacker_manipulation_actions = [
+        item
+        for item in attacker_actions
+        if str((item.get("action") or {}).get("type")) != "inspect_surface"
+    ]
     mitigation_actions = [
         item
         for item in defender_actions
@@ -375,40 +434,55 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             or mitigation_time <= float(first_safety_violation_time)
         )
     )
-    attacker_metrics = {
-        "action_count": len(attacker_actions),
-        "time_to_first_action_sec": _relative_time(
-            _first_time(attacker_actions, lambda _item: True),
-            attack_start=attack_start,
-        ),
-        "time_to_impact_sec": _relative_time(
-            first_safety_violation_time,
-            attack_start=attack_start,
-        ),
-        "execution_success_rate": (
-            None if attack_start is None else float(bool(bundle.get("passed")))
-        ),
-        "caused_safety_violation": (
-            None if attack_start is None else float(safety_total > 0)
-        ),
-        "undetected_impact": (
-            None
-            if attack_start is None
-            else float(safety_total > 0 and detection_time is None)
-        ),
-    }
+    trajectory = _trajectory_sequences(actions)
+    attacker_metrics = (
+        {
+            "action_count": len(attacker_actions),
+            "recon_action_count": len(attacker_recon_actions),
+            "manipulation_action_count": len(attacker_manipulation_actions),
+            "time_to_first_action_sec": _relative_time(
+                _first_time(attacker_actions, lambda _item: True),
+                attack_start=attack_start,
+            ),
+            "time_to_impact_sec": _relative_time(
+                first_safety_violation_time,
+                attack_start=attack_start,
+            ),
+            "execution_success_rate": (
+                None if attack_start is None else float(safety_total > 0)
+            ),
+            "scenario_expectation_passed": (
+                None if attack_start is None else float(bool(bundle.get("passed")))
+            ),
+            "caused_safety_violation": (
+                None if attack_start is None else float(safety_total > 0)
+            ),
+            "undetected_impact": (
+                None
+                if attack_start is None
+                else float(safety_total > 0 and detection_time is None)
+            ),
+            "trajectory": trajectory["attacker_sequence"],
+        }
+        if is_attack_condition
+        else None
+    )
     nominal_metrics = {
         "false_positive_episode": (
-            None if attack_start is not None else float(total_alerts > 0)
+            None if not is_nominal_condition else float(total_alerts > 0)
         ),
         "false_intervention_episode": (
-            None if attack_start is not None else float(len(defender_actions) > 0)
+            None if not is_nominal_condition else float(len(defender_actions) > 0)
         ),
         "safety_violation_episode": (
-            None if attack_start is not None else float(safety_total > 0)
+            None if not is_nominal_condition else float(safety_total > 0)
         ),
-        "time_to_first_false_alert_sec": first_false_alert_time,
-        "time_to_first_false_intervention_sec": first_false_intervention_time,
+        "time_to_first_false_alert_sec": (
+            first_false_alert_time if is_nominal_condition else None
+        ),
+        "time_to_first_false_intervention_sec": (
+            first_false_intervention_time if is_nominal_condition else None
+        ),
     }
 
     observer_metrics = {
@@ -469,8 +543,44 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "contained_before_safety_violation": contained_before_violation,
         "decision_correctness": round(decision_correctness, 4),
     }
+    system_metrics = {
+        "time_to_detection_sec": _relative_time(
+            detection_time,
+            attack_start=attack_start,
+        ),
+        "time_to_recognition_sec": _relative_time(
+            recognition_time,
+            attack_start=attack_start,
+        ),
+        "safety_violation_count": safety_total,
+        "safety_violations_by_field": safety_by_field,
+        "recovery_success_rate": recovery_success_rate,
+        "state_transition_count": state_transitions,
+        "observation_count": len(observations),
+        "trajectory": trajectory["paired_sequence"],
+    }
+    observer_role_metrics = {
+        "alert_count": len(observer_alerts),
+        "detection": observer_metrics,
+        "recognition": observer_recognition_metrics,
+    }
+    defender_role_metrics = {
+        "alert_count": len(defender_alerts),
+        "action_count": len(defender_actions),
+        "detection": defender_detection_metrics,
+        "recognition": defender_recognition_metrics,
+        "intervention": defender_intervention_metrics,
+        "trajectory": trajectory["defender_sequence"],
+    }
 
     return {
+        "suite_type": (
+            "attack"
+            if is_attack_condition
+            else "nominal"
+            if is_nominal_condition
+            else scenario_suite or incident_type or "other"
+        ),
         "incident_start_time_sec": attack_start,
         "time_to_detection_sec": _relative_time(
             detection_time,
@@ -510,7 +620,10 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "alert_count": total_alerts,
         "blue_team_alert_count": total_alerts,
         "planner_alert_count": len(planner_alerts),
-        "attacker_action_count": len(attacker_actions),
+        "attacker_action_count": len(attacker_actions) if is_attack_condition else None,
+        "attacker_recon_action_count": (
+            len(attacker_recon_actions) if is_attack_condition else None
+        ),
         "defender_action_count": len(defender_actions),
         "attacker": attacker_metrics,
         "nominal": nominal_metrics,
@@ -519,4 +632,8 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender_detection": defender_detection_metrics,
         "defender_recognition": defender_recognition_metrics,
         "defender_intervention": defender_intervention_metrics,
+        "observer": observer_role_metrics,
+        "defender": defender_role_metrics,
+        "system": system_metrics,
+        "trajectory": trajectory,
     }

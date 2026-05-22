@@ -217,6 +217,8 @@ def test_compute_metrics_treats_normal_run_alerts_as_false_positives() -> None:
     assert metrics["false_negative_rate"] is None
     assert metrics["false_positive_count"] == 1
     assert metrics["false_positive_rate"] == 1.0
+    assert metrics["attacker"] is None
+    assert metrics["attacker_action_count"] is None
     assert metrics["nominal"]["false_positive_episode"] == 1.0
     assert metrics["nominal"]["time_to_first_false_alert_sec"] == 5.0
 
@@ -246,5 +248,121 @@ def test_compute_metrics_reports_attacker_scoring_fields() -> None:
     assert metrics["attacker_action_count"] == 1
     assert metrics["attacker"]["action_count"] == 1
     assert metrics["attacker"]["execution_success_rate"] == 1.0
+    assert metrics["attacker"]["scenario_expectation_passed"] == 1.0
     assert metrics["attacker"]["caused_safety_violation"] == 1.0
     assert metrics["attacker"]["time_to_impact_sec"] == 2.0
+    assert metrics["trajectory"]["paired_sequence"] == ["attacker:set_sensor:unknown"]
+    assert metrics["system"]["trajectory"] == ["attacker:set_sensor:unknown"]
+
+
+def test_compute_metrics_attacker_success_depends_on_safety_violation_not_passed() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 6.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 700, "elapsed_sec": 9.0},
+        ],
+        "decisions": [],
+        "alerts": [],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 7.0, "action": {"type": "set_sensor"}},
+        ],
+        "passed": True,
+    }
+    scenario = {
+        "metadata": {
+            "ground_truth": {"incident_start_time_sec": 7.0},
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        }
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["attacker"]["execution_success_rate"] == 0.0
+    assert metrics["attacker"]["scenario_expectation_passed"] == 1.0
+    assert metrics["attacker"]["caused_safety_violation"] == 0.0
+
+
+def test_compute_metrics_counts_and_canonicalizes_recon_actions() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 5.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1300, "elapsed_sec": 8.0},
+        ],
+        "decisions": [],
+        "alerts": [],
+        "executed_actions": [
+            {
+                "role": "attacker",
+                "time_sec": 6.0,
+                "action": {"type": "inspect_surface", "surface": "io_image"},
+            },
+            {
+                "role": "attacker",
+                "time_sec": 7.0,
+                "action": {"type": "set_sensor", "name": "RW_Tank_Level"},
+            },
+        ],
+        "passed": False,
+    }
+    scenario = {
+        "suite": "attack",
+        "metadata": {
+            "ground_truth": {"incident_start_time_sec": 6.0},
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        },
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["attacker_action_count"] == 2
+    assert metrics["attacker_recon_action_count"] == 1
+    assert metrics["attacker"]["recon_action_count"] == 1
+    assert metrics["attacker"]["manipulation_action_count"] == 1
+    assert metrics["trajectory"]["attacker_sequence"] == [
+        "inspect_surface:io_image",
+        "set_sensor:RW_Tank_Level",
+    ]
+
+
+def test_compute_metrics_exposes_nested_role_blocks() -> None:
+    bundle = {
+        "observations": [{"STATE_NAME": "RUNNING", "RW_Tank_Level": 400, "elapsed_sec": 9.0}],
+        "decisions": [
+            {
+                "role": "observer",
+                "time_sec": 8.5,
+                "decision_type": "alert",
+                "diagnosis": "raw_water_low_or_spoof",
+            },
+            {
+                "role": "defender",
+                "time_sec": 9.0,
+                "decision_type": "action",
+                "diagnosis": "raw_water_low_or_spoof",
+                "action": {"type": "hmi_stop"},
+            },
+        ],
+        "alerts": [{"role": "observer", "time_sec": 8.5}],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 8.0, "action": {"type": "set_sensor", "name": "RW_Tank_Level"}},
+            {"role": "defender", "time_sec": 9.0, "action": {"type": "hmi_stop"}},
+        ],
+        "passed": True,
+    }
+    scenario = {
+        "suite": "attack",
+        "metadata": {
+            "ground_truth": {
+                "incident_start_time_sec": 8.0,
+                "expected_defender_actions": ["hmi_stop"],
+                "mitigation_actions": ["hmi_stop"],
+            },
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        },
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["observer"]["detection"]["detection_rate"] == 1.0
+    assert metrics["defender"]["intervention"]["mitigation_action_count"] == 1
+    assert metrics["system"]["safety_violation_count"] == 0

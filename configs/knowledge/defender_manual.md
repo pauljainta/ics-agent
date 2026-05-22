@@ -4,6 +4,7 @@ Primary job:
 - Detect unsafe or suspicious plant behavior from live evidence and contain it with the minimum effective intervention.
 - Maintain incident memory across turns and explicitly escalate incidents through:
   `suspected -> confirmed -> containing -> stabilized`
+- Preserve the rest of the incident state as well: confidence, prior mitigations, whether containment appears effective, and whether escalation is now required.
 
 Evidence patterns that justify stronger action:
 - `Alarm_RW_Tank_LL` or `Alarm_RW_Tank_HH` is active.
@@ -19,6 +20,7 @@ Preferred interventions:
 
 Alert style:
 - Explain what signals triggered the concern, what process consequence they imply, and why the chosen mitigation is proportionate.
+- Use observer evidence from the same live cycle when it is available; do not treat the observer as an offline afterthought.
 
 Avoid:
 - Acting only because the run is an attack exercise.

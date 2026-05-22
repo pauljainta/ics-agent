@@ -7,6 +7,7 @@ import yaml
 
 from ics_agent.agents import RuleBasedRoleAgent, ScriptedRoleAgent
 from ics_agent.orchestrator import ExperimentOrchestrator
+from ics_agent.types import RoleDecision, RunBundle
 
 
 class FakeClock:
@@ -70,6 +71,16 @@ class FakeEnvironment:
             self.state[action["name"]] = int(action["value"])
         elif action_type == "select_process":
             self.state["P2_Selected"] = 1 if action.get("active", True) else 0
+        elif action_type == "inspect_surface":
+            return {
+                "state_name": self.state["STATE_NAME"],
+                "reconnaissance": {
+                    "category": "reconnaissance",
+                    "surface": action.get("surface"),
+                    "summary": f"inspected {action.get('surface')}",
+                    "findings": [f"surface={action.get('surface')}"],
+                },
+            }
         return {"state_name": self.state["STATE_NAME"]}
 
     def stop(self):
@@ -117,6 +128,66 @@ def test_orchestrator_runs_live_smoke_with_fake_environment(
     metrics = json.loads(metric_files[0].read_text())
     assert metrics["false_negative_rate"] == 0.0
     assert metrics["alert_count"] >= 1
+
+
+def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
+    orchestrator = ExperimentOrchestrator()
+    scenario = orchestrator.catalog.get("attack/wt-attack-p2-hcl-drain")
+    env = FakeEnvironment()
+    env.reset()
+    bundle = RunBundle(
+        experiment_id="pytest",
+        condition_name="practical_black_box_attacker__agentic_defender",
+        run_id="trial-001",
+        scenario=scenario,
+        run_dir=tmp_path / "trial-001",
+        config_snapshot={},
+    )
+
+    class ReconAgent:
+        mode = "online"
+
+        def step(self, _context):
+            return [
+                RoleDecision(
+                    role="attacker",
+                    agent_name="pytest_recon_agent",
+                    decision_type="action",
+                    summary="Inspect the io image.",
+                    time_sec=1.0,
+                    timestamp_utc="2026-05-21T00:00:01Z",
+                    action={"type": "inspect_surface", "surface": "io_image"},
+                    labels=["agentic", "attacker"],
+                )
+            ]
+
+    executed = orchestrator._execute_online_roles(
+        roles=["attacker"],
+        agents={"attacker": ReconAgent()},
+        context={
+            "scenario": scenario,
+            "time_sec": 1.0,
+            "observation": env.observe_flat(),
+            "observations": [],
+            "alerts": [],
+            "decisions": [],
+            "executed_actions": [],
+            "planned_events": {},
+            "playbooks": {},
+        },
+        bundle=bundle,
+        scenario=scenario,
+        condition={"attacker": "practical_black_box_attacker"},
+        env=env,
+        elapsed=1.0,
+    )
+
+    assert executed is True
+    assert bundle.executed_actions[0]["action"] == {
+        "type": "inspect_surface",
+        "surface": "io_image",
+    }
+    assert bundle.executed_actions[0]["result"]["surface"] == "io_image"
 
 
 def test_orchestrator_runs_replay_mode_from_saved_results(
@@ -748,3 +819,129 @@ def test_rule_based_attacker_waits_for_running_before_runtime_sensor_attack() ->
         "name": "RW_Tank_Level",
         "value": 400,
     }
+
+
+def test_orchestrator_aggregates_trajectory_diversity_per_scenario() -> None:
+    orchestrator = ExperimentOrchestrator()
+    runs = [
+        {
+            "condition_name": "qwen35_agentic_attack_blue",
+            "scenario": "attack/wt-attack-p2-hcl-drain",
+            "suite": "attack",
+            "status": "completed",
+            "metrics": {
+                "suite_type": "attack",
+                "trajectory": {
+                    "paired_sequence": [
+                        "attacker:select_process:on",
+                        "defender:select_process:off",
+                    ]
+                },
+            },
+        },
+        {
+            "condition_name": "qwen35_agentic_attack_blue",
+            "scenario": "attack/wt-attack-p2-hcl-drain",
+            "suite": "attack",
+            "status": "completed",
+            "metrics": {
+                "suite_type": "attack",
+                "trajectory": {
+                    "paired_sequence": [
+                        "attacker:select_process:on",
+                        "defender:hmi_stop",
+                    ]
+                },
+            },
+        },
+    ]
+
+    metrics = orchestrator._aggregate_trajectory_metrics(
+        runs,
+        condition={
+            "attacker": "agentic_attacker",
+            "defender": "agentic_defender",
+            "observer": "agentic_observer",
+            "planner": "scripted_planner",
+            "operator": "scripted_operator",
+            "offline_analysis": "scripted_offline_analyst",
+        },
+    )
+
+    assert metrics["status"] == "computed"
+    assert metrics["repeated_scenario_count"] == 1
+    assert metrics["per_scenario"][0]["unique_trajectory_count"] == 2
+    assert metrics["per_scenario"][0]["trajectory_diversity_rate"] == 1.0
+    assert metrics["configured_variation_sources"] == ["environment_nondeterminism"]
+
+
+def test_orchestrator_trajectory_metrics_can_include_baseline_roots(
+    tmp_path, monkeypatch
+) -> None:
+    baseline_root = tmp_path / "baseline_attack_root"
+    condition_root = baseline_root / "scripted_baseline"
+    condition_root.mkdir(parents=True)
+    baseline_summary = {
+        "condition_name": "scripted_baseline",
+        "runs": [
+            {
+                "condition_name": "scripted_baseline",
+                "scenario": "attack/wt-attack-sensor-rw-refill-spoof",
+                "scenario_id": "wt-attack-sensor-rw-refill-spoof",
+                "suite": "attack",
+                "run_id": "attack-wt-attack-sensor-rw-refill-spoof-trial-001",
+                "status": "completed",
+                "passed": True,
+                "metrics": {
+                    "suite_type": "attack",
+                    "trajectory": {
+                        "paired_sequence": [
+                            "attacker:set_sensor:RW_Tank_Level",
+                            "defender:hmi_stop",
+                        ]
+                    },
+                },
+            }
+        ],
+    }
+    (condition_root / "condition_summary.json").write_text(
+        json.dumps(baseline_summary)
+    )
+
+    config_path = tmp_path / "live_with_baseline.yaml"
+    config = {
+        "experiment_name": "pytest_live_with_baseline",
+        "scenario_selectors": ["attack/wt-attack-sensor-rw-refill-spoof"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "trajectory_baseline_roots": [str(baseline_root)],
+        "conditions": [
+            {
+                "name": "scripted_baseline",
+                "profiles": {
+                    "attacker": "scripted_attacker",
+                    "defender": "rule_based_defender",
+                    "observer": "rule_based_observer",
+                    "planner": "scripted_planner",
+                    "operator": "scripted_operator",
+                    "offline_analysis": "scripted_offline_analyst",
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+
+    summary = ExperimentOrchestrator().run(config_path)
+
+    trajectory = summary["conditions"][0]["trajectory_metrics"]
+    assert trajectory["status"] == "computed"
+    assert trajectory["baseline_run_count"] == 1
+    assert trajectory["repeated_scenario_count"] == 1
+    assert trajectory["per_scenario"][0]["run_count"] == 2
+    assert trajectory["baseline_roots"] == [str(baseline_root)]
