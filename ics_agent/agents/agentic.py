@@ -574,6 +574,8 @@ class AgenticRoleAgent(RoleAgent):
                     f"agentic attacker backend failure: {exc}"
                 ) from exc
             return []
+        if self._is_practical_black_box_attacker():
+            payload = self._enforce_practical_black_box_payload(payload, agent_context)
         return self._payload_to_decisions(payload, agent_context)
 
     def _step_monitoring_role(self, context: dict[str, Any]) -> list[Any]:
@@ -1082,175 +1084,306 @@ class AgenticRoleAgent(RoleAgent):
         recent_alerts: list[dict[str, Any]],
         recent_action_effects: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        del recent_action_effects
         state = self._state.setdefault("role_memory", {})
         surface_state = state.setdefault(
             "_surface_state",
             {
-                "process2_manual_path": {"score": 0.0, "last_effect": None},
-                "sensor_manipulation": {"score": 0.0, "last_effect": None},
-                "availability_disruption": {"score": 0.0, "last_effect": None},
+                "process2_manual_path": self._practical_black_box_surface_template(),
+                "sensor_manipulation": self._practical_black_box_surface_template(),
+                "availability_disruption": self._practical_black_box_surface_template(),
             },
         )
+        for surface in (
+            "process2_manual_path",
+            "sensor_manipulation",
+            "availability_disruption",
+        ):
+            entry = surface_state.setdefault(
+                surface,
+                self._practical_black_box_surface_template(),
+            )
+            for key, value in self._practical_black_box_surface_template().items():
+                entry.setdefault(key, value if not isinstance(value, list) else list(value))
+
         discovered_controls = state.setdefault("_discovered_controls", {})
         recon_history = state.setdefault("_reconnaissance_history", {})
-        processed_effects = state.setdefault("_processed_action_effects", set())
-        processed_controls = state.setdefault("_processed_controls", set())
-        processed_recon = state.setdefault("_processed_recon", set())
+        processed_events = state.setdefault("_processed_attacker_events", set())
+        commitment = state.setdefault(
+            "_exploit_commitment",
+            {
+                "surface": "unknown",
+                "template": None,
+                "remaining_steps": 0,
+                "stall_count": 0,
+                "next_goal": None,
+                "target_sensor": None,
+                "sensor_direction": None,
+                "preferred_chemical": None,
+                "last_surface_switch_time_sec": None,
+            },
+        )
         defender_attention = self._attention_estimate(
             recent_alerts=recent_alerts,
             recent_actions=recent_actions,
         )
-        action_effects = [
-            item for item in recent_action_effects if item.get("role") == "attacker"
+        previous_observation = {}
+        if context.get("observations"):
+            previous_observation = dict(context["observations"][-1])
+        now = float(context.get("time_sec", 0.0))
+        preconditions = self._practical_black_box_preconditions(
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            defender_attention=defender_attention,
+        )
+        attacker_history = [
+            item for item in context.get("executed_actions", []) if item.get("role") == "attacker"
         ]
-        for item in action_effects:
-            effect_marker = (
-                f"{item.get('time_sec')}:{item.get('action_type')}:{item.get('effect')}"
-            )
-            if effect_marker in processed_effects:
-                continue
-            processed_effects.add(effect_marker)
-            surface = self._attacker_surface_from_action_type(
-                str(item.get("action_type", ""))
-            )
-            if surface == "unknown":
-                continue
-            entry = surface_state.setdefault(surface, {"score": 0.0, "last_effect": None})
-            entry["score"] = round(float(entry.get("score", 0.0)) + 1.0, 3)
-            entry["last_effect"] = item.get("effect")
-
-        recon_action_count = 0
+        last_success_event = dict(state.get("_last_success_event") or {})
         last_attacker_action_type = None
-        for item in recent_actions:
-            if item.get("role") != "attacker":
-                continue
-            action = normalize_action(item.get("action"))
-            if action is None:
-                continue
-            last_attacker_action_type = str(action.get("type", ""))
-            if last_attacker_action_type != "inspect_surface":
-                continue
-            recon_action_count += 1
-            recon_marker = (
-                f"{item.get('time_sec')}:{self._canonical_action_descriptor(action)}"
-            )
-            if recon_marker in processed_recon:
-                continue
-            processed_recon.add(recon_marker)
-            result = item.get("result") if isinstance(item.get("result"), dict) else {}
-            surface = str(action.get("surface") or result.get("surface") or "unknown")
-            findings = [
-                str(token).strip()
-                for token in result.get("findings", [])
-                if str(token).strip()
-            ][:6]
-            entry = recon_history.setdefault(
-                surface,
-                {
-                    "surface": surface,
-                    "count": 0,
-                    "summary": None,
-                    "findings": [],
-                    "last_time_sec": None,
-                },
-            )
-            entry["count"] = int(entry.get("count", 0)) + 1
-            if result.get("summary"):
-                entry["summary"] = str(result.get("summary"))
-            if findings:
-                entry["findings"] = findings
-            time_sec = self._coerce_number(item.get("time_sec"))
-            if time_sec is not None:
-                entry["last_time_sec"] = round(time_sec, 3)
 
-        relationship_notes = set(telemetry_summary["relationship_notes"])
-        risk_flags = telemetry_summary["risk_flags"]
-        recon_tokens = [
-            str(token)
-            for entry in recon_history.values()
-            for token in entry.get("findings", [])
-        ]
-        if "process2_selected" in relationship_notes:
-            surface_state["process2_manual_path"]["score"] = round(
-                float(surface_state["process2_manual_path"].get("score", 0.0)) + 0.5,
-                3,
-            )
-        if "process2_manual_dosing_active" in relationship_notes or any(
-            flag.endswith("_depleting") for flag in risk_flags
-        ):
-            surface_state["process2_manual_path"]["score"] = round(
-                float(surface_state["process2_manual_path"].get("score", 0.0)) + 1.0,
-                3,
-            )
-        if telemetry_summary["active_alarms"] or any(
-            note.startswith("abrupt_change:")
-            for note in telemetry_summary["relationship_notes"]
-        ):
-            surface_state["sensor_manipulation"]["score"] = round(
-                float(surface_state["sensor_manipulation"].get("score", 0.0)) + 0.5,
-                3,
-            )
-        if str(observation.get("STATE_NAME", "")).upper() in {"SHUTDOWN", "STOPPED"}:
-            surface_state["availability_disruption"]["score"] = round(
-                float(surface_state["availability_disruption"].get("score", 0.0)) + 0.5,
-                3,
-            )
-        if any(
-            token == "process2_selected"
-            or token.startswith("P2_")
-            or (
-                token.startswith("ChemTreat_") and token.endswith("_Valve_Sts=1")
-            )
-            for token in recon_tokens
-        ):
-            surface_state["process2_manual_path"]["score"] = round(
-                float(surface_state["process2_manual_path"].get("score", 0.0)) + 0.8,
-                3,
-            )
-        if any(
-            token.startswith("active_alarms=") or token.startswith("RW_Tank_Level=")
-            for token in recon_tokens
-        ):
-            surface_state["sensor_manipulation"]["score"] = round(
-                float(surface_state["sensor_manipulation"].get("score", 0.0)) + 0.4,
-                3,
-            )
-        if any(token.startswith("state=RUNNING") for token in recon_tokens):
-            surface_state["availability_disruption"]["score"] = round(
-                float(surface_state["availability_disruption"].get("score", 0.0)) + 0.2,
-                3,
-            )
-
-        effect_by_action_type = {
-            str(item.get("action_type", "")): item.get("effect") for item in action_effects
-        }
-        for item in recent_actions:
-            if item.get("role") != "attacker":
-                continue
+        for item in attacker_history:
             action = normalize_action(item.get("action"))
             if action is None:
                 continue
             descriptor = self._canonical_action_descriptor(action)
-            control_marker = f"{item.get('time_sec')}:{descriptor}"
-            if control_marker in processed_controls:
+            event_marker = f"{item.get('time_sec')}:{descriptor}"
+            last_attacker_action_type = str(action.get("type", ""))
+
+            if event_marker in processed_events:
                 continue
-            processed_controls.add(control_marker)
-            entry = discovered_controls.setdefault(
+            processed_events.add(event_marker)
+
+            if last_attacker_action_type == "inspect_surface":
+                result = item.get("result") if isinstance(item.get("result"), dict) else {}
+                surface = str(action.get("surface") or result.get("surface") or "unknown")
+                findings = [
+                    str(token).strip()
+                    for token in result.get("findings", [])
+                    if str(token).strip()
+                ][:6]
+                entry = recon_history.setdefault(
+                    surface,
+                    {
+                        "surface": surface,
+                        "count": 0,
+                        "summary": None,
+                        "findings": [],
+                        "last_time_sec": None,
+                    },
+                )
+                entry["count"] = int(entry.get("count", 0)) + 1
+                if result.get("summary"):
+                    entry["summary"] = str(result.get("summary"))
+                if findings:
+                    entry["findings"] = findings
+                time_sec = self._coerce_number(item.get("time_sec"))
+                if time_sec is not None:
+                    entry["last_time_sec"] = round(time_sec, 3)
+                for hinted_surface in self._practical_black_box_recon_surface_hints(
+                    surface=surface,
+                    findings=findings,
+                ):
+                    hinted_entry = surface_state.setdefault(
+                        hinted_surface,
+                        self._practical_black_box_surface_template(),
+                    )
+                    hinted_entry["recon_count"] = int(hinted_entry.get("recon_count", 0)) + 1
+                    for token in findings[:4]:
+                        if token not in hinted_entry["recon_evidence"]:
+                            hinted_entry["recon_evidence"].append(token)
+                    hinted_entry["recon_evidence"] = hinted_entry["recon_evidence"][-6:]
+                discovered = discovered_controls.setdefault(
+                    descriptor,
+                    {"action": descriptor, "count": 0, "last_effect": None},
+                )
+                discovered["count"] = int(discovered.get("count", 0)) + 1
+                discovered["last_effect"] = result.get("summary")
+                continue
+
+            surface = self._attacker_surface_from_action_type(last_attacker_action_type)
+            if surface == "unknown":
+                continue
+            entry = surface_state.setdefault(
+                surface,
+                self._practical_black_box_surface_template(),
+            )
+            entry["exploit_attempt_count"] = int(entry.get("exploit_attempt_count", 0)) + 1
+            entry["last_action"] = descriptor
+            entry["last_action_time_sec"] = round(now, 3)
+
+            if last_attacker_action_type == "set_manual_valve":
+                entry["preferred_target"] = str(action.get("chemical", "")).strip() or None
+            elif last_attacker_action_type == "set_sensor":
+                field_name = str(action.get("name", "")).strip()
+                entry["preferred_target"] = field_name or None
+                entry["last_value"] = action.get("value")
+                entry["preferred_direction"] = self._practical_black_box_sensor_direction(
+                    field_name=field_name,
+                    observation=observation,
+                    telemetry_summary=telemetry_summary,
+                )
+                stage = self._practical_black_box_sensor_stage(
+                    field_name=field_name,
+                    action_value=action.get("value"),
+                    observation=observation,
+                    previous_observation=previous_observation,
+                )
+                entry["escalation_stage"] = max(int(entry.get("escalation_stage", 0)), stage)
+
+            effect = self._practical_black_box_effect_for_action(
+                action=action,
+                observation=observation,
+                previous_observation=previous_observation,
+                telemetry_summary=telemetry_summary,
+                preconditions=preconditions,
+            )
+            discovered = discovered_controls.setdefault(
                 descriptor,
                 {"action": descriptor, "count": 0, "last_effect": None},
             )
-            entry["count"] = int(entry.get("count", 0)) + 1
-            if (
-                str(action.get("type", "")) == "inspect_surface"
-                and isinstance(item.get("result"), dict)
-                and item["result"].get("summary")
-            ):
-                entry["last_effect"] = str(item["result"]["summary"])
+            discovered["count"] = int(discovered.get("count", 0)) + 1
+
+            if effect:
+                entry["success_count"] = int(entry.get("success_count", 0)) + 1
+                entry["stall_count"] = 0
+                entry["last_effect"] = effect
+                entry["last_success_time_sec"] = round(now, 3)
+                discovered["last_effect"] = effect
+                last_success_event = {
+                    "time_sec": round(now, 3),
+                    "surface": surface,
+                    "effect": effect,
+                }
             else:
-                entry["last_effect"] = effect_by_action_type.get(
-                    str(action.get("type", "")),
-                    entry.get("last_effect"),
+                entry["stall_count"] = int(entry.get("stall_count", 0)) + 1
+                discovered["last_effect"] = discovered.get("last_effect")
+
+        state["_last_success_event"] = last_success_event
+
+        base_recon_budget = 3
+        total_recon_actions = sum(int(entry.get("count", 0)) for entry in recon_history.values())
+        max_stall_count = max(
+            int(payload.get("stall_count", 0)) for payload in surface_state.values()
+        )
+        fallback_recon_credit = 1 if max_stall_count >= 2 else 0
+        recon_budget_remaining = max(
+            0,
+            base_recon_budget + fallback_recon_credit - total_recon_actions,
+        )
+
+        for surface, payload in surface_state.items():
+            payload["score"] = self._practical_black_box_surface_score(
+                surface=surface,
+                payload=payload,
+                preconditions=preconditions,
+                telemetry_summary=telemetry_summary,
+            )
+
+        committed_surface = str(commitment.get("surface", "unknown"))
+        if committed_surface not in surface_state:
+            committed_surface = "unknown"
+        best_surface = self._practical_black_box_choose_surface(
+            surface_state=surface_state,
+            committed_surface=committed_surface,
+            recon_budget_remaining=recon_budget_remaining,
+        )
+        if best_surface == "unknown" and committed_surface != "unknown":
+            best_surface = committed_surface
+        if best_surface == "unknown" and recon_budget_remaining == 0:
+            ranked_surface = max(
+                surface_state.items(),
+                key=lambda item: float(item[1].get("score", 0.0)),
+            )
+            if float(ranked_surface[1].get("score", 0.0)) > 0:
+                best_surface = ranked_surface[0]
+
+        current_surface_score = float(surface_state.get(committed_surface, {}).get("score", 0.0))
+        best_surface_score = float(surface_state.get(best_surface, {}).get("score", 0.0))
+        committed_stall = int(surface_state.get(committed_surface, {}).get("stall_count", 0))
+        should_switch_surface = committed_surface == "unknown" or int(
+            commitment.get("remaining_steps", 0) or 0
+        ) <= 0
+        if committed_surface != "unknown" and committed_stall >= 2:
+            should_switch_surface = True
+        if (
+            best_surface != "unknown"
+            and best_surface != committed_surface
+            and best_surface_score >= current_surface_score + 1.0
+        ):
+            should_switch_surface = True
+        if should_switch_surface and best_surface != "unknown":
+            committed_surface = best_surface
+            commitment.update(
+                {
+                    "surface": committed_surface,
+                    "template": self._practical_black_box_template_for_surface(
+                        committed_surface
+                    ),
+                    "remaining_steps": 3,
+                    "stall_count": int(
+                        surface_state[committed_surface].get("stall_count", 0)
+                    ),
+                    "last_surface_switch_time_sec": round(now, 3),
+                }
+            )
+
+        if committed_surface == "process2_manual_path":
+            commitment["preferred_chemical"] = self._practical_black_box_preferred_chemical(
+                observation=observation,
+                preferred=str(commitment.get("preferred_chemical") or ""),
+                open_chemicals=preconditions["manual_open_chemicals"],
+            )
+        elif committed_surface == "sensor_manipulation":
+            target_field = str(
+                commitment.get("target_sensor")
+                or surface_state["sensor_manipulation"].get("preferred_target")
+                or "RW_Tank_Level"
+            )
+            if target_field:
+                commitment["target_sensor"] = target_field
+                commitment["sensor_direction"] = self._practical_black_box_sensor_direction(
+                    field_name=target_field,
+                    observation=observation,
+                    telemetry_summary=telemetry_summary,
                 )
+
+        last_success_surface = str(last_success_event.get("surface", ""))
+        if committed_surface != "unknown":
+            if last_success_surface == committed_surface:
+                commitment["remaining_steps"] = max(
+                    int(commitment.get("remaining_steps", 0) or 0),
+                    2,
+                )
+            elif committed_stall >= 2:
+                commitment["remaining_steps"] = 0
+            else:
+                commitment["remaining_steps"] = max(
+                    1,
+                    int(commitment.get("remaining_steps", 0) or 0),
+                )
+            commitment["stall_count"] = committed_stall
+            commitment["next_goal"] = self._practical_black_box_next_goal(
+                surface=committed_surface,
+                observation=observation,
+                preconditions=preconditions,
+                surface_payload=surface_state.get(committed_surface, {}),
+            )
+
+        if not attacker_history:
+            current_phase = "initial_observation"
+        elif committed_surface == "unknown" and recon_budget_remaining > 0:
+            current_phase = "reconnaissance"
+        elif committed_stall >= 2:
+            current_phase = "reorient"
+        elif committed_surface != "unknown" and last_success_surface == committed_surface:
+            current_phase = "exploit_escalation"
+        elif committed_surface != "unknown":
+            current_phase = "exploit_commitment"
+        else:
+            current_phase = "probing"
+        if defender_attention == "high" and committed_surface != "unknown":
+            current_phase = "evasion_or_exploitation"
 
         surface_rank = sorted(
             (
@@ -1264,30 +1397,6 @@ class AgenticRoleAgent(RoleAgent):
             key=lambda item: (item[1], item[0]),
             reverse=True,
         )
-        best_surface = "unknown"
-        best_score = 0.0
-        last_successful_effect = None
-        if surface_rank and surface_rank[0][1] >= 1.0:
-            best_surface, best_score, last_successful_effect = surface_rank[0]
-
-        attacker_action_count = sum(
-            1 for item in recent_actions if item.get("role") == "attacker"
-        )
-        if attacker_action_count == 0:
-            current_phase = "initial_observation"
-        elif recon_action_count and best_surface == "unknown":
-            current_phase = "reconnaissance"
-        elif defender_attention == "high" and best_surface != "unknown":
-            current_phase = "evasion_or_exploitation"
-        elif best_surface == "unknown":
-            current_phase = "probing"
-        elif best_score >= 2.0:
-            current_phase = "exploitation"
-        elif last_attacker_action_type == "inspect_surface":
-            current_phase = "surface_validation"
-        else:
-            current_phase = "surface_validation"
-
         visible_controls = [
             {
                 "action": str(entry.get("action")),
@@ -1301,12 +1410,14 @@ class AgenticRoleAgent(RoleAgent):
                     str(item.get("action", "")),
                 ),
                 reverse=True,
-            )[:5]
+            )[:6]
         ]
         observed_effect_map = [
             {
                 "surface": surface,
                 "score": score,
+                "success_count": int(surface_state[surface].get("success_count", 0)),
+                "stall_count": int(surface_state[surface].get("stall_count", 0)),
                 "last_effect": effect,
             }
             for surface, score, effect in surface_rank
@@ -1333,36 +1444,33 @@ class AgenticRoleAgent(RoleAgent):
         for surface, score, effect in surface_rank:
             if score <= 0:
                 continue
+            surface_payload = surface_state.get(surface, {})
             basis: list[str] = []
             if effect:
                 basis.append(f"last_effect={effect}")
+            basis.extend(list(surface_payload.get("recon_evidence", []))[:2])
             if surface == "process2_manual_path":
-                if "process2_selected" in relationship_notes or "process2_selected" in recon_tokens:
-                    basis.append("process2_selected")
-                basis.extend(
-                    flag for flag in risk_flags if str(flag).endswith("_depleting")
-                )
+                if preconditions["process2_enabled"]:
+                    basis.append("process2_enabled")
+                if preconditions["manual_path_active"]:
+                    basis.append("manual_path_active")
+                basis.extend(preconditions["process2_drain_signals"][:1])
             elif surface == "sensor_manipulation":
-                basis.extend(telemetry_summary["active_alarms"][:2])
-                basis.extend(
-                    note
-                    for note in telemetry_summary["relationship_notes"]
-                    if str(note).startswith("abrupt_change:")
-                )
+                if preconditions["preferred_sensor"]:
+                    basis.append(f"target={preconditions['preferred_sensor']}")
+                if preconditions["telemetry_jump"]:
+                    basis.append("telemetry_jump")
+                basis.extend(telemetry_summary["active_alarms"][:1])
             elif surface == "availability_disruption":
-                if str(observation.get("STATE_NAME", "")).upper() in {
-                    "RUNNING",
-                    "SHUTDOWN",
-                    "STOPPED",
-                }:
-                    basis.append(f"state={observation.get('STATE_NAME')}")
+                basis.append(f"state={preconditions['state_name']}")
             candidate_leverage_hypotheses.append(
                 {
                     "surface": surface,
-                    "confidence": round(min(0.95, 0.25 + (score * 0.18)), 2),
-                    "basis": basis[:3],
+                    "confidence": round(min(0.97, 0.22 + (score * 0.16)), 2),
+                    "basis": basis[:4],
                 }
             )
+
         state.update(
             {
                 "mission_objective": state.get("mission_objective")
@@ -1372,16 +1480,393 @@ class AgenticRoleAgent(RoleAgent):
                 "observed_effect_map": observed_effect_map,
                 "reconnaissance_findings": reconnaissance_findings,
                 "detection_pressure": defender_attention,
-                "best_known_attack_surface": best_surface,
-                "last_successful_effect": last_successful_effect,
+                "best_known_attack_surface": committed_surface
+                if committed_surface != "unknown"
+                else best_surface,
+                "last_successful_effect": last_success_event.get("effect"),
                 "candidate_leverage_hypotheses": candidate_leverage_hypotheses[:3],
+                "exploit_commitment": {
+                    "surface": committed_surface,
+                    "template": commitment.get("template"),
+                    "remaining_steps": int(commitment.get("remaining_steps", 0) or 0),
+                    "stall_count": int(commitment.get("stall_count", 0) or 0),
+                    "next_goal": commitment.get("next_goal"),
+                },
+                "simple_precondition_state": {
+                    "plant_running": bool(preconditions["plant_running"]),
+                    "process2_enabled": bool(preconditions["process2_enabled"]),
+                    "manual_path_active": bool(preconditions["manual_path_active"]),
+                    "manual_open_chemicals": preconditions["manual_open_chemicals"][:3],
+                    "alarm_pressure": preconditions["alarm_pressure"],
+                    "defender_attention": preconditions["defender_attention"],
+                },
+                "recon_budget_remaining": recon_budget_remaining,
                 "rolling_summary": (
-                    f"phase={current_phase}; surface={best_surface}; "
-                    f"pressure={defender_attention}; recon={recon_action_count}."
+                    f"phase={current_phase}; surface={committed_surface or best_surface}; "
+                    f"recon_remaining={recon_budget_remaining}; pressure={defender_attention}."
                 ),
             }
         )
         return state
+
+    @staticmethod
+    def _practical_black_box_surface_template() -> dict[str, Any]:
+        return {
+            "recon_count": 0,
+            "recon_evidence": [],
+            "exploit_attempt_count": 0,
+            "success_count": 0,
+            "stall_count": 0,
+            "last_effect": None,
+            "last_action": None,
+            "last_success_time_sec": None,
+            "last_action_time_sec": None,
+            "preferred_target": None,
+            "preferred_direction": None,
+            "last_value": None,
+            "escalation_stage": 0,
+            "score": 0.0,
+        }
+
+    def _practical_black_box_preconditions(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        defender_attention: str,
+    ) -> dict[str, Any]:
+        state_name = str(observation.get("STATE_NAME", "")).upper() or "UNKNOWN"
+        open_chemicals = self._practical_black_box_open_chemicals(observation)
+        active_alarm_count = len(telemetry_summary["active_alarms"])
+        alarm_pressure = "low"
+        if active_alarm_count >= 2 or defender_attention == "high":
+            alarm_pressure = "high"
+        elif active_alarm_count == 1 or defender_attention == "medium":
+            alarm_pressure = "medium"
+        preferred_sensor = next(
+            (
+                field
+                for field in ("RW_Tank_Level", "UF_UFFT_Tank_Level")
+                if field in observation
+            ),
+            None,
+        )
+        return {
+            "state_name": state_name,
+            "plant_running": state_name in {"RUNNING", "STARTING"},
+            "process2_enabled": self._is_active_flag(observation.get("P2_Selected")),
+            "manual_path_active": bool(open_chemicals),
+            "manual_open_chemicals": open_chemicals,
+            "process2_drain_signals": [
+                flag
+                for flag in telemetry_summary["risk_flags"]
+                if str(flag).endswith("_depleting")
+            ][:3],
+            "alarm_pressure": alarm_pressure,
+            "defender_attention": defender_attention,
+            "telemetry_jump": "sensor_or_process_jump" in telemetry_summary["risk_flags"]
+            or any(
+                note.startswith("abrupt_change:")
+                for note in telemetry_summary["relationship_notes"]
+            ),
+            "preferred_sensor": preferred_sensor,
+        }
+
+    @staticmethod
+    def _practical_black_box_open_chemicals(observation: dict[str, Any]) -> list[str]:
+        open_chemicals: list[str] = []
+        for chemical in ("NaCl", "NaOCl", "HCl"):
+            field = f"ChemTreat_{chemical}_Valve_Sts"
+            if AgenticRoleAgent._is_active_flag(observation.get(field)):
+                open_chemicals.append(chemical)
+        return open_chemicals
+
+    def _practical_black_box_recon_surface_hints(
+        self,
+        *,
+        surface: str,
+        findings: list[str],
+    ) -> list[str]:
+        hints: list[str] = []
+        if surface == "process2_control_plane" or any(
+            token == "process2_selected"
+            or token.startswith("P2_")
+            or (
+                token.startswith("ChemTreat_") and token.endswith("_Valve_Sts=1")
+            )
+            for token in findings
+        ):
+            hints.append("process2_manual_path")
+        if surface in {"tags", "registers", "alarm_bits", "io_image"} or any(
+            token.startswith("active_alarms=")
+            or token.startswith("RW_Tank_Level=")
+            or token.startswith("UF_UFFT_Tank_Level=")
+            for token in findings
+        ):
+            hints.append("sensor_manipulation")
+        if surface in {"io_image", "actuator_state_bits"} or any(
+            token.startswith("state=") for token in findings
+        ):
+            hints.append("availability_disruption")
+        return sorted(set(hints))
+
+    def _practical_black_box_effect_for_action(
+        self,
+        *,
+        action: dict[str, Any],
+        observation: dict[str, Any],
+        previous_observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        preconditions: dict[str, Any],
+    ) -> str | None:
+        action_type = str(action.get("type", ""))
+        if action_type == "select_process":
+            active = bool(action.get("active", True))
+            if active and preconditions["process2_enabled"]:
+                return "process2_selection_persisted"
+            if not active and not preconditions["process2_enabled"]:
+                return "process2_access_removed"
+            return None
+        if action_type == "set_manual_valve":
+            chemical = str(action.get("chemical", "")).strip()
+            if not chemical:
+                return None
+            valve_open = chemical in preconditions["manual_open_chemicals"]
+            level_field = f"ChemTreat_{chemical}_Level"
+            trend = telemetry_summary["short_horizon_trends"].get(level_field, {})
+            if bool(action.get("open", True)):
+                tokens: list[str] = []
+                if valve_open:
+                    tokens.append(f"{chemical}_valve_open")
+                if trend.get("direction") == "falling":
+                    tokens.append(f"{level_field}_falling")
+                if f"{level_field}_depleting" in telemetry_summary["risk_flags"]:
+                    tokens.append(f"{level_field}_depleting")
+                if tokens:
+                    return "; ".join(tokens)
+                return None
+            if not valve_open:
+                return f"{chemical}_valve_closed"
+            return None
+        if action_type == "set_sensor":
+            field_name = str(action.get("name", "")).strip()
+            target_value = self._coerce_number(action.get("value"))
+            current_value = self._coerce_number(observation.get(field_name))
+            previous_value = self._coerce_number(previous_observation.get(field_name))
+            tokens: list[str] = []
+            if (
+                target_value is not None
+                and current_value is not None
+                and abs(current_value - target_value) <= max(8.0, abs(target_value) * 0.08)
+            ):
+                tokens.append("sensor_bias_persisted")
+            if (
+                current_value is not None
+                and previous_value is not None
+                and abs(current_value - previous_value) >= max(25.0, abs(previous_value) * 0.12)
+            ):
+                tokens.append("telemetry_shift_observed")
+            if telemetry_summary["active_alarms"]:
+                tokens.append(f"alarms={','.join(telemetry_summary['active_alarms'][:2])}")
+            if preconditions["telemetry_jump"]:
+                tokens.append("control_response_changed")
+            if tokens:
+                return f"{field_name}: " + "; ".join(tokens[:3])
+            return None
+        if action_type == "hmi_start":
+            if preconditions["plant_running"]:
+                return "plant_running"
+            return None
+        if action_type == "hmi_stop":
+            if preconditions["state_name"] in {"SHUTDOWN", "STOPPED"}:
+                return "controlled_stop_achieved"
+            return None
+        if action_type == "hmi_estop":
+            if preconditions["state_name"] in {"SHUTDOWN", "STOPPED"}:
+                return "hard_stop_achieved"
+            return None
+        return None
+
+    def _practical_black_box_surface_score(
+        self,
+        *,
+        surface: str,
+        payload: dict[str, Any],
+        preconditions: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> float:
+        score = float(payload.get("success_count", 0)) * 2.4
+        score += min(1.2, float(payload.get("exploit_attempt_count", 0)) * 0.35)
+        score += min(1.0, float(payload.get("recon_count", 0)) * 0.28)
+        score -= float(payload.get("stall_count", 0)) * 1.2
+        if surface == "process2_manual_path":
+            if preconditions["process2_enabled"]:
+                score += 1.1
+            if preconditions["manual_path_active"]:
+                score += 1.5
+            if preconditions["process2_drain_signals"]:
+                score += min(1.5, len(preconditions["process2_drain_signals"]) * 0.8)
+            if any(
+                token == "process2_selected" or token.startswith("P2_")
+                for token in payload.get("recon_evidence", [])
+            ):
+                score += 0.7
+        elif surface == "sensor_manipulation":
+            if preconditions["preferred_sensor"]:
+                score += 0.9
+            if preconditions["telemetry_jump"]:
+                score += 0.8
+            if telemetry_summary["active_alarms"]:
+                score += 0.5
+            score += min(1.0, int(payload.get("escalation_stage", 0)) * 0.35)
+        elif surface == "availability_disruption":
+            if preconditions["plant_running"]:
+                score += 1.1
+            if preconditions["state_name"] in {"SHUTDOWN", "STOPPED"}:
+                score += 0.4
+            if any(
+                token.startswith("state=") for token in payload.get("recon_evidence", [])
+            ):
+                score += 0.3
+        return round(max(0.0, score), 3)
+
+    @staticmethod
+    def _practical_black_box_choose_surface(
+        *,
+        surface_state: dict[str, dict[str, Any]],
+        committed_surface: str,
+        recon_budget_remaining: int,
+    ) -> str:
+        if committed_surface in surface_state:
+            committed_payload = surface_state[committed_surface]
+            if (
+                int(committed_payload.get("stall_count", 0)) < 2
+                and float(committed_payload.get("score", 0.0)) >= 1.0
+            ):
+                return committed_surface
+        ranked = sorted(
+            surface_state.items(),
+            key=lambda item: (
+                float(item[1].get("score", 0.0)),
+                item[0],
+            ),
+            reverse=True,
+        )
+        if not ranked:
+            return "unknown"
+        best_surface, payload = ranked[0]
+        threshold = 1.35 if recon_budget_remaining > 0 else 0.8
+        if float(payload.get("score", 0.0)) < threshold:
+            return "unknown"
+        return best_surface
+
+    @staticmethod
+    def _practical_black_box_template_for_surface(surface: str) -> str | None:
+        mapping = {
+            "process2_manual_path": "process2_manual_path_abuse",
+            "sensor_manipulation": "telemetry_bias_escalation",
+            "availability_disruption": "availability_disruption",
+        }
+        return mapping.get(surface)
+
+    def _practical_black_box_next_goal(
+        self,
+        *,
+        surface: str,
+        observation: dict[str, Any],
+        preconditions: dict[str, Any],
+        surface_payload: dict[str, Any],
+    ) -> str:
+        if surface == "process2_manual_path":
+            if not preconditions["plant_running"]:
+                return "start_the_plant_to_make_process2_effectful"
+            if not preconditions["process2_enabled"]:
+                return "enable_process2_manual_path"
+            if not preconditions["manual_path_active"]:
+                chemical = self._practical_black_box_preferred_chemical(
+                    observation=observation,
+                    preferred=str(surface_payload.get("preferred_target") or ""),
+                    open_chemicals=preconditions["manual_open_chemicals"],
+                )
+                return f"open_{chemical.lower()}_manual_valve"
+            return "extend_manual_dosing_to_adjacent_chemical"
+        if surface == "sensor_manipulation":
+            field_name = str(
+                surface_payload.get("preferred_target")
+                or preconditions.get("preferred_sensor")
+                or "rw_tank_level"
+            ).lower()
+            stage = int(surface_payload.get("escalation_stage", 0) or 0)
+            if stage <= 1:
+                return f"sustain_or_escalate_{field_name}_bias"
+            return f"escalate_{field_name}_bias_again"
+        if surface == "availability_disruption":
+            if not preconditions["plant_running"]:
+                return "restart_then_disrupt_again"
+            return "stop_or_estop_the_running_plant"
+        return "gather_more_evidence"
+
+    def _practical_black_box_preferred_chemical(
+        self,
+        *,
+        observation: dict[str, Any],
+        preferred: str,
+        open_chemicals: list[str],
+    ) -> str:
+        chemicals = self._available_chemicals(observation)
+        if preferred in chemicals and preferred not in open_chemicals:
+            return preferred
+        ranked = sorted(
+            chemicals,
+            key=lambda chemical: (
+                chemical in open_chemicals,
+                -(self._coerce_number(observation.get(f"ChemTreat_{chemical}_Level")) or 0.0),
+                chemical,
+            ),
+        )
+        return ranked[0] if ranked else "NaOCl"
+
+    def _practical_black_box_sensor_direction(
+        self,
+        *,
+        field_name: str,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> str:
+        if "raw_water_low" in " ".join(telemetry_summary["risk_flags"]).lower():
+            return "low"
+        if "high_high" in " ".join(telemetry_summary["risk_flags"]).lower():
+            return "high"
+        trend = telemetry_summary["short_horizon_trends"].get(field_name, {})
+        if trend.get("direction") == "falling":
+            return "low"
+        if trend.get("direction") == "rising":
+            return "high"
+        current_value = self._coerce_number(observation.get(field_name))
+        if current_value is not None and current_value >= 600.0:
+            return "high"
+        return "low"
+
+    def _practical_black_box_sensor_stage(
+        self,
+        *,
+        field_name: str,
+        action_value: Any,
+        observation: dict[str, Any],
+        previous_observation: dict[str, Any],
+    ) -> int:
+        value = self._coerce_number(action_value)
+        current_value = self._coerce_number(observation.get(field_name))
+        previous_value = self._coerce_number(previous_observation.get(field_name))
+        baseline = previous_value if previous_value is not None else current_value
+        if value is None or baseline is None:
+            return 1
+        delta = abs(value - baseline)
+        if delta >= max(80.0, abs(baseline) * 0.45):
+            return 3
+        if delta >= max(40.0, abs(baseline) * 0.22):
+            return 2
+        return 1
 
     def _observer_memory(
         self,
@@ -2653,20 +3138,82 @@ class AgenticRoleAgent(RoleAgent):
         allowed = set(self.profile.get("allowed_action_types", []))
         observation = context.get("observation", {})
         state_name = str(observation.get("STATE_NAME", "")).upper()
-        p2_selected = self._is_active_flag(observation.get("P2_Selected"))
-        best_surface = str(
-            structured_memory.get("best_known_attack_surface", "unknown")
-        )
-        current_phase = str(structured_memory.get("current_phase", "probing"))
+        memory_state = self._state.setdefault("role_memory", {})
+        surface_state = memory_state.get("_surface_state", {})
+        commitment = dict(memory_state.get("_exploit_commitment") or {})
+        preconditions = dict(structured_memory.get("simple_precondition_state") or {})
+        if not preconditions:
+            preconditions = self._practical_black_box_preconditions(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                defender_attention=str(
+                    structured_memory.get("detection_pressure", "low")
+                ).lower(),
+            )
         detection_pressure = str(
-            structured_memory.get("detection_pressure", "low")
+            preconditions.get("defender_attention")
+            or structured_memory.get("detection_pressure", "low")
         ).lower()
+        current_phase = str(structured_memory.get("current_phase", "probing"))
+        best_surface = str(
+            structured_memory.get("best_known_attack_surface")
+            or commitment.get("surface")
+            or "unknown"
+        )
+        committed_surface = str(commitment.get("surface") or best_surface or "unknown")
+        if committed_surface not in {
+            "process2_manual_path",
+            "sensor_manipulation",
+            "availability_disruption",
+        }:
+            committed_surface = "unknown"
+        recon_budget_remaining = int(
+            structured_memory.get("recon_budget_remaining", 0) or 0
+        )
+        plant_running = bool(
+            preconditions.get("plant_running", state_name in {"RUNNING", "STARTING"})
+        )
+        p2_selected = bool(
+            preconditions.get(
+                "process2_enabled",
+                self._is_active_flag(observation.get("P2_Selected")),
+            )
+        )
+        open_chemicals = list(
+            preconditions.get("manual_open_chemicals")
+            or self._practical_black_box_open_chemicals(observation)
+        )
         prior_actions = {
-            action_key(normalize_action(item.get("action")))
+            action_key(action)
             for item in context.get("executed_actions", [])
-            if item.get("role") == "attacker" and item.get("action") is not None
+            if item.get("role") == "attacker"
+            for action in [normalize_action(item.get("action"))]
+            if action is not None
         }
         candidates_by_id: dict[str, dict[str, Any]] = {}
+        ranked_surfaces = [
+            str(item.get("surface"))
+            for item in structured_memory.get("observed_effect_map", [])
+            if str(item.get("surface", "")).strip()
+        ]
+        for surface in (
+            "process2_manual_path",
+            "sensor_manipulation",
+            "availability_disruption",
+        ):
+            if surface not in ranked_surfaces:
+                ranked_surfaces.append(surface)
+        must_commit = (
+            committed_surface != "unknown"
+            and int(commitment.get("remaining_steps", 0) or 0) > 0
+            and current_phase not in {"initial_observation", "reconnaissance", "reorient"}
+        )
+        recon_allowed = current_phase in {
+            "initial_observation",
+            "reconnaissance",
+            "reorient",
+        } or (recon_budget_remaining > 0 and not must_commit)
+        sensor_profiles = dict(self._practical_black_box_sensor_profiles(observation))
 
         def add_candidate(
             summary: str,
@@ -2674,12 +3221,20 @@ class AgenticRoleAgent(RoleAgent):
             *,
             source: str,
             priority: int,
+            surface: str,
+            category: str,
+            chain_goal: str | None = None,
         ) -> None:
             normalized = normalize_action(action)
             if normalized is None:
                 return
             action_type = str(normalized.get("type", ""))
             if action_type not in allowed:
+                return
+            if (
+                action_type != "set_sensor"
+                and self._action_satisfied(normalized, observation=observation)
+            ):
                 return
             candidate_id = action_key(normalized)
             payload = {
@@ -2688,147 +3243,515 @@ class AgenticRoleAgent(RoleAgent):
                 "action": normalized,
                 "source": source,
                 "priority": priority,
+                "surface": surface,
+                "category": category,
             }
+            if chain_goal:
+                payload["chain_goal"] = chain_goal
             existing = candidates_by_id.get(candidate_id)
             if existing is None or int(payload["priority"]) > int(
                 existing.get("priority", 0)
             ):
                 candidates_by_id[candidate_id] = payload
 
-        def base_priority(action: dict[str, Any]) -> int:
-            action_type = str(action.get("type", ""))
-            novelty_bonus = 12 if action_key(action) not in prior_actions else 0
-            if action_type == "inspect_surface":
-                surface = str(action.get("surface", "unknown"))
-                priority = 86 if current_phase in {
-                    "initial_observation",
-                    "probing",
-                    "reconnaissance",
-                } else 46
-                if surface == "process2_control_plane" and best_surface in {
-                    "unknown",
-                    "process2_manual_path",
-                }:
-                    priority += 10
-                if surface == "alarm_bits" and detection_pressure == "high":
-                    priority += 4
-                return priority + novelty_bonus
-            if action_type == "hmi_start":
-                priority = 82 if state_name not in {"RUNNING", "STARTING"} else 24
-                if best_surface == "availability_disruption":
-                    priority += 10
-                return priority + novelty_bonus
-            if action_type == "hmi_stop":
-                priority = 78 if state_name in {"RUNNING", "STARTING"} else 20
-                if best_surface == "availability_disruption":
-                    priority += 14
-                return priority + novelty_bonus
-            if action_type == "hmi_estop":
-                priority = 36
-                if state_name in {"RUNNING", "STARTING"} and detection_pressure == "high":
-                    priority += 18
-                if best_surface == "availability_disruption":
-                    priority += 8
-                return priority + novelty_bonus
-            if action_type == "select_process":
-                active = bool(action.get("active", True))
-                if active:
-                    priority = 76 if not p2_selected else 18
-                    if best_surface in {"unknown", "process2_manual_path"}:
-                        priority += 14
-                    return priority + novelty_bonus
-                priority = 18 if p2_selected else 8
-                return priority + novelty_bonus
-            if action_type == "set_manual_valve":
-                open_valve = bool(action.get("open", True))
-                priority = 70 if (p2_selected and open_valve) else 26
-                if best_surface == "process2_manual_path":
-                    priority += 16 if open_valve else 4
-                return priority + novelty_bonus
-            if action_type == "set_sensor":
-                priority = 64
-                if best_surface in {"unknown", "sensor_manipulation"}:
-                    priority += 16
-                return priority + novelty_bonus
-            if action_type == "noop":
-                priority = 14 if detection_pressure == "high" else 8
-                if current_phase == "initial_observation":
-                    priority += 4
-                return priority
-            return 10 + novelty_bonus
+        def exploit_priority(
+            *,
+            surface: str,
+            category: str,
+            previously_tried: bool,
+            rank: int = 0,
+        ) -> int:
+            base_map = {
+                "probe": 126,
+                "support": 136,
+                "exploit": 146,
+                "sustain": 149,
+                "escalate": 154,
+                "fallback": 120,
+                "recon": 94,
+                "hold": 12,
+            }
+            base = base_map.get(category, 100) - (rank * 6)
+            if surface == committed_surface and must_commit and category != "recon":
+                base += 10
+            elif must_commit and surface != committed_surface and category != "recon":
+                base -= 14
+            if previously_tried and category in {"probe", "recon"}:
+                base -= 10
+            if not previously_tried and category in {"exploit", "escalate"}:
+                base += 4
+            return base
 
-        generic_actions: list[dict[str, Any]] = []
-        if "hmi_start" in allowed:
-            generic_actions.append({"type": "hmi_start", "process_id": "WT-P1"})
-        if "hmi_stop" in allowed:
-            generic_actions.append({"type": "hmi_stop", "process_id": "WT-P1"})
-        if "hmi_estop" in allowed:
-            generic_actions.append({"type": "hmi_estop", "process_id": "WT-P1"})
-        if "select_process" in allowed:
-            generic_actions.extend(
-                [
-                    {"process_id": "WT-P2", "type": "select_process", "active": True},
-                    {
+        if current_phase == "initial_observation":
+            if "hmi_start" in allowed and not plant_running:
+                action = {"type": "hmi_start", "process_id": "WT-P1"}
+                add_candidate(
+                    self._practical_black_box_candidate_summary(
+                        action=action,
+                        best_surface=best_surface,
+                        current_phase=current_phase,
+                        detection_pressure=detection_pressure,
+                        previously_tried=action_key(action) in prior_actions,
+                        category="probe",
+                        chain_goal="make_plant_state_effectful",
+                    ),
+                    action,
+                    source="practical_black_box",
+                    priority=exploit_priority(
+                        surface="availability_disruption",
+                        category="probe",
+                        previously_tried=action_key(action) in prior_actions,
+                    ),
+                    surface="availability_disruption",
+                    category="probe",
+                    chain_goal="make_plant_state_effectful",
+                )
+            if "select_process" in allowed and not p2_selected:
+                action = {
+                    "process_id": "WT-P2",
+                    "type": "select_process",
+                    "active": True,
+                }
+                add_candidate(
+                    self._practical_black_box_candidate_summary(
+                        action=action,
+                        best_surface=best_surface,
+                        current_phase=current_phase,
+                        detection_pressure=detection_pressure,
+                        previously_tried=action_key(action) in prior_actions,
+                        category="probe",
+                        chain_goal="test_process2_manual_access",
+                    ),
+                    action,
+                    source="practical_black_box",
+                    priority=exploit_priority(
+                        surface="process2_manual_path",
+                        category="probe",
+                        previously_tried=action_key(action) in prior_actions,
+                    ),
+                    surface="process2_manual_path",
+                    category="probe",
+                    chain_goal="test_process2_manual_access",
+                )
+            if "set_sensor" in allowed and sensor_profiles:
+                target_field = next(iter(sensor_profiles))
+                direction = self._practical_black_box_sensor_direction(
+                    field_name=target_field,
+                    observation=observation,
+                    telemetry_summary=telemetry_summary,
+                )
+                action = {
+                    "type": "set_sensor",
+                    "name": target_field,
+                    "value": sensor_profiles[target_field][direction][0],
+                }
+                add_candidate(
+                    self._practical_black_box_candidate_summary(
+                        action=action,
+                        best_surface=best_surface,
+                        current_phase=current_phase,
+                        detection_pressure=detection_pressure,
+                        previously_tried=action_key(action) in prior_actions,
+                        category="probe",
+                        chain_goal="test_telemetry_control_response",
+                    ),
+                    action,
+                    source="practical_black_box",
+                    priority=exploit_priority(
+                        surface="sensor_manipulation",
+                        category="probe",
+                        previously_tried=action_key(action) in prior_actions,
+                    ),
+                    surface="sensor_manipulation",
+                    category="probe",
+                    chain_goal="test_telemetry_control_response",
+                )
+
+        target_surfaces: list[str] = []
+        if committed_surface != "unknown":
+            target_surfaces.append(committed_surface)
+        elif best_surface != "unknown":
+            target_surfaces.append(best_surface)
+        elif current_phase not in {"initial_observation", "reconnaissance"}:
+            for surface in ranked_surfaces[:1]:
+                if surface not in target_surfaces:
+                    target_surfaces.append(surface)
+        for surface in ranked_surfaces:
+            if current_phase in {"initial_observation", "reconnaissance"}:
+                break
+            if surface not in target_surfaces:
+                target_surfaces.append(surface)
+        target_surfaces = target_surfaces[:3]
+
+        for surface_rank, surface in enumerate(target_surfaces):
+            if surface == "unknown":
+                continue
+            payload = surface_state.get(surface, {})
+            chain_goal = self._practical_black_box_next_goal(
+                surface=surface,
+                observation=observation,
+                preconditions=preconditions,
+                surface_payload=payload,
+            )
+            if surface == "process2_manual_path":
+                preferred_chemical = self._practical_black_box_preferred_chemical(
+                    observation=observation,
+                    preferred=str(
+                        commitment.get("preferred_chemical")
+                        or payload.get("preferred_target")
+                        or ""
+                    ),
+                    open_chemicals=open_chemicals,
+                )
+                if not plant_running and "hmi_start" in allowed:
+                    action = {"type": "hmi_start", "process_id": "WT-P1"}
+                    add_candidate(
+                        self._practical_black_box_candidate_summary(
+                            action=action,
+                            best_surface=surface,
+                            current_phase=current_phase,
+                            detection_pressure=detection_pressure,
+                            previously_tried=action_key(action) in prior_actions,
+                            category="support",
+                            chain_goal=chain_goal,
+                        ),
+                        action,
+                        source="practical_black_box",
+                        priority=exploit_priority(
+                            surface=surface,
+                            category="support",
+                            previously_tried=action_key(action) in prior_actions,
+                            rank=surface_rank,
+                        ),
+                        surface=surface,
+                        category="support",
+                        chain_goal=chain_goal,
+                    )
+                if "select_process" in allowed and not p2_selected:
+                    action = {
                         "process_id": "WT-P2",
                         "type": "select_process",
-                        "active": False,
-                    },
-                ]
-            )
-        if "set_manual_valve" in allowed:
-            for chemical in self._available_chemicals(observation):
-                generic_actions.extend(
-                    [
-                        {
+                        "active": True,
+                    }
+                    category = "exploit" if must_commit else "probe"
+                    add_candidate(
+                        self._practical_black_box_candidate_summary(
+                            action=action,
+                            best_surface=surface,
+                            current_phase=current_phase,
+                            detection_pressure=detection_pressure,
+                            previously_tried=action_key(action) in prior_actions,
+                            category=category,
+                            chain_goal=chain_goal,
+                        ),
+                        action,
+                        source="practical_black_box",
+                        priority=exploit_priority(
+                            surface=surface,
+                            category=category,
+                            previously_tried=action_key(action) in prior_actions,
+                            rank=surface_rank,
+                        ),
+                        surface=surface,
+                        category=category,
+                        chain_goal=chain_goal,
+                    )
+                if "set_manual_valve" in allowed and p2_selected:
+                    ranked_chemicals = [preferred_chemical] + [
+                        chemical
+                        for chemical in self._available_chemicals(observation)
+                        if chemical != preferred_chemical
+                    ]
+                    unopened = [
+                        chemical
+                        for chemical in ranked_chemicals
+                        if chemical not in open_chemicals
+                    ]
+                    category = (
+                        "escalate"
+                        if open_chemicals or int(payload.get("success_count", 0)) > 0
+                        else "exploit"
+                    )
+                    for index, chemical in enumerate(unopened[:2]):
+                        action = {
                             "process_id": "WT-P2",
                             "type": "set_manual_valve",
                             "chemical": chemical,
                             "open": True,
-                        },
-                        {
-                            "process_id": "WT-P2",
-                            "type": "set_manual_valve",
-                            "chemical": chemical,
-                            "open": False,
-                        },
-                    ]
+                        }
+                        add_candidate(
+                            self._practical_black_box_candidate_summary(
+                                action=action,
+                                best_surface=surface,
+                                current_phase=current_phase,
+                                detection_pressure=detection_pressure,
+                                previously_tried=action_key(action) in prior_actions,
+                                category=category,
+                                chain_goal=chain_goal,
+                            ),
+                            action,
+                            source="practical_black_box",
+                            priority=exploit_priority(
+                                surface=surface,
+                                category=category,
+                                previously_tried=action_key(action) in prior_actions,
+                                rank=surface_rank + index,
+                            ),
+                            surface=surface,
+                            category=category,
+                            chain_goal=chain_goal,
+                        )
+            elif surface == "sensor_manipulation" and "set_sensor" in allowed and sensor_profiles:
+                target_field = str(
+                    commitment.get("target_sensor")
+                    or payload.get("preferred_target")
+                    or preconditions.get("preferred_sensor")
+                    or next(iter(sensor_profiles))
                 )
-        if "set_sensor" in allowed:
-            for field, values in self._practical_black_box_sensor_profiles(observation):
-                generic_actions.extend(
-                    [
-                        {
+                if target_field in sensor_profiles:
+                    direction = str(
+                        commitment.get("sensor_direction")
+                        or payload.get("preferred_direction")
+                        or self._practical_black_box_sensor_direction(
+                            field_name=target_field,
+                            observation=observation,
+                            telemetry_summary=telemetry_summary,
+                        )
+                    )
+                    stage_values = sensor_profiles[target_field][direction]
+                    attempted_stage = int(payload.get("escalation_stage", 0) or 0)
+                    successful = int(payload.get("success_count", 0)) > 0
+                    last_value = payload.get("last_value")
+                    if successful and last_value is not None:
+                        action = {
                             "type": "set_sensor",
-                            "name": field,
-                            "value": values["low"],
-                        },
-                        {
+                            "name": target_field,
+                            "value": last_value,
+                        }
+                        add_candidate(
+                            self._practical_black_box_candidate_summary(
+                                action=action,
+                                best_surface=surface,
+                                current_phase=current_phase,
+                                detection_pressure=detection_pressure,
+                                previously_tried=action_key(action) in prior_actions,
+                                category="sustain",
+                                chain_goal=chain_goal,
+                            ),
+                            action,
+                            source="practical_black_box",
+                            priority=exploit_priority(
+                                surface=surface,
+                                category="sustain",
+                                previously_tried=action_key(action) in prior_actions,
+                                rank=surface_rank,
+                            ),
+                            surface=surface,
+                            category="sustain",
+                            chain_goal=chain_goal,
+                        )
+                    next_stage = 1 if attempted_stage <= 0 else attempted_stage
+                    if successful and detection_pressure != "high":
+                        next_stage = min(3, attempted_stage + 1)
+                    primary_action = {
+                        "type": "set_sensor",
+                        "name": target_field,
+                        "value": stage_values[max(0, min(2, next_stage - 1))],
+                    }
+                    primary_category = "escalate" if attempted_stage > 0 else "exploit"
+                    add_candidate(
+                        self._practical_black_box_candidate_summary(
+                            action=primary_action,
+                            best_surface=surface,
+                            current_phase=current_phase,
+                            detection_pressure=detection_pressure,
+                            previously_tried=action_key(primary_action) in prior_actions,
+                            category=primary_category,
+                            chain_goal=chain_goal,
+                        ),
+                        primary_action,
+                        source="practical_black_box",
+                        priority=exploit_priority(
+                            surface=surface,
+                            category=primary_category,
+                            previously_tried=action_key(primary_action) in prior_actions,
+                            rank=surface_rank,
+                        ),
+                        surface=surface,
+                        category=primary_category,
+                        chain_goal=chain_goal,
+                    )
+                    if next_stage < 3:
+                        stronger_action = {
                             "type": "set_sensor",
-                            "name": field,
-                            "value": values["high"],
-                        },
-                    ]
-                )
-        if "inspect_surface" in allowed:
-            generic_actions.extend(self._practical_black_box_recon_actions())
-        if "noop" in allowed:
-            generic_actions.append({"type": "noop"})
+                            "name": target_field,
+                            "value": stage_values[next_stage],
+                        }
+                        add_candidate(
+                            self._practical_black_box_candidate_summary(
+                                action=stronger_action,
+                                best_surface=surface,
+                                current_phase=current_phase,
+                                detection_pressure=detection_pressure,
+                                previously_tried=action_key(stronger_action) in prior_actions,
+                                category="escalate",
+                                chain_goal=chain_goal,
+                            ),
+                            stronger_action,
+                            source="practical_black_box",
+                            priority=exploit_priority(
+                                surface=surface,
+                                category="escalate",
+                                previously_tried=action_key(stronger_action) in prior_actions,
+                                rank=surface_rank + 1,
+                            ),
+                            surface=surface,
+                            category="escalate",
+                            chain_goal=chain_goal,
+                        )
+            elif surface == "availability_disruption":
+                if not plant_running and "hmi_start" in allowed:
+                    action = {"type": "hmi_start", "process_id": "WT-P1"}
+                    category = "support" if must_commit else "probe"
+                    add_candidate(
+                        self._practical_black_box_candidate_summary(
+                            action=action,
+                            best_surface=surface,
+                            current_phase=current_phase,
+                            detection_pressure=detection_pressure,
+                            previously_tried=action_key(action) in prior_actions,
+                            category=category,
+                            chain_goal=chain_goal,
+                        ),
+                        action,
+                        source="practical_black_box",
+                        priority=exploit_priority(
+                            surface=surface,
+                            category=category,
+                            previously_tried=action_key(action) in prior_actions,
+                            rank=surface_rank,
+                        ),
+                        surface=surface,
+                        category=category,
+                        chain_goal=chain_goal,
+                    )
+                if plant_running and "hmi_stop" in allowed:
+                    action = {"type": "hmi_stop", "process_id": "WT-P1"}
+                    add_candidate(
+                        self._practical_black_box_candidate_summary(
+                            action=action,
+                            best_surface=surface,
+                            current_phase=current_phase,
+                            detection_pressure=detection_pressure,
+                            previously_tried=action_key(action) in prior_actions,
+                            category="exploit",
+                            chain_goal=chain_goal,
+                        ),
+                        action,
+                        source="practical_black_box",
+                        priority=exploit_priority(
+                            surface=surface,
+                            category="exploit",
+                            previously_tried=action_key(action) in prior_actions,
+                            rank=surface_rank,
+                        ),
+                        surface=surface,
+                        category="exploit",
+                        chain_goal=chain_goal,
+                    )
+                if plant_running and "hmi_estop" in allowed:
+                    action = {"type": "hmi_estop", "process_id": "WT-P1"}
+                    category = (
+                        "escalate"
+                        if int(payload.get("success_count", 0)) > 0
+                        else "exploit"
+                    )
+                    add_candidate(
+                        self._practical_black_box_candidate_summary(
+                            action=action,
+                            best_surface=surface,
+                            current_phase=current_phase,
+                            detection_pressure=detection_pressure,
+                            previously_tried=action_key(action) in prior_actions,
+                            category=category,
+                            chain_goal=chain_goal,
+                        ),
+                        action,
+                        source="practical_black_box",
+                        priority=exploit_priority(
+                            surface=surface,
+                            category=category,
+                            previously_tried=action_key(action) in prior_actions,
+                            rank=surface_rank + 1,
+                        ),
+                        surface=surface,
+                        category=category,
+                        chain_goal=chain_goal,
+                    )
 
-        for action in generic_actions:
-            add_candidate(
-                self._practical_black_box_candidate_summary(
-                    action=action,
-                    best_surface=best_surface,
-                    current_phase=current_phase,
+        if "inspect_surface" in allowed and recon_allowed:
+            focus_surface = committed_surface if committed_surface != "unknown" else best_surface
+            for index, recon_surface in enumerate(
+                self._practical_black_box_recon_order(
+                    focus_surface=focus_surface,
                     detection_pressure=detection_pressure,
-                    previously_tried=action_key(action) in prior_actions,
-                ),
-                action,
-                source="practical_black_box",
-                priority=base_priority(action),
-            )
+                )
+            ):
+                recon_entry = (memory_state.get("_reconnaissance_history") or {}).get(
+                    recon_surface,
+                    {},
+                )
+                recon_count = int(recon_entry.get("count", 0))
+                recent_penalty = 0
+                if recon_entry.get("last_time_sec") is not None:
+                    age = float(context.get("time_sec", 0.0)) - float(
+                        recon_entry.get("last_time_sec", 0.0)
+                    )
+                    if age <= 8.0:
+                        recent_penalty = 10
+                if recon_count >= 2 and current_phase not in {"initial_observation", "reorient"}:
+                    continue
+                action = {"type": "inspect_surface", "surface": recon_surface}
+                priority = 98 - (index * 8) - (recon_count * 18) - recent_penalty
+                if current_phase == "reorient":
+                    priority += 8
+                if recon_surface == "process2_control_plane" and focus_surface in {
+                    "unknown",
+                    "process2_manual_path",
+                }:
+                    priority += 8
+                if recon_surface == "alarm_bits" and detection_pressure == "high":
+                    priority += 4
+                if priority < 58:
+                    continue
+                add_candidate(
+                    self._practical_black_box_candidate_summary(
+                        action=action,
+                        best_surface=best_surface,
+                        current_phase=current_phase,
+                        detection_pressure=detection_pressure,
+                        previously_tried=action_key(action) in prior_actions,
+                        category="recon",
+                        chain_goal=f"refresh_{recon_surface}_evidence",
+                    ),
+                    action,
+                    source="practical_black_box",
+                    priority=priority,
+                    surface=focus_surface or "unknown",
+                    category="recon",
+                    chain_goal=f"refresh_{recon_surface}_evidence",
+                )
 
-        return sorted(
+        noop_candidate = self._noop_candidate(
+            "Hold only if the current exploit path is blocked and recon adds nothing new."
+        )
+        if noop_candidate is not None:
+            noop_candidate["priority"] = 12 if must_commit else 16
+            noop_candidate["surface"] = committed_surface
+            noop_candidate["category"] = "hold"
+            candidates_by_id.setdefault(noop_candidate["id"], noop_candidate)
+
+        ranked = sorted(
             candidates_by_id.values(),
             key=lambda item: (
                 int(item.get("priority", 0)),
@@ -2837,6 +3760,24 @@ class AgenticRoleAgent(RoleAgent):
             ),
             reverse=True,
         )
+        actionable = [
+            item
+            for item in ranked
+            if normalize_action(item.get("action")) != {"type": "noop"}
+        ]
+        hold = next(
+            (
+                item
+                for item in ranked
+                if normalize_action(item.get("action")) == {"type": "noop"}
+            ),
+            None,
+        )
+        limit = 7 if must_commit else 8
+        selected = actionable[:limit]
+        if hold is not None:
+            selected.append(hold)
+        return selected
 
     @staticmethod
     def _attacker_surface_from_action_type(action_type: str) -> str:
@@ -2862,7 +3803,7 @@ class AgenticRoleAgent(RoleAgent):
     def _practical_black_box_sensor_profiles(
         self,
         observation: dict[str, Any],
-    ) -> list[tuple[str, dict[str, int]]]:
+    ) -> list[tuple[str, dict[str, list[int]]]]:
         preferred = ["RW_Tank_Level", "UF_UFFT_Tank_Level"]
         candidates: list[str] = []
         for field in preferred:
@@ -2879,27 +3820,40 @@ class AgenticRoleAgent(RoleAgent):
                 continue
             candidates.append(field)
 
-        profiles: list[tuple[str, dict[str, int]]] = []
+        profiles: list[tuple[str, dict[str, list[int]]]] = []
         for field in candidates[:6]:
             current = self._coerce_number(observation.get(field))
             if current is None:
                 continue
-            delta = max(abs(current) * 0.25, 25.0)
-            low_value = int(round(max(0.0, current - delta)))
-            high_value = int(round(current + delta))
-            if low_value == high_value:
-                high_value += 1
-            profiles.append((field, {"low": low_value, "high": high_value}))
+            small_delta = max(abs(current) * 0.12, 15.0)
+            medium_delta = max(abs(current) * 0.28, 40.0)
+            large_delta = max(abs(current) * 0.48, 80.0)
+            low_values = [
+                int(round(max(0.0, current - small_delta))),
+                int(round(max(0.0, current - medium_delta))),
+                int(round(max(0.0, current - large_delta))),
+            ]
+            high_values = [
+                int(round(current + small_delta)),
+                int(round(current + medium_delta)),
+                int(round(current + large_delta)),
+            ]
+            if low_values == high_values:
+                high_values[-1] += 1
+            profiles.append((field, {"low": low_values, "high": high_values}))
         return profiles
 
     @staticmethod
     def _available_chemicals(observation: dict[str, Any]) -> list[str]:
-        chemicals: list[str] = []
+        observed: list[str] = []
         for chemical in ("NaCl", "NaOCl", "HCl"):
             level_field = f"ChemTreat_{chemical}_Level"
             if level_field in observation:
-                chemicals.append(chemical)
-        return chemicals or ["NaCl", "NaOCl", "HCl"]
+                observed.append(chemical)
+        for chemical in ("NaCl", "NaOCl", "HCl"):
+            if chemical not in observed:
+                observed.append(chemical)
+        return observed
 
     def _practical_black_box_candidate_summary(
         self,
@@ -2909,71 +3863,224 @@ class AgenticRoleAgent(RoleAgent):
         current_phase: str,
         detection_pressure: str,
         previously_tried: bool,
+        category: str = "exploit",
+        chain_goal: str | None = None,
     ) -> str:
         action_type = str(action.get("type", "unknown"))
         stance = "exploit" if best_surface != "unknown" else "probe"
-        if previously_tried and stance == "probe":
+        if category in {"sustain", "escalate"}:
+            stance = category
+        elif previously_tried and stance == "probe":
             stance = "revisit"
         if action_type == "inspect_surface":
             surface = str(action.get("surface", "unknown"))
             surface_summaries = {
-                "tags": "Read the live tag snapshot to map current levels, alarms, and process-selection state.",
-                "registers": "Read raw register windows to map which simulator values and control words matter.",
-                "io_image": "Inspect the live I/O image to correlate command bits, states, alarms, and HMI state.",
-                "alarm_bits": "Read alarm bits directly to see which thresholds are already driving detection pressure.",
-                "process2_control_plane": "Inspect Process 2 selection and manual-valve control bits before committing to dosing abuse.",
-                "actuator_state_bits": "Inspect command-versus-status bits to identify actuator surfaces that may diverge or persist.",
+                "tags": "Use one tag snapshot to refresh level, alarm, and process-selection evidence.",
+                "registers": "Read register windows once to confirm which raw values still matter.",
+                "io_image": "Inspect the live I/O image to reconnect commands, states, and alarms.",
+                "alarm_bits": "Read alarm bits directly to measure current defender-visible pressure.",
+                "process2_control_plane": "Refresh Process 2 selection and manual-valve bits before switching surfaces.",
+                "actuator_state_bits": "Inspect command-versus-status bits only if actuator persistence is unclear.",
             }
-            return surface_summaries.get(
+            summary = surface_summaries.get(
                 surface,
                 f"Inspect the `{surface}` surface to refine the current attack hypothesis.",
             )
+            if chain_goal:
+                return f"{summary} Goal: {chain_goal}."
+            return summary
         if action_type == "hmi_start":
             return (
-                "Start WT-P1 so later probes can reveal process-side effects."
-                if current_phase in {"initial_observation", "probing"}
-                else "Restart WT-P1 to reopen the availability surface for follow-on disruption."
+                "Start WT-P1 so the chosen surface can create visible plant-side effect."
+                if current_phase in {"initial_observation", "probing", "reconnaissance"}
+                else "Restart WT-P1 to reopen the current disruption chain."
             )
         if action_type == "hmi_stop":
             return (
-                "Test whether a controlled stop yields direct availability disruption."
-                if best_surface != "availability_disruption"
-                else "Press the strongest known availability surface with a controlled stop."
+                "Press the availability surface with a controlled stop."
+                if stance != "escalate"
+                else "Escalate the availability chain with a stronger stop action."
             )
         if action_type == "hmi_estop":
-            return (
-                "Escalate to estop only if immediate disruption is worth the exposure."
-            )
+            return "Escalate to estop if the current availability path is promising enough."
         if action_type == "select_process":
             if action.get("active", True):
                 return (
-                    "Probe whether enabling Process 2 unlocks a controllable dosing path."
+                    "Commit to Process 2 and test whether the manual path persists."
                     if best_surface in {"unknown", "process2_manual_path"}
-                    else "Reopen Process 2 to compare it with the currently strongest discovered surface."
+                    else "Reopen Process 2 only to preserve the current exploit path."
                 )
-            return (
-                "Disable Process 2 to see whether the current effect depends on manual-path access."
-            )
+            return "Drop Process 2 only if the current exploit path must be abandoned."
         if action_type == "set_manual_valve":
             chemical = str(action.get("chemical", "unknown"))
-            state = "open" if action.get("open", True) else "close"
             if action.get("open", True):
                 return (
-                    f"Open the {chemical} manual valve to test whether Process 2 causes observable physical change."
+                    f"{stance.capitalize()} the {chemical} manual valve to keep the Process 2 chain moving."
                 )
-            return (
-                f"Close the {chemical} manual valve to test whether the observed effect collapses when the path is removed."
-            )
+            return f"Close the {chemical} path only if exposure now outweighs leverage."
         if action_type == "set_sensor":
             sensor_name = str(action.get("name", "sensor"))
-            if detection_pressure == "high" and best_surface == "sensor_manipulation":
-                return (
-                    f"Reuse {sensor_name} manipulation to preserve the strongest known telemetry-based surface."
-                )
+            if category == "sustain":
+                return f"Sustain the {sensor_name} bias so the current telemetry effect persists."
+            if category == "escalate":
+                return f"Increase the {sensor_name} bias while the current effect is still live."
             return (
-                f"{stance.capitalize()} whether biasing {sensor_name} changes plant behavior or defender attention."
+                f"{stance.capitalize()} whether biasing {sensor_name} moves plant behavior or defender attention."
             )
-        return "Hold position if another sample is needed before forcing a noisier move."
+        if detection_pressure == "high":
+            return "Hold only if a forced exploit step would be wasted right now."
+        return "Hold only if another exploit step has no credible leverage."
+
+    @staticmethod
+    def _practical_black_box_recon_order(
+        *,
+        focus_surface: str,
+        detection_pressure: str,
+    ) -> list[str]:
+        if focus_surface == "process2_manual_path":
+            order = [
+                "process2_control_plane",
+                "actuator_state_bits",
+                "io_image",
+                "tags",
+                "alarm_bits",
+                "registers",
+            ]
+        elif focus_surface == "sensor_manipulation":
+            order = [
+                "alarm_bits",
+                "tags",
+                "io_image",
+                "registers",
+                "actuator_state_bits",
+                "process2_control_plane",
+            ]
+        elif focus_surface == "availability_disruption":
+            order = [
+                "io_image",
+                "actuator_state_bits",
+                "tags",
+                "alarm_bits",
+                "registers",
+                "process2_control_plane",
+            ]
+        else:
+            order = [
+                "process2_control_plane",
+                "tags",
+                "alarm_bits",
+                "io_image",
+                "actuator_state_bits",
+                "registers",
+            ]
+        if detection_pressure == "high" and "alarm_bits" in order:
+            order.remove("alarm_bits")
+            order.insert(0, "alarm_bits")
+        return order
+
+    def _enforce_practical_black_box_payload(
+        self,
+        payload: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        candidate_lookup = {
+            item["id"]: item for item in context.get("candidate_actions", []) if item.get("id")
+        }
+        structured_memory = context.get("structured_memory") or {}
+        commitment = dict(
+            (self._state.setdefault("role_memory", {})).get("_exploit_commitment") or {}
+        )
+        committed_surface = str(commitment.get("surface", "unknown"))
+        remaining_steps = int(commitment.get("remaining_steps", 0) or 0)
+        must_commit = (
+            committed_surface != "unknown"
+            and remaining_steps > 0
+            and str(structured_memory.get("current_phase", "")) not in {"reconnaissance", "reorient"}
+        )
+        recon_budget_remaining = int(structured_memory.get("recon_budget_remaining", 0) or 0)
+        selected_candidate = None
+        candidate_id = payload.get("candidate_id")
+        selected_action = normalize_action(payload.get("action"))
+        if candidate_id in candidate_lookup:
+            selected_candidate = candidate_lookup[str(candidate_id)]
+        elif selected_action is not None:
+            selected_candidate = next(
+                (
+                    item
+                    for item in candidate_lookup.values()
+                    if item.get("id") == action_key(selected_action)
+                ),
+                None,
+            )
+
+        ranked = sorted(
+            candidate_lookup.values(),
+            key=lambda item: int(item.get("priority", 0)),
+            reverse=True,
+        )
+        top_exploit = next(
+            (
+                item
+                for item in ranked
+                if str(item.get("category")) in {"probe", "support", "exploit", "sustain", "escalate", "fallback"}
+                and (
+                    not must_commit
+                    or str(item.get("surface", committed_surface)) == committed_surface
+                )
+            ),
+            None,
+        )
+        if top_exploit is None:
+            return payload
+
+        selected_category = str((selected_candidate or {}).get("category", ""))
+        override = False
+        if must_commit and selected_category not in {
+            "probe",
+            "support",
+            "exploit",
+            "sustain",
+            "escalate",
+        }:
+            override = True
+        elif (
+            must_commit
+            and selected_candidate is not None
+            and str(selected_candidate.get("surface", committed_surface)) != committed_surface
+            and int(top_exploit.get("priority", 0))
+            >= int(selected_candidate.get("priority", 0)) + 12
+        ):
+            override = True
+        elif (
+            selected_action is not None
+            and str(selected_action.get("type", "")) == "inspect_surface"
+            and recon_budget_remaining <= 0
+        ):
+            override = True
+        elif selected_action is None and must_commit and int(top_exploit.get("priority", 0)) >= 132:
+            override = True
+
+        if not override:
+            return payload
+
+        forced = dict(payload)
+        forced["candidate_id"] = top_exploit["id"]
+        forced["action"] = top_exploit["action"]
+        forced["summary"] = str(
+            top_exploit.get("summary")
+            or payload.get("summary")
+            or "Commit to the current exploit path."
+        )
+        forced["decision_type"] = "action"
+        forced["confidence"] = max(float(payload.get("confidence", 0.0) or 0.0), 0.82)
+        labels = payload.get("labels", ["agentic", self.role])
+        if not isinstance(labels, list):
+            labels = [str(labels)]
+        labels = [str(label) for label in labels]
+        if "commitment_guardrail" not in labels:
+            labels.append("commitment_guardrail")
+        forced["labels"] = labels
+        return forced
 
     def _attacker_candidate_relevant(
         self,
@@ -3572,9 +4679,11 @@ class AgenticRoleAgent(RoleAgent):
             "incident_severity": int((context.get("incident") or {}).get("severity", 0) or 0),
             "memory_focus": structured_memory.get("recommended_attention_target")
             or structured_memory.get("leverage_hypothesis")
+            or structured_memory.get("best_known_attack_surface")
             or structured_memory.get("incident_hypothesis"),
             "memory_status": structured_memory.get("suspicion_level")
             or structured_memory.get("lifecycle_state")
+            or structured_memory.get("current_phase")
             or structured_memory.get("current_tactic_phase"),
         }
 

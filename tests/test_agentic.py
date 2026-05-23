@@ -812,12 +812,226 @@ def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None
     assert memory["best_known_attack_surface"] == "process2_manual_path"
     assert memory["detection_pressure"] in {"medium", "high"}
     assert memory["current_phase"] in {
-        "surface_validation",
+        "exploit_commitment",
+        "exploit_escalation",
         "evasion_or_exploitation",
-        "exploitation",
     }
+    assert memory["exploit_commitment"]["surface"] == "process2_manual_path"
+    assert memory["simple_precondition_state"]["process2_enabled"] is True
     assert memory["reconnaissance_findings"][0]["surface"] == "process2_control_plane"
     assert memory["candidate_leverage_hypotheses"][0]["surface"] == "process2_manual_path"
+
+
+def test_practical_black_box_attacker_recon_budget_forces_process2_commitment() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "practical_black_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "select_process",
+            "set_manual_valve",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 12.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "RW_Tank_Level": 610,
+                "ChemTreat_HCl_Level": 790,
+                "ChemTreat_HCl_Valve_Sts": 1,
+            },
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 1,
+                    "ChemTreat_HCl_Level": 820,
+                    "ChemTreat_HCl_Valve_Sts": 0,
+                },
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 1,
+                    "ChemTreat_HCl_Level": 805,
+                    "ChemTreat_HCl_Valve_Sts": 1,
+                },
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 6.0,
+                    "action": {"type": "inspect_surface", "surface": "tags"},
+                    "result": {
+                        "category": "reconnaissance",
+                        "surface": "tags",
+                        "summary": "tags: state=RUNNING; RW_Tank_Level=610",
+                        "findings": ["state=RUNNING", "RW_Tank_Level=610"],
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 7.0,
+                    "action": {
+                        "type": "inspect_surface",
+                        "surface": "process2_control_plane",
+                    },
+                    "result": {
+                        "category": "reconnaissance",
+                        "surface": "process2_control_plane",
+                        "summary": "process2_control_plane: state=RUNNING; process2_selected; P2_HCl_Cmd=1",
+                        "findings": [
+                            "state=RUNNING",
+                            "process2_selected",
+                            "P2_HCl_Cmd=1",
+                        ],
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 7.5,
+                    "action": {"type": "inspect_surface", "surface": "alarm_bits"},
+                    "result": {
+                        "category": "reconnaissance",
+                        "surface": "alarm_bits",
+                        "summary": "alarm_bits: state=RUNNING",
+                        "findings": ["state=RUNNING"],
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 8.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 8.4,
+                    "action": {
+                        "type": "set_manual_valve",
+                        "process_id": "WT-P2",
+                        "chemical": "HCl",
+                        "open": True,
+                    },
+                },
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    memory = context["structured_memory"]
+    assert memory["recon_budget_remaining"] == 0
+    assert memory["exploit_commitment"]["surface"] == "process2_manual_path"
+    assert memory["current_phase"] == "exploit_escalation"
+    assert context["candidate_actions"][0]["action"]["type"] == "set_manual_valve"
+    assert context["candidate_actions"][0]["action"]["chemical"] in {"NaCl", "NaOCl"}
+    assert not any(
+        item["action"]["type"] == "inspect_surface"
+        for item in context["candidate_actions"][:3]
+    )
+
+
+def test_practical_black_box_attacker_sensor_commitment_escalates_after_effect() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "practical_black_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "select_process",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 8.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 0,
+                "RW_Tank_Level": 540,
+                "UF_UFFT_Tank_Level": 410,
+            },
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 0,
+                    "RW_Tank_Level": 600,
+                    "UF_UFFT_Tank_Level": 410,
+                },
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 0,
+                    "RW_Tank_Level": 560,
+                    "UF_UFFT_Tank_Level": 410,
+                },
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 6.0,
+                    "action": {"type": "inspect_surface", "surface": "tags"},
+                    "result": {
+                        "category": "reconnaissance",
+                        "surface": "tags",
+                        "summary": "tags: state=RUNNING; RW_Tank_Level=560",
+                        "findings": ["state=RUNNING", "RW_Tank_Level=560"],
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 7.0,
+                    "action": {
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 540,
+                    },
+                },
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    memory = context["structured_memory"]
+    assert memory["best_known_attack_surface"] == "sensor_manipulation"
+    assert memory["exploit_commitment"]["surface"] == "sensor_manipulation"
+    assert memory["last_successful_effect"].startswith("RW_Tank_Level")
+    assert any(
+        item["action"]["type"] == "set_sensor"
+        and item["action"]["name"] == "RW_Tank_Level"
+        and item["action"]["value"] < 540
+        for item in context["candidate_actions"][:3]
+    )
 
 
 def test_defender_does_not_offer_process2_selection_in_p1_scenarios() -> None:

@@ -130,6 +130,64 @@ def test_orchestrator_runs_live_smoke_with_fake_environment(
     assert metrics["alert_count"] >= 1
 
 
+def test_orchestrator_writes_pair_level_metric_summaries(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "pair_summaries.yaml"
+    config = {
+        "experiment_name": "pytest_pair_summaries",
+        "scenario_selectors": ["attack/wt-attack-sensor-rw-refill-spoof"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "conditions": [
+            {
+                "name": "scripted_baseline",
+                "profiles": {
+                    "attacker": "scripted_attacker",
+                    "defender": "rule_based_defender",
+                    "observer": "rule_based_observer",
+                    "planner": "scripted_planner",
+                    "operator": "scripted_operator",
+                    "offline_analysis": "scripted_offline_analyst",
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+
+    summary = ExperimentOrchestrator().run(config_path)
+
+    condition_root = (
+        tmp_path
+        / "Results"
+        / "pytest_pair_summaries"
+        / summary["experiment_id"]
+        / "scripted_baseline"
+    )
+    attack_summary_path = condition_root / "attack_metrics_summary.json"
+    nominal_summary_path = condition_root / "nominal_metrics_summary.json"
+    trajectory_summary_path = condition_root / "trajectory_metrics_summary.json"
+
+    assert attack_summary_path.exists()
+    assert nominal_summary_path.exists()
+    assert trajectory_summary_path.exists()
+
+    attack_summary = json.loads(attack_summary_path.read_text())
+    nominal_summary = json.loads(nominal_summary_path.read_text())
+    trajectory_summary = json.loads(trajectory_summary_path.read_text())
+
+    assert attack_summary["completed_attack_run_count"] == 1
+    assert attack_summary["attack_run_count"] == 1
+    assert nominal_summary["completed_nominal_run_count"] == 0
+    assert trajectory_summary["status"] == "not_meaningful_yet"
+
+
 def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
     orchestrator = ExperimentOrchestrator()
     scenario = orchestrator.catalog.get("attack/wt-attack-p2-hcl-drain")

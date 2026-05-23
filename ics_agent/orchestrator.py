@@ -225,6 +225,14 @@ class ExperimentOrchestrator:
                 )
             write_json(condition_root / "condition_summary.json", condition_summary)
             write_json(
+                condition_root / "attack_metrics_summary.json",
+                condition_summary["attack_metrics"],
+            )
+            write_json(
+                condition_root / "nominal_metrics_summary.json",
+                condition_summary["nominal_metrics"],
+            )
+            write_json(
                 condition_root / "trajectory_metrics_summary.json",
                 condition_summary["trajectory_metrics"],
             )

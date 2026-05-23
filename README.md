@@ -85,6 +85,64 @@ Attack and repeated-run experiment note:
   `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/`
   instead of being overwritten
 
+## 2026-05-23 Practical Black-Box Attacker Refresh
+
+The practical black-box attacker is now explicitly biased toward
+`recon -> choose surface -> commit -> sustain/escalate -> reorient only on stall`
+instead of flat one-step probing.
+
+Key behavior changes in this refresh:
+
+- bounded `inspect_surface` reconnaissance is treated as a small budget rather
+  than a default loop, and repeated reads of the same surface are sharply
+  down-ranked
+- structured attacker memory now keeps discovered controls, reconnaissance
+  findings, an observed effect map, candidate leverage hypotheses, explicit
+  exploit commitment state, and simple precondition state
+- commitment is surface-based and short-horizon: once a surface is chosen, the
+  attacker is pushed to stay on it for several exploit steps unless observed
+  effect stalls
+- sensor manipulation now supports staged escalation and sustain behavior
+  rather than a single conservative bias level
+- attacker success metrics continue to treat actual safety-bound violation as
+  the primary success signal while preserving action counts, recon counts,
+  trajectories, and the older scenario-expectation signal separately
+- pair folders now write dedicated aggregate summaries alongside the run
+  folders, including `condition_summary.json`,
+  `attack_metrics_summary.json`, `nominal_metrics_summary.json`, and
+  `trajectory_metrics_summary.json`
+
+The current full `18 x 3` attack-pair rerun writes to:
+
+- `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/20260523T041616-10d187ec/`
+
+Expected pair folders under that experiment root are:
+
+- `practical_black_box_attacker__agentic_defender`
+- `practical_black_box_attacker__rule_based_defender`
+- `practical_black_box_attacker__scripted_defender`
+
+Verified completed outcome for that rerun:
+
+- all `54/54` attack episodes completed and wrote `metrics.json`,
+  `alerts.json`, `actions.json`, and `summary.json`
+- all three pair folders wrote `condition_summary.json`,
+  `attack_metrics_summary.json`, `nominal_metrics_summary.json`, and
+  `trajectory_metrics_summary.json`
+- experiment-level `experiment_summary.json`, `attack_metrics_summary.json`,
+  `nominal_metrics_summary.json`, and `trajectory_metrics_summary.json` were
+  written at the experiment root
+- against the agentic defender, the redesigned attacker caused safety-bound
+  violations in `4/18` scenarios with average recon usage reduced to `0.5556`
+  actions per run
+- against the rule-based defender, the attacker caused `0/18` safety-bound
+  violations
+- against the scripted defender, the attacker also caused `0/18`
+  safety-bound violations in this rerun, so the exploit redesign improved
+  commitment behavior and reduced recon dependence, but it did not yet
+  translate into successful unsafe-state achievement against the weakest
+  defense pairing
+
 ## Current Performance Note
 
 Using the fresh 2026-04-15 attack-only `agentic_agents` batch and the current
