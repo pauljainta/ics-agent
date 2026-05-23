@@ -635,11 +635,21 @@ class AgenticRoleAgent(RoleAgent):
             for item in context.get("observations", [])[-self.observation_window :]
         ]
         recent_actions = self._visible_recent_actions(raw_recent_actions, now=now)
-        recent_decisions = self._visible_recent_decisions(
-            raw_recent_decisions,
-            now=now,
-        )
-        recent_alerts = self._visible_recent_alerts(raw_recent_alerts, now=now)
+        if practical_black_box:
+            recent_decisions = self._practical_black_box_visible_recent_decisions(
+                raw_recent_decisions,
+                now=now,
+            )
+            recent_alerts = self._practical_black_box_visible_recent_alerts(
+                raw_recent_alerts,
+                now=now,
+            )
+        else:
+            recent_decisions = self._visible_recent_decisions(
+                raw_recent_decisions,
+                now=now,
+            )
+            recent_alerts = self._visible_recent_alerts(raw_recent_alerts, now=now)
         observation = context["observation"]
         compact_observation = self._compact_observation(observation)
         remaining_playbook = self._remaining_playbook(context)
@@ -691,6 +701,21 @@ class AgenticRoleAgent(RoleAgent):
             role_goal = self._practical_black_box_attacker_goals()
             expected_outcomes = []
             safety_bounds = {}
+        role_constraints = [
+            "Use recent telemetry and state to justify the decision.",
+            "Choose only from candidate_actions or emit a note/alert with no live action.",
+            "Do not assume hidden attack plans, ground truth labels, or future timeline steps.",
+            "Use structured_memory as the durable role state instead of replaying long transcripts.",
+            "Keep summaries concise and specific to the water-treatment environment.",
+            "Escalate incidents from suspected to confirmed to containing when evidence persists or worsens.",
+        ]
+        if practical_black_box:
+            role_constraints = [
+                "Use only live telemetry, recent action outcomes, bounded reconnaissance results, and coarse defender-intervention signals.",
+                "Treat recent blue-team alerts as attention markers only; they intentionally omit summary text and diagnoses.",
+                "Choose only from candidate_actions and prefer short exploit chains over repeated inspection.",
+                "Use structured_memory to decide when to commit, sustain, escalate, or reorient.",
+            ]
         return {
             "role": self.role,
             "scenario_id": scenario_id,
@@ -723,14 +748,7 @@ class AgenticRoleAgent(RoleAgent):
             "candidate_actions": candidate_actions,
             "remaining_playbook": visible_remaining_playbook,
             "role_goal": role_goal,
-            "role_constraints": [
-                "Use recent telemetry and state to justify the decision.",
-                "Choose only from candidate_actions or emit a note/alert with no live action.",
-                "Do not assume hidden attack plans, ground truth labels, or future timeline steps.",
-                "Use structured_memory as the durable role state instead of replaying long transcripts.",
-                "Keep summaries concise and specific to the water-treatment environment.",
-                "Escalate incidents from suspected to confirmed to containing when evidence persists or worsens.",
-            ],
+            "role_constraints": role_constraints,
             "expected_outcomes": expected_outcomes,
             "safety_bounds": safety_bounds,
         }
@@ -1127,10 +1145,19 @@ class AgenticRoleAgent(RoleAgent):
             recent_alerts=recent_alerts,
             recent_actions=recent_actions,
         )
-        previous_observation = {}
-        if context.get("observations"):
-            previous_observation = dict(context["observations"][-1])
+        previous_observation = self._practical_black_box_previous_observation(
+            context=context,
+            observation=observation,
+        )
         now = float(context.get("time_sec", 0.0))
+        recent_blue_alert_count = sum(
+            1
+            for item in recent_alerts
+            if item.get("role") in {"observer", "defender"}
+        )
+        recent_defender_action_count = sum(
+            1 for item in recent_actions if item.get("role") == "defender"
+        )
         preconditions = self._practical_black_box_preconditions(
             observation=observation,
             telemetry_summary=telemetry_summary,
@@ -1208,9 +1235,13 @@ class AgenticRoleAgent(RoleAgent):
                 surface,
                 self._practical_black_box_surface_template(),
             )
+            action_time = self._coerce_number(item.get("time_sec"))
             entry["exploit_attempt_count"] = int(entry.get("exploit_attempt_count", 0)) + 1
             entry["last_action"] = descriptor
-            entry["last_action_time_sec"] = round(now, 3)
+            entry["last_action_time_sec"] = round(
+                action_time if action_time is not None else now,
+                3,
+            )
 
             if last_attacker_action_type == "set_manual_valve":
                 entry["preferred_target"] = str(action.get("chemical", "")).strip() or None
@@ -1248,10 +1279,13 @@ class AgenticRoleAgent(RoleAgent):
                 entry["success_count"] = int(entry.get("success_count", 0)) + 1
                 entry["stall_count"] = 0
                 entry["last_effect"] = effect
-                entry["last_success_time_sec"] = round(now, 3)
+                entry["last_success_time_sec"] = round(
+                    action_time if action_time is not None else now,
+                    3,
+                )
                 discovered["last_effect"] = effect
                 last_success_event = {
-                    "time_sec": round(now, 3),
+                    "time_sec": round(action_time if action_time is not None else now, 3),
                     "surface": surface,
                     "effect": effect,
                 }
@@ -1296,6 +1330,13 @@ class AgenticRoleAgent(RoleAgent):
                 key=lambda item: float(item[1].get("score", 0.0)),
             )
             if float(ranked_surface[1].get("score", 0.0)) > 0:
+                best_surface = ranked_surface[0]
+        if best_surface == "unknown" and total_recon_actions >= 2:
+            ranked_surface = max(
+                surface_state.items(),
+                key=lambda item: float(item[1].get("score", 0.0)),
+            )
+            if float(ranked_surface[1].get("score", 0.0)) >= 0.6:
                 best_surface = ranked_surface[0]
 
         current_surface_score = float(surface_state.get(committed_surface, {}).get("score", 0.0))
@@ -1500,6 +1541,11 @@ class AgenticRoleAgent(RoleAgent):
                     "alarm_pressure": preconditions["alarm_pressure"],
                     "defender_attention": preconditions["defender_attention"],
                 },
+                "defender_intervention_awareness": {
+                    "recent_blue_alert_count": recent_blue_alert_count,
+                    "recent_defender_action_count": recent_defender_action_count,
+                    "pressure": defender_attention,
+                },
                 "recon_budget_remaining": recon_budget_remaining,
                 "rolling_summary": (
                     f"phase={current_phase}; surface={committed_surface or best_surface}; "
@@ -1580,6 +1626,32 @@ class AgenticRoleAgent(RoleAgent):
             if AgenticRoleAgent._is_active_flag(observation.get(field)):
                 open_chemicals.append(chemical)
         return open_chemicals
+
+    def _practical_black_box_previous_observation(
+        self,
+        *,
+        context: dict[str, Any],
+        observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        observations = context.get("observations", [])
+        if not observations:
+            return {}
+        if len(observations) == 1:
+            return dict(observations[0])
+
+        current_elapsed = self._coerce_number(observation.get("elapsed_sec"))
+        if current_elapsed is None:
+            current_elapsed = self._coerce_number(context.get("time_sec"))
+        last_sample = observations[-1]
+        last_elapsed = self._coerce_number(last_sample.get("elapsed_sec"))
+        if (
+            last_elapsed is not None
+            and current_elapsed is not None
+            and last_elapsed == current_elapsed
+            and last_sample.get("sample_phase") is not None
+        ):
+            return dict(observations[-2])
+        return dict(last_sample)
 
     def _practical_black_box_recon_surface_hints(
         self,
@@ -1755,7 +1827,7 @@ class AgenticRoleAgent(RoleAgent):
         if not ranked:
             return "unknown"
         best_surface, payload = ranked[0]
-        threshold = 1.35 if recon_budget_remaining > 0 else 0.8
+        threshold = 1.0 if recon_budget_remaining > 0 else 0.75
         if float(payload.get("score", 0.0)) < threshold:
             return "unknown"
         return best_surface
@@ -4855,6 +4927,51 @@ class AgenticRoleAgent(RoleAgent):
                 "role": item.get("role"),
                 "summary": item.get("summary"),
                 "diagnosis": item.get("diagnosis"),
+            }
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            visible.append(rendered)
+        return visible
+
+    def _practical_black_box_visible_recent_decisions(
+        self,
+        recent_decisions: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_decisions:
+            if item.get("role") != "attacker":
+                continue
+            rendered: dict[str, Any] = {
+                "role": item.get("role"),
+                "decision_type": item.get("decision_type"),
+            }
+            action = normalize_action(item.get("action"))
+            if action is not None:
+                rendered["action"] = action
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            visible.append(rendered)
+        return visible
+
+    def _practical_black_box_visible_recent_alerts(
+        self,
+        recent_alerts: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_alerts:
+            if item.get("role") not in {"observer", "defender"}:
+                continue
+            rendered: dict[str, Any] = {
+                "role": item.get("role"),
+                "signal": "attention_notice",
             }
             time_sec = self._coerce_number(item.get("time_sec"))
             if time_sec is not None:

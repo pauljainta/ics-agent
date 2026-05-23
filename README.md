@@ -96,14 +96,21 @@ Key behavior changes in this refresh:
 - bounded `inspect_surface` reconnaissance is treated as a small budget rather
   than a default loop, and repeated reads of the same surface are sharply
   down-ranked
+- blue-team semantic alert summaries and diagnoses are no longer exposed to
+  the practical black-box attacker; it now sees only plant-native signals plus
+  coarse defender-intervention awareness
 - structured attacker memory now keeps discovered controls, reconnaissance
   findings, an observed effect map, candidate leverage hypotheses, explicit
-  exploit commitment state, and simple precondition state
+  exploit commitment state, simple precondition state, and coarse
+  defender-intervention awareness
 - commitment is surface-based and short-horizon: once a surface is chosen, the
   attacker is pushed to stay on it for several exploit steps unless observed
   effect stalls
 - sensor manipulation now supports staged escalation and sustain behavior
   rather than a single conservative bias level
+- live effect learning now uses the prior plant sample correctly, so the
+  attacker can learn from actual telemetry drift and persistence in the online
+  loop instead of re-reading the current sample
 - attacker success metrics continue to treat actual safety-bound violation as
   the primary success signal while preserving action counts, recon counts,
   trajectories, and the older scenario-expectation signal separately
@@ -114,7 +121,7 @@ Key behavior changes in this refresh:
 
 The current full `18 x 3` attack-pair rerun writes to:
 
-- `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/20260523T041616-10d187ec/`
+- `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/20260523T173335-10d187ec/`
 
 Expected pair folders under that experiment root are:
 
@@ -133,15 +140,16 @@ Verified completed outcome for that rerun:
   `nominal_metrics_summary.json`, and `trajectory_metrics_summary.json` were
   written at the experiment root
 - against the agentic defender, the redesigned attacker caused safety-bound
-  violations in `4/18` scenarios with average recon usage reduced to `0.5556`
-  actions per run
-- against the rule-based defender, the attacker caused `0/18` safety-bound
-  violations
-- against the scripted defender, the attacker also caused `0/18`
-  safety-bound violations in this rerun, so the exploit redesign improved
-  commitment behavior and reduced recon dependence, but it did not yet
-  translate into successful unsafe-state achievement against the weakest
-  defense pairing
+  violations in `1/18` scenarios, with average recon usage at `0.0` actions
+  per run
+- against the rule-based defender, the attacker caused safety-bound
+  violations in `1/18` scenarios
+- against the scripted defender, the attacker caused safety-bound violations
+  in `1/18` scenarios
+- across the full `54`-episode rerun, attacker-caused safety violation
+  averaged `0.0556` per run and attacker recon usage averaged `0.0` actions
+  per run, showing a strongly exploit-first policy after the black-box
+  redesign
 
 ## Current Performance Note
 

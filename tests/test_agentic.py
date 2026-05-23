@@ -646,8 +646,42 @@ def test_practical_black_box_attacker_context_strips_privileged_scenario_fields(
             },
             "observations": [],
             "executed_actions": [],
-            "decisions": [],
-            "alerts": [],
+            "decisions": [
+                {
+                    "role": "observer",
+                    "time_sec": 6.5,
+                    "decision_type": "alert",
+                    "summary": "Observer saw suspicious Process 2 behavior.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 6.7,
+                    "decision_type": "action",
+                    "summary": "Probe Process 2.",
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                },
+            ],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 6.5,
+                    "decision_type": "alert",
+                    "summary": "Observer saw suspicious Process 2 behavior.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 6.8,
+                    "decision_type": "alert",
+                    "summary": "Defender is preparing containment.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                },
+            ],
             "playbooks": {
                 "attacker": [
                     {
@@ -670,6 +704,42 @@ def test_practical_black_box_attacker_context_strips_privileged_scenario_fields(
     assert context["safety_bounds"] == {}
     assert context["intent"].startswith("Discover controllable surfaces")
     assert context["role_goal"][0].startswith("Infer what each candidate action")
+    assert context["structured_memory"]["defender_intervention_awareness"] == {
+        "recent_blue_alert_count": 2,
+        "recent_defender_action_count": 0,
+        "pressure": "high",
+    }
+    assert context["recent_decisions"] == [
+        {
+            "role": "attacker",
+            "decision_type": "action",
+            "action": {
+                "type": "select_process",
+                "process_id": "WT-P2",
+                "active": True,
+            },
+            "time_sec": 6.7,
+            "age_sec": 0.3,
+        }
+    ]
+    assert context["recent_alerts"] == [
+        {
+            "role": "observer",
+            "signal": "attention_notice",
+            "time_sec": 6.5,
+            "age_sec": 0.5,
+        },
+        {
+            "role": "defender",
+            "signal": "attention_notice",
+            "time_sec": 6.8,
+            "age_sec": 0.2,
+        },
+    ]
+    assert "summary" not in context["recent_alerts"][0]
+    assert "diagnosis" not in context["recent_alerts"][0]
+    assert "summary" not in context["recent_decisions"][0]
+    assert "diagnosis" not in context["recent_decisions"][0]
 
 
 def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
@@ -1031,6 +1101,72 @@ def test_practical_black_box_attacker_sensor_commitment_escalates_after_effect()
         and item["action"]["name"] == "RW_Tank_Level"
         and item["action"]["value"] < 540
         for item in context["candidate_actions"][:3]
+    )
+
+
+def test_practical_black_box_attacker_uses_prior_live_sample_for_effect_learning() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "practical_black_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "set_sensor",
+            "hmi_start",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    current_observation = {
+        "STATE_NAME": "RUNNING",
+        "P2_Selected": 0,
+        "RW_Tank_Level": 520,
+        "UF_UFFT_Tank_Level": 410,
+        "elapsed_sec": 5.0,
+        "sample_phase": "post_action",
+    }
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 5.0,
+            "observation": current_observation,
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 0,
+                    "RW_Tank_Level": 600,
+                    "UF_UFFT_Tank_Level": 410,
+                    "elapsed_sec": 4.5,
+                    "sample_phase": "pre_action",
+                },
+                current_observation,
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 5.0,
+                    "action": {
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 470,
+                    },
+                }
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert context["structured_memory"]["last_successful_effect"].startswith(
+        "RW_Tank_Level: telemetry_shift_observed"
     )
 
 
