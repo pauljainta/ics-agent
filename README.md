@@ -114,6 +114,9 @@ Key behavior changes in this refresh:
 - attacker success metrics continue to treat actual safety-bound violation as
   the primary success signal while preserving action counts, recon counts,
   trajectories, and the older scenario-expectation signal separately
+- the practical black-box LLM context now sees plant-native telemetry,
+  attacker-side action outcomes, bounded recon readbacks, and only coarse
+  defender-intervention awareness rather than concrete defender action details
 - pair folders now write dedicated aggregate summaries alongside the run
   folders, including `condition_summary.json`,
   `attack_metrics_summary.json`, `nominal_metrics_summary.json`, and
@@ -150,6 +153,18 @@ Verified completed outcome for that rerun:
   averaged `0.0556` per run and attacker recon usage averaged `0.0` actions
   per run, showing a strongly exploit-first policy after the black-box
   redesign
+
+Same-blue-team attacker comparison config:
+
+- `../Artifact/Experiments/attacker_vs_agentic_defender.yaml`
+- this runs `rule_based_attacker__agentic_defender` and
+  `scripted_attacker__agentic_defender` against the same
+  `agentic_defender` + `agentic_observer` blue team
+- fresh comparison results are written under
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/attacker_vs_agentic_defender/<experiment_id>/`
+- compare each fresh condition folder’s `condition_summary.json` and
+  `attack_metrics_summary.json` against the practical black-box baseline at
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/<experiment_id>/practical_black_box_attacker__agentic_defender/`
 
 ## Current Performance Note
 

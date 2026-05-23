@@ -742,6 +742,103 @@ def test_practical_black_box_attacker_context_strips_privileged_scenario_fields(
     assert "diagnosis" not in context["recent_decisions"][0]
 
 
+def test_practical_black_box_attacker_context_hides_defender_action_details() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "practical_black_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 8.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "RW_Tank_Level": 430,
+                "Alarm_RW_Tank_LL": 1,
+                "ChemTreat_HCl_Level": 760,
+                "ChemTreat_HCl_Valve_Sts": 1,
+            },
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 1,
+                    "RW_Tank_Level": 520,
+                    "ChemTreat_HCl_Level": 800,
+                    "ChemTreat_HCl_Valve_Sts": 0,
+                }
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 6.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 7.2,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": False,
+                    },
+                },
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 7.0,
+                    "decision_type": "alert",
+                    "summary": "Process 2 behavior remains suspicious.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 7.4,
+                    "decision_type": "alert",
+                    "summary": "Containment remains active.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                },
+            ],
+            "playbooks": {},
+        }
+    )
+
+    assert context["active_alarms"] == ["Alarm_RW_Tank_LL"]
+    assert context["relationship_notes"] == []
+    assert context["risk_flags"] == []
+    assert [item["role"] for item in context["recent_actions"]] == ["attacker"]
+    assert [item["role"] for item in context["recent_action_effects"]] == ["attacker"]
+    assert context["structured_memory"]["defender_intervention_awareness"] == {
+        "recent_blue_alert_count": 2,
+        "recent_defender_action_count": 1,
+        "pressure": "high",
+    }
+
+
 def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
     profile = {

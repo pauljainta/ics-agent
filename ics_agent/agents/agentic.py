@@ -634,7 +634,15 @@ class AgenticRoleAgent(RoleAgent):
             self._compact_observation(item)
             for item in context.get("observations", [])[-self.observation_window :]
         ]
-        recent_actions = self._visible_recent_actions(raw_recent_actions, now=now)
+        if practical_black_box:
+            recent_actions = self._practical_black_box_visible_recent_actions(
+                raw_recent_actions,
+                now=now,
+            )
+            memory_recent_actions = raw_recent_actions
+        else:
+            recent_actions = self._visible_recent_actions(raw_recent_actions, now=now)
+            memory_recent_actions = recent_actions
         if practical_black_box:
             recent_decisions = self._practical_black_box_visible_recent_decisions(
                 raw_recent_decisions,
@@ -676,7 +684,7 @@ class AgenticRoleAgent(RoleAgent):
             observation=observation,
             telemetry_summary=telemetry_summary,
             remaining_playbook=visible_remaining_playbook,
-            recent_actions=recent_actions,
+            recent_actions=memory_recent_actions,
             recent_alerts=recent_alerts,
             recent_action_effects=recent_action_effects,
             incident=incident,
@@ -716,6 +724,10 @@ class AgenticRoleAgent(RoleAgent):
                 "Choose only from candidate_actions and prefer short exploit chains over repeated inspection.",
                 "Use structured_memory to decide when to commit, sustain, escalate, or reorient.",
             ]
+        visible_relationship_notes = (
+            [] if practical_black_box else telemetry_summary["relationship_notes"]
+        )
+        visible_risk_flags = [] if practical_black_box else telemetry_summary["risk_flags"]
         return {
             "role": self.role,
             "scenario_id": scenario_id,
@@ -735,8 +747,8 @@ class AgenticRoleAgent(RoleAgent):
             "active_states": telemetry_summary["active_states"],
             "active_commands": telemetry_summary["active_commands"],
             "short_horizon_trends": telemetry_summary["short_horizon_trends"],
-            "relationship_notes": telemetry_summary["relationship_notes"],
-            "risk_flags": telemetry_summary["risk_flags"],
+            "relationship_notes": visible_relationship_notes,
+            "risk_flags": visible_risk_flags,
             "incident": incident,
             "structured_memory": structured_memory,
             "decision_epoch": {
@@ -4725,6 +4737,14 @@ class AgenticRoleAgent(RoleAgent):
 
     def _reasoning_evidence(self, context: dict[str, Any]) -> dict[str, Any]:
         structured_memory = context.get("structured_memory") or {}
+        defender_awareness = structured_memory.get("defender_intervention_awareness") or {}
+        defender_action_count = sum(
+            1 for item in context.get("recent_actions", []) if item.get("role") == "defender"
+        )
+        if self._is_practical_black_box_attacker():
+            defender_action_count = int(
+                defender_awareness.get("recent_defender_action_count", 0) or 0
+            )
         return {
             "active_alarms": tuple(context.get("active_alarms", [])),
             "risk_flags": tuple(context.get("risk_flags", [])),
@@ -4737,9 +4757,7 @@ class AgenticRoleAgent(RoleAgent):
             "attacker_action_count": sum(
                 1 for item in context.get("recent_actions", []) if item.get("role") == "attacker"
             ),
-            "defender_action_count": sum(
-                1 for item in context.get("recent_actions", []) if item.get("role") == "defender"
-            ),
+            "defender_action_count": defender_action_count,
             "process2_signal_count": sum(
                 1
                 for flag in context.get("risk_flags", [])
@@ -4872,6 +4890,33 @@ class AgenticRoleAgent(RoleAgent):
             state_after = item.get("state_after")
             if state_after:
                 rendered["state_after"] = state_after
+            result = self._visible_action_result(item.get("result"))
+            if result is not None:
+                rendered["result"] = result
+            visible.append(rendered)
+        return visible
+
+    def _practical_black_box_visible_recent_actions(
+        self,
+        recent_actions: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_actions:
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            rendered: dict[str, Any] = {
+                "role": "attacker",
+                "action": action,
+            }
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
             result = self._visible_action_result(item.get("result"))
             if result is not None:
                 rendered["result"] = result
