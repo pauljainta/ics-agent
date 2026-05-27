@@ -160,11 +160,12 @@ Same-blue-team attacker comparison config:
 - this runs `rule_based_attacker__agentic_defender` and
   `scripted_attacker__agentic_defender` against the same
   `agentic_defender` + `agentic_observer` blue team
+- the config is pinned to canonical-root output with fixed seed `20260526`
 - fresh comparison results are written under
-  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/attacker_vs_agentic_defender/<experiment_id>/`
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/attacker_vs_agentic_defender/`
 - compare each fresh condition folder’s `condition_summary.json` and
-  `attack_metrics_summary.json` against the practical black-box baseline at
-  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/<experiment_id>/black_box_attacker__agentic_defender/`
+  `attack_metrics_summary.json` against the current black-box baseline at
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/black_box_attacker__agentic_defender/`
 
 ## Current Performance Note
 
