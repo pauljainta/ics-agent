@@ -466,7 +466,10 @@ class AgenticRoleAgent(RoleAgent):
         normalized = dict(profile)
         role = str(normalized.get("role", "")).strip().lower()
         knowledge_mode = str(normalized.get("knowledge_mode", "")).strip().lower()
-        if role == "attacker" and knowledge_mode == "practical_black_box":
+        if role == "attacker" and knowledge_mode in {
+            "practical_black_box",
+            "black_box",
+        }:
             allowed = list(normalized.get("allowed_action_types", []))
             if "inspect_surface" not in allowed:
                 insertion_index = (
@@ -487,7 +490,10 @@ class AgenticRoleAgent(RoleAgent):
         )
 
     def _is_practical_black_box_attacker(self) -> bool:
-        return self.role == "attacker" and self.knowledge_mode == "practical_black_box"
+        return self.role == "attacker" and self.knowledge_mode in {
+            "practical_black_box",
+            "black_box",
+        }
 
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
@@ -1248,12 +1254,10 @@ class AgenticRoleAgent(RoleAgent):
                 self._practical_black_box_surface_template(),
             )
             action_time = self._coerce_number(item.get("time_sec"))
+            event_time_sec = round(action_time if action_time is not None else now, 3)
             entry["exploit_attempt_count"] = int(entry.get("exploit_attempt_count", 0)) + 1
             entry["last_action"] = descriptor
-            entry["last_action_time_sec"] = round(
-                action_time if action_time is not None else now,
-                3,
-            )
+            entry["last_action_time_sec"] = event_time_sec
 
             if last_attacker_action_type == "set_manual_valve":
                 entry["preferred_target"] = str(action.get("chemical", "")).strip() or None
@@ -1281,28 +1285,79 @@ class AgenticRoleAgent(RoleAgent):
                 telemetry_summary=telemetry_summary,
                 preconditions=preconditions,
             )
+            impact_score = self._practical_black_box_effect_impact_score(
+                action=action,
+                effect=effect,
+                observation=observation,
+                previous_observation=previous_observation,
+                telemetry_summary=telemetry_summary,
+                preconditions=preconditions,
+            )
+            prior_effect = str(entry.get("last_effect") or "")
             discovered = discovered_controls.setdefault(
                 descriptor,
                 {"action": descriptor, "count": 0, "last_effect": None},
             )
             discovered["count"] = int(discovered.get("count", 0)) + 1
 
-            if effect:
+            if effect and impact_score >= 0.8:
                 entry["success_count"] = int(entry.get("success_count", 0)) + 1
                 entry["stall_count"] = 0
                 entry["last_effect"] = effect
-                entry["last_success_time_sec"] = round(
-                    action_time if action_time is not None else now,
+                entry["impact_score"] = round(
+                    min(12.0, float(entry.get("impact_score", 0.0)) + impact_score),
                     3,
                 )
+                entry["last_impact_score"] = round(impact_score, 3)
+                entry["last_success_time_sec"] = event_time_sec
+                entry["stalled_until_time_sec"] = None
+                effect_history = list(entry.get("effect_history", []))
+                effect_history.append(effect)
+                entry["effect_history"] = effect_history[-5:]
+                if surface == "availability_disruption":
+                    if (
+                        last_attacker_action_type in {"hmi_start", "hmi_stop", "hmi_estop"}
+                        and (impact_score < 1.6 or effect == prior_effect)
+                    ):
+                        entry["availability_chatter_count"] = int(
+                            entry.get("availability_chatter_count", 0)
+                        ) + 1
+                    else:
+                        entry["availability_chatter_count"] = max(
+                            0,
+                            int(entry.get("availability_chatter_count", 0)) - 1,
+                        )
                 discovered["last_effect"] = effect
                 last_success_event = {
-                    "time_sec": round(action_time if action_time is not None else now, 3),
+                    "time_sec": event_time_sec,
                     "surface": surface,
                     "effect": effect,
+                    "impact_score": round(impact_score, 3),
                 }
             else:
                 entry["stall_count"] = int(entry.get("stall_count", 0)) + 1
+                entry["last_impact_score"] = round(impact_score, 3)
+                if (
+                    surface == "availability_disruption"
+                    and last_attacker_action_type in {"hmi_start", "hmi_stop", "hmi_estop"}
+                ):
+                    entry["availability_chatter_count"] = int(
+                        entry.get("availability_chatter_count", 0)
+                    ) + 1
+                if int(entry.get("stall_count", 0)) >= 2:
+                    cooldown_sec = 12.0
+                    if (
+                        surface != "availability_disruption"
+                        and int(entry.get("stall_count", 0)) < 3
+                    ):
+                        cooldown_sec = 8.0
+                    entry["stalled_until_time_sec"] = round(
+                        max(
+                            float(entry.get("stalled_until_time_sec") or 0.0),
+                            event_time_sec + cooldown_sec,
+                        ),
+                        3,
+                    )
                 discovered["last_effect"] = discovered.get("last_effect")
 
         state["_last_success_event"] = last_success_event
@@ -1324,6 +1379,7 @@ class AgenticRoleAgent(RoleAgent):
                 payload=payload,
                 preconditions=preconditions,
                 telemetry_summary=telemetry_summary,
+                now=now,
             )
 
         committed_surface = str(commitment.get("surface", "unknown"))
@@ -1333,6 +1389,7 @@ class AgenticRoleAgent(RoleAgent):
             surface_state=surface_state,
             committed_surface=committed_surface,
             recon_budget_remaining=recon_budget_remaining,
+            now=now,
         )
         if best_surface == "unknown" and committed_surface != "unknown":
             best_surface = committed_surface
@@ -1354,15 +1411,25 @@ class AgenticRoleAgent(RoleAgent):
         current_surface_score = float(surface_state.get(committed_surface, {}).get("score", 0.0))
         best_surface_score = float(surface_state.get(best_surface, {}).get("score", 0.0))
         committed_stall = int(surface_state.get(committed_surface, {}).get("stall_count", 0))
+        committed_recent_impact = float(
+            surface_state.get(committed_surface, {}).get("last_impact_score", 0.0)
+        )
+        committed_suppressed = (
+            float(surface_state.get(committed_surface, {}).get("stalled_until_time_sec") or 0.0)
+            > now
+        )
         should_switch_surface = committed_surface == "unknown" or int(
             commitment.get("remaining_steps", 0) or 0
         ) <= 0
-        if committed_surface != "unknown" and committed_stall >= 2:
+        if committed_surface != "unknown" and (committed_stall >= 2 or committed_suppressed):
             should_switch_surface = True
+        switch_margin = 1.0
+        if committed_recent_impact >= 1.2 or str(last_success_event.get("surface", "")) == committed_surface:
+            switch_margin = 2.2
         if (
             best_surface != "unknown"
             and best_surface != committed_surface
-            and best_surface_score >= current_surface_score + 1.0
+            and best_surface_score >= current_surface_score + switch_margin
         ):
             should_switch_surface = True
         if should_switch_surface and best_surface != "unknown":
@@ -1373,7 +1440,10 @@ class AgenticRoleAgent(RoleAgent):
                     "template": self._practical_black_box_template_for_surface(
                         committed_surface
                     ),
-                    "remaining_steps": 3,
+                    "remaining_steps": 4
+                    if float(surface_state[committed_surface].get("last_impact_score", 0.0))
+                    >= 1.6
+                    else 3,
                     "stall_count": int(
                         surface_state[committed_surface].get("stall_count", 0)
                     ),
@@ -1406,13 +1476,15 @@ class AgenticRoleAgent(RoleAgent):
             if last_success_surface == committed_surface:
                 commitment["remaining_steps"] = max(
                     int(commitment.get("remaining_steps", 0) or 0),
-                    2,
+                    4
+                    if float(last_success_event.get("impact_score", 0.0) or 0.0) >= 1.8
+                    else 3,
                 )
-            elif committed_stall >= 2:
+            elif committed_stall >= 2 or committed_suppressed:
                 commitment["remaining_steps"] = 0
             else:
                 commitment["remaining_steps"] = max(
-                    1,
+                    2,
                     int(commitment.get("remaining_steps", 0) or 0),
                 )
             commitment["stall_count"] = committed_stall
@@ -1427,7 +1499,7 @@ class AgenticRoleAgent(RoleAgent):
             current_phase = "initial_observation"
         elif committed_surface == "unknown" and recon_budget_remaining > 0:
             current_phase = "reconnaissance"
-        elif committed_stall >= 2:
+        elif committed_stall >= 2 or committed_suppressed:
             current_phase = "reorient"
         elif committed_surface != "unknown" and last_success_surface == committed_surface:
             current_phase = "exploit_escalation"
@@ -1469,8 +1541,22 @@ class AgenticRoleAgent(RoleAgent):
             {
                 "surface": surface,
                 "score": score,
+                "impact_score": round(
+                    float(surface_state[surface].get("impact_score", 0.0)),
+                    3,
+                ),
+                "last_impact_score": round(
+                    float(surface_state[surface].get("last_impact_score", 0.0)),
+                    3,
+                ),
                 "success_count": int(surface_state[surface].get("success_count", 0)),
                 "stall_count": int(surface_state[surface].get("stall_count", 0)),
+                "stalled_until_time_sec": surface_state[surface].get(
+                    "stalled_until_time_sec"
+                ),
+                "availability_chatter_count": int(
+                    surface_state[surface].get("availability_chatter_count", 0)
+                ),
                 "last_effect": effect,
             }
             for surface, score, effect in surface_rank
@@ -1501,6 +1587,9 @@ class AgenticRoleAgent(RoleAgent):
             basis: list[str] = []
             if effect:
                 basis.append(f"last_effect={effect}")
+            impact_score = float(surface_payload.get("impact_score", 0.0))
+            if impact_score > 0:
+                basis.append(f"impact_score={round(impact_score, 2)}")
             basis.extend(list(surface_payload.get("recon_evidence", []))[:2])
             if surface == "process2_manual_path":
                 if preconditions["process2_enabled"]:
@@ -1550,6 +1639,8 @@ class AgenticRoleAgent(RoleAgent):
                     "process2_enabled": bool(preconditions["process2_enabled"]),
                     "manual_path_active": bool(preconditions["manual_path_active"]),
                     "manual_open_chemicals": preconditions["manual_open_chemicals"][:3],
+                    "preferred_sensor": preconditions["preferred_sensor"],
+                    "high_value_sensors": preconditions["high_value_sensors"][:2],
                     "alarm_pressure": preconditions["alarm_pressure"],
                     "defender_attention": preconditions["defender_attention"],
                 },
@@ -1575,10 +1666,15 @@ class AgenticRoleAgent(RoleAgent):
             "exploit_attempt_count": 0,
             "success_count": 0,
             "stall_count": 0,
+            "impact_score": 0.0,
+            "last_impact_score": 0.0,
             "last_effect": None,
+            "effect_history": [],
             "last_action": None,
             "last_success_time_sec": None,
             "last_action_time_sec": None,
+            "stalled_until_time_sec": None,
+            "availability_chatter_count": 0,
             "preferred_target": None,
             "preferred_direction": None,
             "last_value": None,
@@ -1601,20 +1697,51 @@ class AgenticRoleAgent(RoleAgent):
             alarm_pressure = "high"
         elif active_alarm_count == 1 or defender_attention == "medium":
             alarm_pressure = "medium"
-        preferred_sensor = next(
-            (
-                field
-                for field in ("RW_Tank_Level", "UF_UFFT_Tank_Level")
-                if field in observation
-            ),
-            None,
-        )
+        high_value_sensors = [
+            field
+            for field in ("RW_Tank_Level", "UF_UFFT_Tank_Level")
+            if field in observation
+        ]
+        preferred_sensor = high_value_sensors[0] if high_value_sensors else None
+        if "RW_Tank_Level" in observation and (
+            "raw_water_protection_risk" in telemetry_summary["risk_flags"]
+            or "raw_water_low_band" in telemetry_summary["risk_flags"]
+            or "raw_water_high_high_band" in telemetry_summary["risk_flags"]
+            or any(alarm.startswith("Alarm_RW_") for alarm in telemetry_summary["active_alarms"])
+        ):
+            preferred_sensor = "RW_Tank_Level"
+        elif (
+            "UF_UFFT_Tank_Level" in observation
+            and "RW_Tank_Level" not in observation
+        ):
+            preferred_sensor = "UF_UFFT_Tank_Level"
+        elif (
+            "UF_UFFT_Tank_Level" in observation
+            and "RW_Tank_Level" in observation
+            and abs(
+                float(
+                    telemetry_summary["short_horizon_trends"]
+                    .get("UF_UFFT_Tank_Level", {})
+                    .get("delta_window", 0.0)
+                )
+            )
+            > abs(
+                float(
+                    telemetry_summary["short_horizon_trends"]
+                    .get("RW_Tank_Level", {})
+                    .get("delta_window", 0.0)
+                )
+            )
+            + 30.0
+        ):
+            preferred_sensor = "UF_UFFT_Tank_Level"
         return {
             "state_name": state_name,
             "plant_running": state_name in {"RUNNING", "STARTING"},
             "process2_enabled": self._is_active_flag(observation.get("P2_Selected")),
             "manual_path_active": bool(open_chemicals),
             "manual_open_chemicals": open_chemicals,
+            "high_value_sensors": high_value_sensors,
             "process2_drain_signals": [
                 flag
                 for flag in telemetry_summary["risk_flags"]
@@ -1622,6 +1749,9 @@ class AgenticRoleAgent(RoleAgent):
             ][:3],
             "alarm_pressure": alarm_pressure,
             "defender_attention": defender_attention,
+            "active_alarm_count": active_alarm_count,
+            "command_status_divergence": "command_status_divergence"
+            in telemetry_summary["risk_flags"],
             "telemetry_jump": "sensor_or_process_jump" in telemetry_summary["risk_flags"]
             or any(
                 note.startswith("abrupt_change:")
@@ -1707,6 +1837,8 @@ class AgenticRoleAgent(RoleAgent):
         if action_type == "select_process":
             active = bool(action.get("active", True))
             if active and preconditions["process2_enabled"]:
+                if preconditions["process2_drain_signals"]:
+                    return "process2_selection_persisted; drain_signals_present"
                 return "process2_selection_persisted"
             if not active and not preconditions["process2_enabled"]:
                 return "process2_access_removed"
@@ -1721,7 +1853,7 @@ class AgenticRoleAgent(RoleAgent):
             if bool(action.get("open", True)):
                 tokens: list[str] = []
                 if valve_open:
-                    tokens.append(f"{chemical}_valve_open")
+                    tokens.append(f"{chemical}_valve_persisted")
                 if trend.get("direction") == "falling":
                     tokens.append(f"{level_field}_falling")
                 if f"{level_field}_depleting" in telemetry_summary["risk_flags"]:
@@ -1750,16 +1882,32 @@ class AgenticRoleAgent(RoleAgent):
                 and abs(current_value - previous_value) >= max(25.0, abs(previous_value) * 0.12)
             ):
                 tokens.append("telemetry_shift_observed")
+            direction = self._practical_black_box_sensor_direction(
+                field_name=field_name,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            )
+            if (
+                current_value is not None
+                and previous_value is not None
+                and (
+                    (direction == "low" and current_value < previous_value)
+                    or (direction == "high" and current_value > previous_value)
+                )
+            ):
+                tokens.append(f"harmful_direction_{direction}")
             if telemetry_summary["active_alarms"]:
                 tokens.append(f"alarms={','.join(telemetry_summary['active_alarms'][:2])}")
             if preconditions["telemetry_jump"]:
                 tokens.append("control_response_changed")
+            if preconditions["command_status_divergence"]:
+                tokens.append("command_status_divergence")
             if tokens:
                 return f"{field_name}: " + "; ".join(tokens[:3])
             return None
         if action_type == "hmi_start":
             if preconditions["plant_running"]:
-                return "plant_running"
+                return "plant_running_after_start"
             return None
         if action_type == "hmi_stop":
             if preconditions["state_name"] in {"SHUTDOWN", "STOPPED"}:
@@ -1771,6 +1919,99 @@ class AgenticRoleAgent(RoleAgent):
             return None
         return None
 
+    def _practical_black_box_effect_impact_score(
+        self,
+        *,
+        action: dict[str, Any],
+        effect: str | None,
+        observation: dict[str, Any],
+        previous_observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        preconditions: dict[str, Any],
+    ) -> float:
+        if effect is None:
+            return 0.0
+        action_type = str(action.get("type", ""))
+        effect_text = effect.lower()
+        alarm_delta = self._practical_black_box_alarm_delta(
+            previous_observation=previous_observation,
+            telemetry_summary=telemetry_summary,
+        )
+        score = 0.0
+        if action_type == "select_process":
+            if "persisted" in effect_text:
+                score += 0.9
+            if preconditions["manual_path_active"]:
+                score += 0.5
+            score += min(1.8, len(preconditions["process2_drain_signals"]) * 0.9)
+        elif action_type == "set_manual_valve":
+            if "valve_persisted" in effect_text:
+                score += 1.0
+            if "_falling" in effect_text:
+                score += 1.4
+            if "_depleting" in effect_text:
+                score += 2.1
+            if len(preconditions["manual_open_chemicals"]) >= 2:
+                score += 0.4
+        elif action_type == "set_sensor":
+            field_name = str(action.get("name", "")).strip()
+            current_value = self._coerce_number(observation.get(field_name))
+            previous_value = self._coerce_number(previous_observation.get(field_name))
+            direction = self._practical_black_box_sensor_direction(
+                field_name=field_name,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            )
+            if field_name in preconditions.get("high_value_sensors", []):
+                score += 0.7
+            if "sensor_bias_persisted" in effect_text:
+                score += 0.8
+            if "telemetry_shift_observed" in effect_text:
+                score += 1.1
+            if (
+                current_value is not None
+                and previous_value is not None
+                and (
+                    (direction == "low" and current_value < previous_value)
+                    or (direction == "high" and current_value > previous_value)
+                )
+            ):
+                score += 1.4
+            if "control_response_changed" in effect_text:
+                score += 0.9
+            if "command_status_divergence" in effect_text:
+                score += 0.6
+        elif action_type == "hmi_start":
+            previous_state = str(previous_observation.get("STATE_NAME", "")).upper()
+            if previous_state not in {"RUNNING", "STARTING"} and preconditions["plant_running"]:
+                score += 0.9
+        elif action_type == "hmi_stop":
+            previous_state = str(previous_observation.get("STATE_NAME", "")).upper()
+            if previous_state in {"RUNNING", "STARTING"}:
+                score += 1.0
+        elif action_type == "hmi_estop":
+            previous_state = str(previous_observation.get("STATE_NAME", "")).upper()
+            if previous_state in {"RUNNING", "STARTING"}:
+                score += 1.4
+        if alarm_delta > 0:
+            score += min(1.8, alarm_delta * 0.9)
+        elif preconditions.get("active_alarm_count", 0):
+            score += min(0.8, float(preconditions["active_alarm_count"]) * 0.3)
+        if preconditions["command_status_divergence"]:
+            score += 0.4
+        return round(score, 3)
+
+    def _practical_black_box_alarm_delta(
+        self,
+        *,
+        previous_observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> int:
+        previous_alarm_count = len(
+            self._active_flags(previous_observation, prefix="Alarm_")
+        )
+        return max(0, len(telemetry_summary["active_alarms"]) - previous_alarm_count)
+
     def _practical_black_box_surface_score(
         self,
         *,
@@ -1778,40 +2019,52 @@ class AgenticRoleAgent(RoleAgent):
         payload: dict[str, Any],
         preconditions: dict[str, Any],
         telemetry_summary: dict[str, Any],
+        now: float,
     ) -> float:
-        score = float(payload.get("success_count", 0)) * 2.4
-        score += min(1.2, float(payload.get("exploit_attempt_count", 0)) * 0.35)
+        score = float(payload.get("impact_score", 0.0)) * 1.35
+        score += float(payload.get("last_impact_score", 0.0)) * 0.85
+        score += float(payload.get("success_count", 0)) * 0.8
         score += min(1.0, float(payload.get("recon_count", 0)) * 0.28)
         score -= float(payload.get("stall_count", 0)) * 1.2
+        stalled_until = self._coerce_number(payload.get("stalled_until_time_sec"))
+        if stalled_until is not None and now < stalled_until:
+            score -= 4.0
         if surface == "process2_manual_path":
             if preconditions["process2_enabled"]:
-                score += 1.1
+                score += 1.2
             if preconditions["manual_path_active"]:
-                score += 1.5
+                score += 1.8
             if preconditions["process2_drain_signals"]:
-                score += min(1.5, len(preconditions["process2_drain_signals"]) * 0.8)
+                score += min(2.4, len(preconditions["process2_drain_signals"]) * 1.0)
             if any(
                 token == "process2_selected" or token.startswith("P2_")
                 for token in payload.get("recon_evidence", [])
             ):
-                score += 0.7
+                score += 0.9
         elif surface == "sensor_manipulation":
             if preconditions["preferred_sensor"]:
-                score += 0.9
-            if preconditions["telemetry_jump"]:
+                score += 1.0
+            if payload.get("preferred_target") in preconditions.get("high_value_sensors", []):
                 score += 0.8
-            if telemetry_summary["active_alarms"]:
-                score += 0.5
-            score += min(1.0, int(payload.get("escalation_stage", 0)) * 0.35)
+            if preconditions["telemetry_jump"]:
+                score += 1.0
+            score += min(1.2, int(payload.get("escalation_stage", 0)) * 0.4)
+            score += min(1.0, int(preconditions.get("active_alarm_count", 0)) * 0.35)
         elif surface == "availability_disruption":
             if preconditions["plant_running"]:
-                score += 1.1
+                score += 0.8
             if preconditions["state_name"] in {"SHUTDOWN", "STOPPED"}:
                 score += 0.4
             if any(
                 token.startswith("state=") for token in payload.get("recon_evidence", [])
             ):
                 score += 0.3
+            chatter_count = int(payload.get("availability_chatter_count", 0))
+            score -= chatter_count * 2.4
+            if chatter_count >= 2 and float(payload.get("impact_score", 0.0)) < 2.5:
+                score -= 3.0
+            if preconditions["command_status_divergence"]:
+                score += 0.4
         return round(max(0.0, score), 3)
 
     @staticmethod
@@ -1820,26 +2073,36 @@ class AgenticRoleAgent(RoleAgent):
         surface_state: dict[str, dict[str, Any]],
         committed_surface: str,
         recon_budget_remaining: int,
+        now: float,
     ) -> str:
         if committed_surface in surface_state:
             committed_payload = surface_state[committed_surface]
             if (
                 int(committed_payload.get("stall_count", 0)) < 2
                 and float(committed_payload.get("score", 0.0)) >= 1.0
+                and (
+                    float(committed_payload.get("stalled_until_time_sec") or 0.0)
+                    <= now
+                )
             ):
                 return committed_surface
-        ranked = sorted(
-            surface_state.items(),
-            key=lambda item: (
-                float(item[1].get("score", 0.0)),
-                item[0],
-            ),
-            reverse=True,
-        )
+        ranked = [
+            item
+            for item in sorted(
+                surface_state.items(),
+                key=lambda item: (
+                    float(item[1].get("score", 0.0)),
+                    item[0],
+                ),
+                reverse=True,
+            )
+            if float(item[1].get("stalled_until_time_sec") or 0.0) <= now
+            or item[0] == committed_surface
+        ]
         if not ranked:
             return "unknown"
         best_surface, payload = ranked[0]
-        threshold = 1.0 if recon_budget_remaining > 0 else 0.75
+        threshold = 1.2 if recon_budget_remaining > 0 else 0.9
         if float(payload.get("score", 0.0)) < threshold:
             return "unknown"
         return best_surface
@@ -1886,7 +2149,7 @@ class AgenticRoleAgent(RoleAgent):
             return f"escalate_{field_name}_bias_again"
         if surface == "availability_disruption":
             if not preconditions["plant_running"]:
-                return "restart_then_disrupt_again"
+                return "restart_only_if_another_surface_needs_live_process_effect"
             return "stop_or_estop_the_running_plant"
         return "gather_more_evidence"
 
@@ -3221,6 +3484,7 @@ class AgenticRoleAgent(RoleAgent):
     ) -> list[dict[str, Any]]:
         allowed = set(self.profile.get("allowed_action_types", []))
         observation = context.get("observation", {})
+        now = float(context.get("time_sec", 0.0))
         state_name = str(observation.get("STATE_NAME", "")).upper()
         memory_state = self._state.setdefault("role_memory", {})
         surface_state = memory_state.get("_surface_state", {})
@@ -3298,6 +3562,14 @@ class AgenticRoleAgent(RoleAgent):
             "reorient",
         } or (recon_budget_remaining > 0 and not must_commit)
         sensor_profiles = dict(self._practical_black_box_sensor_profiles(observation))
+        availability_payload = surface_state.get("availability_disruption", {})
+        availability_suppressed = (
+            float(availability_payload.get("stalled_until_time_sec") or 0.0) > now
+            or (
+                int(availability_payload.get("availability_chatter_count", 0)) >= 2
+                and float(availability_payload.get("impact_score", 0.0)) < 2.5
+            )
+        )
 
         def add_candidate(
             summary: str,
@@ -3367,7 +3639,7 @@ class AgenticRoleAgent(RoleAgent):
             return base
 
         if current_phase == "initial_observation":
-            if "hmi_start" in allowed and not plant_running:
+            if "hmi_start" in allowed and not plant_running and not availability_suppressed:
                 action = {"type": "hmi_start", "process_id": "WT-P1"}
                 add_candidate(
                     self._practical_black_box_candidate_summary(
@@ -3380,7 +3652,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal="make_plant_state_effectful",
                     ),
                     action,
-                    source="practical_black_box",
+                    source="black_box",
                     priority=exploit_priority(
                         surface="availability_disruption",
                         category="probe",
@@ -3407,7 +3679,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal="test_process2_manual_access",
                     ),
                     action,
-                    source="practical_black_box",
+                    source="black_box",
                     priority=exploit_priority(
                         surface="process2_manual_path",
                         category="probe",
@@ -3418,7 +3690,10 @@ class AgenticRoleAgent(RoleAgent):
                     chain_goal="test_process2_manual_access",
                 )
             if "set_sensor" in allowed and sensor_profiles:
-                target_field = next(iter(sensor_profiles))
+                target_field = str(
+                    preconditions.get("preferred_sensor")
+                    or next(iter(sensor_profiles))
+                )
                 direction = self._practical_black_box_sensor_direction(
                     field_name=target_field,
                     observation=observation,
@@ -3440,7 +3715,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal="test_telemetry_control_response",
                     ),
                     action,
-                    source="practical_black_box",
+                    source="black_box",
                     priority=exploit_priority(
                         surface="sensor_manipulation",
                         category="probe",
@@ -3465,12 +3740,25 @@ class AgenticRoleAgent(RoleAgent):
                 break
             if surface not in target_surfaces:
                 target_surfaces.append(surface)
+        target_surfaces = [
+            surface
+            for surface in target_surfaces
+            if surface == committed_surface
+            or float(surface_state.get(surface, {}).get("stalled_until_time_sec") or 0.0)
+            <= now
+        ]
         target_surfaces = target_surfaces[:3]
 
         for surface_rank, surface in enumerate(target_surfaces):
             if surface == "unknown":
                 continue
             payload = surface_state.get(surface, {})
+            if (
+                surface == "availability_disruption"
+                and availability_suppressed
+                and not must_commit
+            ):
+                continue
             chain_goal = self._practical_black_box_next_goal(
                 surface=surface,
                 observation=observation,
@@ -3500,7 +3788,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="practical_black_box",
+                        source="black_box",
                         priority=exploit_priority(
                             surface=surface,
                             category="support",
@@ -3529,7 +3817,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="practical_black_box",
+                        source="black_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=category,
@@ -3574,7 +3862,7 @@ class AgenticRoleAgent(RoleAgent):
                                 chain_goal=chain_goal,
                             ),
                             action,
-                            source="practical_black_box",
+                            source="black_box",
                             priority=exploit_priority(
                                 surface=surface,
                                 category=category,
@@ -3590,6 +3878,10 @@ class AgenticRoleAgent(RoleAgent):
                     commitment.get("target_sensor")
                     or payload.get("preferred_target")
                     or preconditions.get("preferred_sensor")
+                    or next(
+                        iter(preconditions.get("high_value_sensors", [])),
+                        None,
+                    )
                     or next(iter(sensor_profiles))
                 )
                 if target_field in sensor_profiles:
@@ -3623,7 +3915,7 @@ class AgenticRoleAgent(RoleAgent):
                                 chain_goal=chain_goal,
                             ),
                             action,
-                            source="practical_black_box",
+                            source="black_box",
                             priority=exploit_priority(
                                 surface=surface,
                                 category="sustain",
@@ -3654,7 +3946,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         primary_action,
-                        source="practical_black_box",
+                        source="black_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=primary_category,
@@ -3682,7 +3974,7 @@ class AgenticRoleAgent(RoleAgent):
                                 chain_goal=chain_goal,
                             ),
                             stronger_action,
-                            source="practical_black_box",
+                            source="black_box",
                             priority=exploit_priority(
                                 surface=surface,
                                 category="escalate",
@@ -3708,7 +4000,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="practical_black_box",
+                        source="black_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=category,
@@ -3732,7 +4024,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="practical_black_box",
+                        source="black_box",
                         priority=exploit_priority(
                             surface=surface,
                             category="exploit",
@@ -3761,7 +4053,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="practical_black_box",
+                        source="black_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=category,
@@ -3819,7 +4111,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal=f"refresh_{recon_surface}_evidence",
                     ),
                     action,
-                    source="practical_black_box",
+                    source="black_box",
                     priority=priority,
                     surface=focus_surface or "unknown",
                     category="recon",

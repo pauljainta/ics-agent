@@ -82,7 +82,7 @@ Attack and repeated-run experiment note:
 - fresh attack-family outputs for this rerun are written under
   `../Artifact/Results/qwen35_9b_formalized_agentic_pair/formalized_agentic_attack/`
   and
-  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/`
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/`
   instead of being overwritten
 
 ## 2026-05-23 Practical Black-Box Attacker Refresh
@@ -124,13 +124,13 @@ Key behavior changes in this refresh:
 
 The current full `18 x 3` attack-pair rerun writes to:
 
-- `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/20260523T173335-10d187ec/`
+- `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/20260523T173335-10d187ec/`
 
 Expected pair folders under that experiment root are:
 
-- `practical_black_box_attacker__agentic_defender`
-- `practical_black_box_attacker__rule_based_defender`
-- `practical_black_box_attacker__scripted_defender`
+- `black_box_attacker__agentic_defender`
+- `black_box_attacker__rule_based_defender`
+- `black_box_attacker__scripted_defender`
 
 Verified completed outcome for that rerun:
 
@@ -164,7 +164,7 @@ Same-blue-team attacker comparison config:
   `../Artifact/Results/qwen35_9b_formalized_agentic_pair/attacker_vs_agentic_defender/<experiment_id>/`
 - compare each fresh condition folder’s `condition_summary.json` and
   `attack_metrics_summary.json` against the practical black-box baseline at
-  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/practical_black_box_attack_pairs/<experiment_id>/practical_black_box_attacker__agentic_defender/`
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/<experiment_id>/black_box_attacker__agentic_defender/`
 
 ## Current Performance Note
 

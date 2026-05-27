@@ -251,6 +251,7 @@ def test_compute_metrics_reports_attacker_scoring_fields() -> None:
     assert metrics["attacker"]["scenario_expectation_passed"] == 1.0
     assert metrics["attacker"]["caused_safety_violation"] == 1.0
     assert metrics["attacker"]["time_to_impact_sec"] == 2.0
+    assert metrics["attacker"]["time_to_physical_impact_sec"] == 2.0
     assert metrics["attacker"]["undetected_impact"] == 1.0
     assert metrics["operational_cost"]["downtime_timestep_count"] == 0
     assert metrics["trajectory"]["paired_sequence"] == ["attacker:set_sensor:unknown"]

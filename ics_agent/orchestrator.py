@@ -66,7 +66,10 @@ class ExperimentOrchestrator:
         normalized = dict(profile)
         role = str(normalized.get("role", "")).strip().lower()
         knowledge_mode = str(normalized.get("knowledge_mode", "")).strip().lower()
-        if role == "attacker" and knowledge_mode == "practical_black_box":
+        if role == "attacker" and knowledge_mode in {
+            "practical_black_box",
+            "black_box",
+        }:
             allowed = list(normalized.get("allowed_action_types", []))
             if "inspect_surface" not in allowed:
                 insertion_index = (
@@ -831,6 +834,9 @@ class ExperimentOrchestrator:
                 "attacker_time_to_impact_sec": run.get("metrics", {})
                 .get("attacker", {})
                 .get("time_to_impact_sec"),
+                "time_to_physical_impact_sec": run.get("metrics", {})
+                .get("attacker", {})
+                .get("time_to_physical_impact_sec"),
                 "attacker_execution_success_rate": run.get("metrics", {})
                 .get("attacker", {})
                 .get("execution_success_rate"),
@@ -1014,6 +1020,7 @@ class ExperimentOrchestrator:
                 "attacker_recon_action_count"
             ),
             "attacker_time_to_impact_sec_avg": average("attacker_time_to_impact_sec"),
+            "time_to_physical_impact_sec_avg": average("time_to_physical_impact_sec"),
             "attacker_execution_success_rate_avg": average(
                 "attacker_execution_success_rate"
             ),
@@ -1021,6 +1028,9 @@ class ExperimentOrchestrator:
                 "attacker_scenario_expectation_passed"
             ),
             "attacker_caused_safety_violation_avg": average(
+                "attacker_caused_safety_violation"
+            ),
+            "attacker_safety_success_rate": average(
                 "attacker_caused_safety_violation"
             ),
             "undetected_impact_rate": average("attacker_undetected_impact"),

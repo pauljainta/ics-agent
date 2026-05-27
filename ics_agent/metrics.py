@@ -489,6 +489,10 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
                 first_safety_violation_time,
                 attack_start=attack_start,
             ),
+            "time_to_physical_impact_sec": _relative_time(
+                first_safety_violation_time,
+                attack_start=attack_start,
+            ),
             "execution_success_rate": (
                 None if attack_start is None else float(safety_total > 0)
             ),

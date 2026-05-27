@@ -185,6 +185,7 @@ def test_orchestrator_writes_pair_level_metric_summaries(
     assert attack_summary["completed_attack_run_count"] == 1
     assert attack_summary["attack_run_count"] == 1
     assert "undetected_impact_rate" in attack_summary
+    assert "time_to_physical_impact_sec_avg" in attack_summary
     assert attack_summary["defender_shutdown_action_count_avg"] is not None
     assert attack_summary["downtime_timestep_count_avg"] is not None
     assert nominal_summary["completed_nominal_run_count"] == 0
@@ -252,9 +253,9 @@ def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> 
             },
         },
         {
-            "name": "practical_black_box_attacker__agentic_defender",
+            "name": "black_box_attacker__agentic_defender",
             "profiles": {
-                "attacker": "practical_black_box_attacker",
+                "attacker": "black_box_attacker",
                 "defender": "agentic_defender",
                 "observer": "agentic_observer",
                 "planner": "scripted_planner",
@@ -268,10 +269,10 @@ def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> 
 
     assert "attacker" not in suite_decoding["rule_based_attacker__agentic_defender"]
     assert (
-        suite_decoding["practical_black_box_attacker__agentic_defender"]["attacker"][
+        suite_decoding["black_box_attacker__agentic_defender"]["attacker"][
             "profile_id"
         ]
-        == "practical_black_box_attacker"
+        == "black_box_attacker"
     )
 
     orchestrator._current_reproducibility = {
@@ -288,7 +289,7 @@ def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> 
     )
     assert "attacker" not in condition_reproducibility["decoding"]
     assert (
-        "practical_black_box_attacker__agentic_defender"
+        "black_box_attacker__agentic_defender"
         in condition_reproducibility["suite_decoding"]
     )
 
@@ -300,7 +301,7 @@ def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
     env.reset()
     bundle = RunBundle(
         experiment_id="pytest",
-        condition_name="practical_black_box_attacker__agentic_defender",
+        condition_name="black_box_attacker__agentic_defender",
         run_id="trial-001",
         scenario=scenario,
         run_dir=tmp_path / "trial-001",
@@ -340,7 +341,7 @@ def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
         },
         bundle=bundle,
         scenario=scenario,
-        condition={"attacker": "practical_black_box_attacker"},
+        condition={"attacker": "black_box_attacker"},
         env=env,
         elapsed=1.0,
     )

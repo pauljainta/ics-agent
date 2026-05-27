@@ -610,12 +610,12 @@ def test_defender_memory_tracks_prior_mitigations_and_escalation() -> None:
     assert memory["escalation_required"] is True
 
 
-def test_practical_black_box_attacker_context_strips_privileged_scenario_fields() -> None:
+def test_black_box_attacker_context_strips_privileged_scenario_fields() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
     profile = {
         "role": "attacker",
         "family": "agentic",
-        "knowledge_mode": "practical_black_box",
+        "knowledge_mode": "black_box",
         "allowed_action_types": [
             "inspect_surface",
             "select_process",
@@ -630,7 +630,7 @@ def test_practical_black_box_attacker_context_strips_privileged_scenario_fields(
             "strict_backend": True,
         },
     }
-    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
     agent.reset(scenario)
 
     context = agent._build_online_context(
@@ -742,12 +742,12 @@ def test_practical_black_box_attacker_context_strips_privileged_scenario_fields(
     assert "diagnosis" not in context["recent_decisions"][0]
 
 
-def test_practical_black_box_attacker_context_hides_defender_action_details() -> None:
+def test_black_box_attacker_context_hides_defender_action_details() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
     profile = {
         "role": "attacker",
         "family": "agentic",
-        "knowledge_mode": "practical_black_box",
+        "knowledge_mode": "black_box",
         "allowed_action_types": [
             "inspect_surface",
             "select_process",
@@ -762,7 +762,7 @@ def test_practical_black_box_attacker_context_hides_defender_action_details() ->
             "strict_backend": True,
         },
     }
-    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
     agent.reset(scenario)
 
     context = agent._build_online_context(
@@ -839,12 +839,12 @@ def test_practical_black_box_attacker_context_hides_defender_action_details() ->
     }
 
 
-def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
+def test_black_box_attacker_offers_exploratory_candidates() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
     profile = {
         "role": "attacker",
         "family": "agentic",
-        "knowledge_mode": "practical_black_box",
+        "knowledge_mode": "black_box",
         "allowed_action_types": [
             "inspect_surface",
             "select_process",
@@ -858,7 +858,7 @@ def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
             "strict_backend": True,
         },
     }
-    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
     agent.reset(scenario)
 
     context = agent._build_online_context(
@@ -899,12 +899,12 @@ def test_practical_black_box_attacker_offers_exploratory_candidates() -> None:
     )
 
 
-def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None:
+def test_black_box_attacker_memory_tracks_discovered_surface() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
     profile = {
         "role": "attacker",
         "family": "agentic",
-        "knowledge_mode": "practical_black_box",
+        "knowledge_mode": "black_box",
         "allowed_action_types": [
             "inspect_surface",
             "select_process",
@@ -918,7 +918,7 @@ def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None
             "strict_backend": True,
         },
     }
-    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
     agent.reset(scenario)
 
     context = agent._build_online_context(
@@ -989,12 +989,12 @@ def test_practical_black_box_attacker_memory_tracks_discovered_surface() -> None
     assert memory["candidate_leverage_hypotheses"][0]["surface"] == "process2_manual_path"
 
 
-def test_practical_black_box_attacker_recon_budget_forces_process2_commitment() -> None:
+def test_black_box_attacker_recon_budget_forces_process2_commitment() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
     profile = {
         "role": "attacker",
         "family": "agentic",
-        "knowledge_mode": "practical_black_box",
+        "knowledge_mode": "black_box",
         "allowed_action_types": [
             "inspect_surface",
             "select_process",
@@ -1008,7 +1008,7 @@ def test_practical_black_box_attacker_recon_budget_forces_process2_commitment() 
             "strict_backend": True,
         },
     }
-    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
     agent.reset(scenario)
 
     context = agent._build_online_context(
@@ -1115,12 +1115,12 @@ def test_practical_black_box_attacker_recon_budget_forces_process2_commitment() 
     )
 
 
-def test_practical_black_box_attacker_sensor_commitment_escalates_after_effect() -> None:
+def test_black_box_attacker_sensor_commitment_escalates_after_effect() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
     profile = {
         "role": "attacker",
         "family": "agentic",
-        "knowledge_mode": "practical_black_box",
+        "knowledge_mode": "black_box",
         "allowed_action_types": [
             "inspect_surface",
             "select_process",
@@ -1134,7 +1134,7 @@ def test_practical_black_box_attacker_sensor_commitment_escalates_after_effect()
             "strict_backend": True,
         },
     }
-    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
     agent.reset(scenario)
 
     context = agent._build_online_context(
@@ -1201,12 +1201,12 @@ def test_practical_black_box_attacker_sensor_commitment_escalates_after_effect()
     )
 
 
-def test_practical_black_box_attacker_uses_prior_live_sample_for_effect_learning() -> None:
+def test_black_box_attacker_uses_prior_live_sample_for_effect_learning() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
     profile = {
         "role": "attacker",
         "family": "agentic",
-        "knowledge_mode": "practical_black_box",
+        "knowledge_mode": "black_box",
         "allowed_action_types": [
             "inspect_surface",
             "set_sensor",
@@ -1218,7 +1218,7 @@ def test_practical_black_box_attacker_uses_prior_live_sample_for_effect_learning
             "strict_backend": True,
         },
     }
-    agent = AgenticRoleAgent("pytest_practical_black_box_attacker", profile)
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
     agent.reset(scenario)
 
     current_observation = {
@@ -1264,6 +1264,103 @@ def test_practical_black_box_attacker_uses_prior_live_sample_for_effect_learning
 
     assert context["structured_memory"]["last_successful_effect"].startswith(
         "RW_Tank_Level: telemetry_shift_observed"
+    )
+
+
+def test_black_box_attacker_suppresses_availability_chatter_after_stall() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "black_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "hmi_estop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_black_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 8.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 0,
+                "RW_Tank_Level": 520,
+                "UF_UFFT_Tank_Level": 410,
+            },
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 0,
+                    "RW_Tank_Level": 600,
+                    "UF_UFFT_Tank_Level": 410,
+                },
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 0,
+                    "RW_Tank_Level": 560,
+                    "UF_UFFT_Tank_Level": 410,
+                },
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 2.0,
+                    "action": {"type": "inspect_surface", "surface": "tags"},
+                    "result": {
+                        "category": "reconnaissance",
+                        "surface": "tags",
+                        "summary": "tags: state=RUNNING; RW_Tank_Level=560",
+                        "findings": ["state=RUNNING", "RW_Tank_Level=560"],
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 3.0,
+                    "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 4.0,
+                    "action": {"type": "hmi_start", "process_id": "WT-P1"},
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 5.0,
+                    "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 6.0,
+                    "action": {
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 540,
+                    },
+                },
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert context["structured_memory"]["best_known_attack_surface"] == "sensor_manipulation"
+    assert context["candidate_actions"][0]["action"]["type"] == "set_sensor"
+    assert not any(
+        item["action"]["type"] in {"hmi_stop", "hmi_estop"}
+        for item in context["candidate_actions"][:3]
     )
 
 
