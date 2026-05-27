@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
+import random
+import subprocess
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -47,6 +50,7 @@ def canonical_action_name(action: dict[str, Any] | str) -> str:
 class ExperimentOrchestrator:
     def __init__(self, catalog: ScenarioCatalog | None = None) -> None:
         self.catalog = catalog or ScenarioCatalog()
+        self._current_reproducibility: dict[str, Any] = {}
         raw_profiles = load_config("agent_profiles.yaml").get("profiles", {})
         self.agent_profiles = {
             profile_id: self._normalized_profile(profile)
@@ -119,6 +123,160 @@ class ExperimentOrchestrator:
             "knowledge_file_count": knowledge_file_count,
         }
 
+    @staticmethod
+    def _use_canonical_result_root(config: dict[str, Any]) -> bool:
+        return bool(config.get("use_canonical_result_root", False))
+
+    @staticmethod
+    def _git_commit(path: Path) -> str | None:
+        try:
+            return (
+                subprocess.check_output(
+                    ["git", "-C", str(path), "rev-parse", "HEAD"],
+                    text=True,
+                )
+                .strip()
+                or None
+            )
+        except Exception:
+            return None
+
+    def _collect_decoding_settings(
+        self,
+        profiles: dict[str, str],
+    ) -> dict[str, dict[str, Any]]:
+        settings: dict[str, dict[str, Any]] = {}
+        for role, profile_id in profiles.items():
+            profile = self.agent_profiles.get(profile_id, {})
+            if not isinstance(profile, dict) or profile.get("family") != "agentic":
+                continue
+            llm = profile.get("llm", {})
+            if not isinstance(llm, dict):
+                continue
+            settings[str(role)] = {
+                "profile_id": str(profile_id),
+                "backend": llm.get("backend"),
+                "framework": llm.get("framework"),
+                "model_id": llm.get("model_id"),
+                "model_path": os.environ.get("QWEN_MODEL_PATH", "").strip()
+                or llm.get("model_id"),
+                "temperature": float(llm.get("temperature", 0.0) or 0.0),
+                "do_sample": float(llm.get("temperature", 0.0) or 0.0) > 0.0,
+                "max_new_tokens": llm.get("max_new_tokens"),
+                "quantization": llm.get("quantization"),
+                "local_files_only": bool(llm.get("local_files_only", True)),
+                "require_cuda": bool(llm.get("require_cuda", True)),
+                "strict_backend": bool(llm.get("strict_backend", True)),
+                "allow_langchain_fallback": bool(
+                    llm.get("allow_langchain_fallback", True)
+                ),
+            }
+        return settings
+
+    def _suite_decoding_settings(
+        self,
+        conditions: list[dict[str, Any]],
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        suite_settings: dict[str, dict[str, dict[str, Any]]] = {}
+        for condition_spec in conditions:
+            profiles = condition_spec.get("profiles", {})
+            condition_name = self._condition_name(
+                profiles,
+                override=condition_spec.get("name"),
+            )
+            suite_settings[condition_name] = self._collect_decoding_settings(profiles)
+        return suite_settings
+
+    def _condition_reproducibility(
+        self,
+        condition_name: str,
+        profiles: dict[str, str],
+    ) -> dict[str, Any]:
+        payload = dict(self._current_reproducibility)
+        suite_decoding = dict(payload.get("suite_decoding") or {})
+        payload["decoding"] = self._collect_decoding_settings(profiles)
+        payload["suite_decoding"] = suite_decoding
+        payload["condition_name"] = condition_name
+        return payload
+
+    def _configure_reproducibility(
+        self,
+        *,
+        config: dict[str, Any],
+        conditions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        payload = config.get("reproducibility", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        seed_value = payload.get("seed", config.get("seed"))
+        seed = int(seed_value) if seed_value is not None else None
+        remaining_nondeterminism: list[str] = []
+
+        numpy_available = False
+        torch_available = False
+        torch_cuda_available = False
+        cudnn_deterministic = None
+        cudnn_benchmark = None
+        deterministic_algorithms = None
+
+        if seed is not None:
+            random.seed(seed)
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            try:
+                import numpy as np  # type: ignore
+
+                np.random.seed(seed)
+                numpy_available = True
+            except Exception:
+                remaining_nondeterminism.append(
+                    "NumPy was unavailable, so NumPy RNG could not be seeded."
+                )
+            try:
+                import torch  # type: ignore
+
+                torch_available = True
+                torch.manual_seed(seed)
+                torch_cuda_available = bool(torch.cuda.is_available())
+                if torch_cuda_available:
+                    torch.cuda.manual_seed(seed)
+                    torch.cuda.manual_seed_all(seed)
+                try:
+                    torch.use_deterministic_algorithms(True, warn_only=True)
+                except TypeError:
+                    torch.use_deterministic_algorithms(True)
+                deterministic_algorithms = True
+                if hasattr(torch.backends, "cudnn"):
+                    torch.backends.cudnn.deterministic = True
+                    torch.backends.cudnn.benchmark = False
+                    cudnn_deterministic = bool(torch.backends.cudnn.deterministic)
+                    cudnn_benchmark = bool(torch.backends.cudnn.benchmark)
+            except Exception as exc:
+                remaining_nondeterminism.append(
+                    f"PyTorch deterministic seeding was unavailable: {exc}"
+                )
+
+        if seed is not None and os.environ.get("PYTHONHASHSEED") != str(seed):
+            remaining_nondeterminism.append(
+                "PYTHONHASHSEED was not set before process start, so set-iteration order may retain minor nondeterminism."
+            )
+
+        return {
+            "seed": seed,
+            "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+            "numpy_seeded": numpy_available,
+            "torch_seeded": torch_available,
+            "torch_cuda_seeded": torch_cuda_available,
+            "torch_deterministic_algorithms": deterministic_algorithms,
+            "cudnn_deterministic": cudnn_deterministic,
+            "cudnn_benchmark": cudnn_benchmark,
+            "experiment_config_path": portable_path(Path(config["_path"])),
+            "ics_agent_repo_commit": self._git_commit(REPO_ROOT),
+            "suite_decoding": self._suite_decoding_settings(conditions),
+            "remaining_nondeterminism": remaining_nondeterminism,
+        }
+
     def run(self, experiment_config_path: str | Path) -> dict[str, Any]:
         config = load_config(experiment_config_path)
         require_fields(
@@ -133,23 +291,37 @@ class ExperimentOrchestrator:
             raise ConfigError(f"no scenarios matched selectors in {config['_path']}")
 
         conditions = self._enumerate_conditions(config)
+        reproducibility = self._configure_reproducibility(
+            config=config,
+            conditions=conditions,
+        )
+        self._current_reproducibility = reproducibility
         timestamp = utc_now().replace(":", "").replace("-", "").replace(".", "")
-        experiment_id = f"{timestamp[:15]}-{stable_hash({'config': portable_path(config['_path']), 'conditions': conditions})}"
+        if self._use_canonical_result_root(config):
+            experiment_id = str(config.get("experiment_id", experiment_name))
+        else:
+            experiment_id = f"{timestamp[:15]}-{stable_hash({'config': portable_path(config['_path']), 'conditions': conditions})}"
         results_base_dir = (
             Path(config["_path"]).parent if "results_root" in config else REPO_ROOT
         )
         resolved_results_root = resolve_repo_path(
             config.get("results_root", str(results_root())), base_dir=results_base_dir
         )
-        experiment_root = resolved_results_root / experiment_name / experiment_id
+        if self._use_canonical_result_root(config):
+            experiment_root = resolved_results_root / experiment_name
+        else:
+            experiment_root = resolved_results_root / experiment_name / experiment_id
         experiment_root.mkdir(parents=True, exist_ok=True)
 
         suite_summary: dict[str, Any] = {
             "experiment_id": experiment_id,
             "experiment_name": experiment_name,
             "config_path": portable_path(config["_path"]),
+            "results_root": portable_path(experiment_root),
             "timestamp_utc": utc_now(),
             "status": "completed",
+            "use_canonical_result_root": self._use_canonical_result_root(config),
+            "reproducibility": reproducibility,
             "conditions": [],
         }
         suite_trajectory_baseline_runs: list[dict[str, Any]] = []
@@ -161,11 +333,16 @@ class ExperimentOrchestrator:
                 condition, override=condition_spec.get("name")
             )
             condition_root = experiment_root / condition_name
+            condition_reproducibility = self._condition_reproducibility(
+                condition_name,
+                condition,
+            )
             condition_summary: dict[str, Any] = {
                 "condition_name": condition_name,
                 "profiles": condition,
                 "runs": [],
                 "status": "completed",
+                "reproducibility": condition_reproducibility,
             }
             for scenario in scenarios:
                 for repeat in range(1, int(config.get("repeats", 1)) + 1):
@@ -498,6 +675,10 @@ class ExperimentOrchestrator:
                 "condition": condition,
                 "scenario": scenario.catalog_id,
                 "environment": config.get("environment", {}),
+                "reproducibility": self._condition_reproducibility(
+                    condition_name,
+                    condition,
+                ),
                 "profile_assets": {
                     role: {
                         "prompt_file": self.agent_profiles[profile_id]
@@ -659,6 +840,9 @@ class ExperimentOrchestrator:
                 "attacker_caused_safety_violation": run.get("metrics", {})
                 .get("attacker", {})
                 .get("caused_safety_violation"),
+                "attacker_undetected_impact": run.get("metrics", {})
+                .get("attacker", {})
+                .get("undetected_impact"),
                 "true_positive_rate": run.get("metrics", {}).get("true_positive_rate"),
                 "observer_detection_rate": run.get("metrics", {})
                 .get("observer_detection", {})
@@ -698,6 +882,15 @@ class ExperimentOrchestrator:
                 ),
                 "defender_action_count": run.get("metrics", {}).get(
                     "defender_action_count"
+                ),
+                "defender_shutdown_action_count": run.get("metrics", {}).get(
+                    "defender_shutdown_action_count"
+                ),
+                "defender_intervention_action_count": run.get("metrics", {})
+                .get("operational_cost", {})
+                .get("intervention_action_count"),
+                "downtime_timestep_count": run.get("metrics", {}).get(
+                    "downtime_timestep_count"
                 ),
                 "time_to_first_defender_action_sec": run.get("metrics", {})
                 .get("defender_intervention", {})
@@ -775,6 +968,18 @@ class ExperimentOrchestrator:
             .get("defender_intervention", {})
             .get("contained_before_safety_violation")
         ]
+        attacker_safety_success = [
+            run
+            for run in completed
+            if run.get("metrics", {})
+            .get("attacker", {})
+            .get("caused_safety_violation")
+        ]
+        undetected_impact_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("attacker", {}).get("undetected_impact")
+        ]
 
         return {
             "attack_run_count": len(attack_runs),
@@ -787,6 +992,8 @@ class ExperimentOrchestrator:
             "defender_acted_attack_run_count": len(defender_acted),
             "mitigated_attack_run_count": len(mitigated),
             "contained_before_safety_violation_run_count": len(timely_contained),
+            "attacker_caused_safety_violation_run_count": len(attacker_safety_success),
+            "undetected_impact_run_count": len(undetected_impact_runs),
             "time_to_detection_sec_avg": average("time_to_detection_sec"),
             "time_to_recognition_sec_avg": average("time_to_recognition_sec"),
             "observer_time_to_detection_sec_avg": average(
@@ -816,9 +1023,19 @@ class ExperimentOrchestrator:
             "attacker_caused_safety_violation_avg": average(
                 "attacker_caused_safety_violation"
             ),
+            "undetected_impact_rate": average("attacker_undetected_impact"),
+            "defender_action_count_avg": average("defender_action_count"),
+            "defender_shutdown_action_count_avg": average(
+                "defender_shutdown_action_count"
+            ),
+            "defender_intervention_action_count_avg": average(
+                "defender_intervention_action_count"
+            ),
+            "downtime_timestep_count_avg": average("downtime_timestep_count"),
             "time_to_first_defender_action_sec_avg": average(
                 "time_to_first_defender_action_sec"
             ),
+            "mitigation_action_count_avg": average("mitigation_action_count"),
             "false_positive_rate_avg": average("false_positive_rate"),
             "true_positive_rate_avg": average("true_positive_rate"),
             "observer_detection_rate_avg": average("observer_detection_rate"),

@@ -184,8 +184,113 @@ def test_orchestrator_writes_pair_level_metric_summaries(
 
     assert attack_summary["completed_attack_run_count"] == 1
     assert attack_summary["attack_run_count"] == 1
+    assert "undetected_impact_rate" in attack_summary
+    assert attack_summary["defender_shutdown_action_count_avg"] is not None
+    assert attack_summary["downtime_timestep_count_avg"] is not None
     assert nominal_summary["completed_nominal_run_count"] == 0
     assert trajectory_summary["status"] == "not_meaningful_yet"
+
+
+def test_orchestrator_can_write_to_canonical_result_root(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "canonical.yaml"
+    config = {
+        "experiment_name": "pytest_canonical",
+        "scenario_selectors": ["attack/wt-attack-sensor-rw-refill-spoof"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "use_canonical_result_root": True,
+        "reproducibility": {"seed": 20260526},
+        "conditions": [
+            {
+                "name": "scripted_baseline",
+                "profiles": {
+                    "attacker": "scripted_attacker",
+                    "defender": "rule_based_defender",
+                    "observer": "rule_based_observer",
+                    "planner": "scripted_planner",
+                    "operator": "scripted_operator",
+                    "offline_analysis": "scripted_offline_analyst",
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+
+    summary = ExperimentOrchestrator().run(config_path)
+
+    experiment_root = tmp_path / "Results" / "pytest_canonical"
+    assert summary["experiment_id"] == "pytest_canonical"
+    assert summary["use_canonical_result_root"] is True
+    assert summary["reproducibility"]["seed"] == 20260526
+    assert (experiment_root / "experiment_summary.json").exists()
+    assert (experiment_root / "scripted_baseline" / "condition_summary.json").exists()
+    assert not (
+        experiment_root / summary["experiment_id"] / "scripted_baseline"
+    ).exists()
+
+
+def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> None:
+    orchestrator = ExperimentOrchestrator()
+    conditions = [
+        {
+            "name": "rule_based_attacker__agentic_defender",
+            "profiles": {
+                "attacker": "rule_based_attacker",
+                "defender": "agentic_defender",
+                "observer": "agentic_observer",
+                "planner": "scripted_planner",
+                "operator": "scripted_operator",
+                "offline_analysis": "scripted_offline_analyst",
+            },
+        },
+        {
+            "name": "practical_black_box_attacker__agentic_defender",
+            "profiles": {
+                "attacker": "practical_black_box_attacker",
+                "defender": "agentic_defender",
+                "observer": "agentic_observer",
+                "planner": "scripted_planner",
+                "operator": "scripted_operator",
+                "offline_analysis": "scripted_offline_analyst",
+            },
+        },
+    ]
+
+    suite_decoding = orchestrator._suite_decoding_settings(conditions)
+
+    assert "attacker" not in suite_decoding["rule_based_attacker__agentic_defender"]
+    assert (
+        suite_decoding["practical_black_box_attacker__agentic_defender"]["attacker"][
+            "profile_id"
+        ]
+        == "practical_black_box_attacker"
+    )
+
+    orchestrator._current_reproducibility = {
+        "seed": 20260526,
+        "suite_decoding": suite_decoding,
+    }
+    condition_reproducibility = orchestrator._condition_reproducibility(
+        "rule_based_attacker__agentic_defender",
+        conditions[0]["profiles"],
+    )
+
+    assert condition_reproducibility["condition_name"] == (
+        "rule_based_attacker__agentic_defender"
+    )
+    assert "attacker" not in condition_reproducibility["decoding"]
+    assert (
+        "practical_black_box_attacker__agentic_defender"
+        in condition_reproducibility["suite_decoding"]
+    )
 
 
 def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:

@@ -38,6 +38,7 @@ def write_markdown_summary(path: Path, bundle: dict[str, Any]) -> None:
     defender_intervention = metrics.get("defender_intervention", {})
     attacker = metrics.get("attacker", {})
     nominal = metrics.get("nominal", {})
+    operational_cost = metrics.get("operational_cost", {})
     lines = [
         f"# {scenario['scenario_id']}",
         "",
@@ -61,6 +62,7 @@ def write_markdown_summary(path: Path, bundle: dict[str, Any]) -> None:
             f"- Attacker Actions: `{metrics.get('attacker_action_count')}`",
             f"- Attacker Recon Actions: `{metrics.get('attacker_recon_action_count')}`",
             f"- Attacker Time To Impact: `{attacker.get('time_to_impact_sec') if isinstance(attacker, dict) else None}`",
+            f"- Undetected Impact: `{attacker.get('undetected_impact') if isinstance(attacker, dict) else None}`",
             f"- Blue-Team TTD: `{metrics.get('time_to_detection_sec')}`",
             f"- Blue-Team TTR: `{metrics.get('time_to_recognition_sec')}`",
             f"- Observer TTD: `{observer_detection.get('time_to_detection_sec')}`",
@@ -69,6 +71,8 @@ def write_markdown_summary(path: Path, bundle: dict[str, Any]) -> None:
             f"- Defender TTR: `{defender_recognition.get('time_to_recognition_sec')}`",
             f"- Defender TTM: `{defender_intervention.get('time_to_mitigation_sec')}`",
             f"- Contained Before Violation: `{defender_intervention.get('contained_before_safety_violation')}`",
+            f"- Defender Shutdown Actions: `{operational_cost.get('shutdown_action_count')}`",
+            f"- Downtime Timesteps: `{operational_cost.get('downtime_timestep_count')}`",
             f"- Blue-Team TPR: `{metrics.get('true_positive_rate')}`",
             f"- Blue-Team FPR: `{metrics.get('false_positive_rate')}`",
         ]

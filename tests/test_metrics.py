@@ -251,6 +251,8 @@ def test_compute_metrics_reports_attacker_scoring_fields() -> None:
     assert metrics["attacker"]["scenario_expectation_passed"] == 1.0
     assert metrics["attacker"]["caused_safety_violation"] == 1.0
     assert metrics["attacker"]["time_to_impact_sec"] == 2.0
+    assert metrics["attacker"]["undetected_impact"] == 1.0
+    assert metrics["operational_cost"]["downtime_timestep_count"] == 0
     assert metrics["trajectory"]["paired_sequence"] == ["attacker:set_sensor:unknown"]
     assert metrics["system"]["trajectory"] == ["attacker:set_sensor:unknown"]
 
@@ -366,3 +368,40 @@ def test_compute_metrics_exposes_nested_role_blocks() -> None:
     assert metrics["observer"]["detection"]["detection_rate"] == 1.0
     assert metrics["defender"]["intervention"]["mitigation_action_count"] == 1
     assert metrics["system"]["safety_violation_count"] == 0
+
+
+def test_compute_metrics_reports_shutdown_and_downtime_operational_cost() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 7.0},
+            {"STATE_NAME": "SHUTDOWN", "RW_Tank_Level": 600, "elapsed_sec": 8.0},
+            {"STATE_NAME": "SHUTDOWN", "RW_Tank_Level": 600, "elapsed_sec": 8.0},
+            {"STATE_NAME": "SHUTDOWN", "RW_Tank_Level": 600, "elapsed_sec": 9.0},
+        ],
+        "decisions": [],
+        "alerts": [],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 7.0, "action": {"type": "set_sensor"}},
+            {"role": "defender", "time_sec": 8.0, "action": {"type": "hmi_stop"}},
+        ],
+        "passed": True,
+    }
+    scenario = {
+        "suite": "attack",
+        "metadata": {
+            "ground_truth": {
+                "incident_start_time_sec": 7.0,
+                "mitigation_actions": ["hmi_stop"],
+            },
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        },
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["defender_shutdown_action_count"] == 1
+    assert metrics["downtime_timestep_count"] == 2
+    assert metrics["operational_cost"]["defender_action_count"] == 1
+    assert metrics["operational_cost"]["intervention_action_count"] == 1
+    assert metrics["operational_cost"]["shutdown_action_count"] == 1
+    assert metrics["operational_cost"]["downtime_timestep_count"] == 2

@@ -4,6 +4,7 @@ from typing import Any
 
 
 BLUE_TEAM_ALERT_ROLES = {"observer", "defender"}
+SHUTDOWN_ACTION_TYPES = {"hmi_stop", "hmi_estop"}
 
 
 def _as_number(value: Any) -> Any:
@@ -28,6 +29,10 @@ def _relative_time(event_time: float | None, *, attack_start: float | None) -> f
     if event_time is None or attack_start is None:
         return None
     return round(event_time - float(attack_start), 3)
+
+
+def _action_type(item: dict[str, Any]) -> str:
+    return str((item.get("action") or {}).get("type", ""))
 
 
 def _decision_recognition_candidates(
@@ -160,6 +165,30 @@ def _first_safety_violation_time(
             if max_value is not None and value > max_value:
                 return float(time_sec)
     return None
+
+
+def _downtime_timestep_count(
+    observations: list[dict[str, Any]],
+    *,
+    shutdown_time: float | None,
+) -> int:
+    if shutdown_time is None:
+        return 0
+
+    seen_times: set[float] = set()
+    downtime_steps = 0
+    for observation in observations:
+        time_sec = observation.get("elapsed_sec")
+        if time_sec is None:
+            continue
+        sample_time = float(time_sec)
+        if sample_time < float(shutdown_time) or sample_time in seen_times:
+            continue
+        seen_times.add(sample_time)
+        state_name = str(observation.get("STATE_NAME", "")).strip().upper()
+        if state_name and state_name != "RUNNING":
+            downtime_steps += 1
+    return downtime_steps
 
 
 def _count_alerts(
@@ -325,24 +354,31 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         )
     )
     defender_actions = [item for item in actions if item.get("role") == "defender"]
+    defender_intervention_actions = [
+        item
+        for item in defender_actions
+        if attack_start is None
+        or float(item.get("time_sec", 0.0)) >= float(attack_start)
+    ]
+    defender_shutdown_actions = [
+        item
+        for item in defender_intervention_actions
+        if _action_type(item) in SHUTDOWN_ACTION_TYPES
+    ]
     attacker_recon_actions = [
         item
         for item in attacker_actions
-        if str((item.get("action") or {}).get("type")) == "inspect_surface"
+        if _action_type(item) == "inspect_surface"
     ]
     attacker_manipulation_actions = [
         item
         for item in attacker_actions
-        if str((item.get("action") or {}).get("type")) != "inspect_surface"
+        if _action_type(item) != "inspect_surface"
     ]
     mitigation_actions = [
         item
-        for item in defender_actions
-        if str(item.get("action", {}).get("type")) in mitigation_targets
-        and (
-            attack_start is None
-            or float(item.get("time_sec", 0.0)) >= float(attack_start)
-        )
+        for item in defender_intervention_actions
+        if _action_type(item) in mitigation_targets
     ]
     mitigation_time = _first_time(
         mitigation_actions,
@@ -379,6 +415,11 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     safety_bounds = scenario.get("metadata", {}).get("safety_bounds", {})
     safety_total, safety_by_field = _violation_counts(observations, safety_bounds)
     first_safety_violation_time = _first_safety_violation_time(observations, safety_bounds)
+    first_shutdown_time = _first_time(defender_shutdown_actions, lambda _item: True)
+    downtime_timestep_count = _downtime_timestep_count(
+        observations,
+        shutdown_time=first_shutdown_time,
+    )
 
     expected_diagnosis = ground_truth.get("expected_diagnosis")
     diagnosis_accuracy = 0.0
@@ -543,6 +584,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "contained_before_safety_violation": contained_before_violation,
         "decision_correctness": round(decision_correctness, 4),
     }
+    operational_cost_metrics = {
+        "defender_action_count": len(defender_actions),
+        "intervention_action_count": len(defender_intervention_actions),
+        "shutdown_action_count": len(defender_shutdown_actions),
+        "downtime_timestep_count": downtime_timestep_count,
+    }
     system_metrics = {
         "time_to_detection_sec": _relative_time(
             detection_time,
@@ -625,6 +672,8 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             len(attacker_recon_actions) if is_attack_condition else None
         ),
         "defender_action_count": len(defender_actions),
+        "defender_shutdown_action_count": len(defender_shutdown_actions),
+        "downtime_timestep_count": downtime_timestep_count,
         "attacker": attacker_metrics,
         "nominal": nominal_metrics,
         "observer_detection": observer_metrics,
@@ -632,6 +681,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender_detection": defender_detection_metrics,
         "defender_recognition": defender_recognition_metrics,
         "defender_intervention": defender_intervention_metrics,
+        "operational_cost": operational_cost_metrics,
         "observer": observer_role_metrics,
         "defender": defender_role_metrics,
         "system": system_metrics,
