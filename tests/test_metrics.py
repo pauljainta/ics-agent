@@ -258,6 +258,94 @@ def test_compute_metrics_reports_attacker_scoring_fields() -> None:
     assert metrics["system"]["trajectory"] == ["attacker:set_sensor:unknown"]
 
 
+def test_compute_metrics_anchors_attack_start_to_actual_first_attacker_action() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 0.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1300, "elapsed_sec": 2.0},
+        ],
+        "decisions": [],
+        "alerts": [{"role": "observer", "time_sec": 1.5}],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 0.0, "action": {"type": "set_sensor"}},
+        ],
+        "passed": False,
+    }
+    scenario = {
+        "metadata": {
+            "ground_truth": {"incident_start_time_sec": 14.0},
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        }
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["incident_start_time_sec"] == 0.0
+    assert metrics["attacker"]["time_to_first_action_sec"] == 0.0
+    assert metrics["attacker"]["time_to_impact_sec"] == 2.0
+    assert metrics["attacker"]["time_to_physical_impact_sec"] == 2.0
+    assert metrics["true_positive_count"] == 1
+    assert metrics["false_positive_count"] == 0
+
+
+def test_compute_metrics_excludes_pre_attack_violations_from_attacker_success() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1300, "elapsed_sec": 1.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 4.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 610, "elapsed_sec": 5.0},
+        ],
+        "decisions": [],
+        "alerts": [],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 3.0, "action": {"type": "set_sensor"}},
+        ],
+        "passed": True,
+    }
+    scenario = {
+        "metadata": {
+            "ground_truth": {"incident_start_time_sec": 8.0},
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        }
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["incident_start_time_sec"] == 3.0
+    assert metrics["safety_violation_count"] == 0
+    assert metrics["attacker"]["caused_safety_violation"] == 0.0
+    assert metrics["attacker"]["time_to_impact_sec"] is None
+    assert metrics["attacker"]["undetected_impact"] == 0.0
+
+
+def test_compute_metrics_requires_strictly_earlier_mitigation_for_containment() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 0.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 1300, "elapsed_sec": 5.0},
+        ],
+        "decisions": [],
+        "alerts": [],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 0.0, "action": {"type": "set_sensor"}},
+            {"role": "defender", "time_sec": 5.0, "action": {"type": "hmi_stop"}},
+        ],
+        "passed": False,
+    }
+    scenario = {
+        "metadata": {
+            "ground_truth": {"incident_start_time_sec": 7.0, "mitigation_actions": ["hmi_stop"]},
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        }
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["time_to_mitigation_sec"] == 5.0
+    assert metrics["attacker"]["time_to_impact_sec"] == 5.0
+    assert metrics["defender_intervention"]["contained_before_safety_violation"] is False
+
+
 def test_compute_metrics_attacker_success_depends_on_safety_violation_not_passed() -> None:
     bundle = {
         "observations": [

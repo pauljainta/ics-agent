@@ -123,7 +123,10 @@ def _first_event_time(
 
 
 def _violation_counts(
-    observations: list[dict[str, Any]], bounds: dict[str, Any]
+    observations: list[dict[str, Any]],
+    bounds: dict[str, Any],
+    *,
+    attack_start: float | None = None,
 ) -> tuple[int, dict[str, int]]:
     per_field: dict[str, int] = {}
     total = 0
@@ -132,6 +135,10 @@ def _violation_counts(
         min_value = rule.get("min")
         max_value = rule.get("max")
         for observation in observations:
+            if attack_start is not None:
+                elapsed_sec = observation.get("elapsed_sec")
+                if elapsed_sec is not None and float(elapsed_sec) < float(attack_start):
+                    continue
             value = observation.get(field)
             if value is None:
                 continue
@@ -148,10 +155,14 @@ def _violation_counts(
 def _first_safety_violation_time(
     observations: list[dict[str, Any]],
     bounds: dict[str, Any],
+    *,
+    attack_start: float | None = None,
 ) -> float | None:
     for observation in observations:
         time_sec = observation.get("elapsed_sec")
         if time_sec is None:
+            continue
+        if attack_start is not None and float(time_sec) < float(attack_start):
             continue
         for field, rule in bounds.items():
             value = observation.get(field)
@@ -284,12 +295,15 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     incident_type = str(ground_truth.get("incident_type", "")).strip().lower()
     configured_attack_start = ground_truth.get("incident_start_time_sec")
     attacker_actions = [item for item in actions if item.get("role") == "attacker"]
+    actual_attack_start = _first_time(attacker_actions, lambda _item: True)
     is_attack_condition = scenario_suite == "attack" or incident_type in {
         "attack",
         "smoke",
     } or configured_attack_start is not None or bool(attacker_actions)
     is_nominal_condition = scenario_suite == "normal" or incident_type == "nominal"
-    attack_start = configured_attack_start
+    attack_start = actual_attack_start
+    if attack_start is None:
+        attack_start = configured_attack_start
     if attack_start is None and is_attack_condition:
         attack_start = _first_time(actions, lambda item: item.get("role") == "attacker")
 
@@ -413,8 +427,16 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     )
     total_alerts = len(blue_team_alerts)
     safety_bounds = scenario.get("metadata", {}).get("safety_bounds", {})
-    safety_total, safety_by_field = _violation_counts(observations, safety_bounds)
-    first_safety_violation_time = _first_safety_violation_time(observations, safety_bounds)
+    safety_total, safety_by_field = _violation_counts(
+        observations,
+        safety_bounds,
+        attack_start=attack_start if is_attack_condition else None,
+    )
+    first_safety_violation_time = _first_safety_violation_time(
+        observations,
+        safety_bounds,
+        attack_start=attack_start if is_attack_condition else None,
+    )
     first_shutdown_time = _first_time(defender_shutdown_actions, lambda _item: True)
     downtime_timestep_count = _downtime_timestep_count(
         observations,
@@ -472,7 +494,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         mitigation_time is not None
         and (
             first_safety_violation_time is None
-            or mitigation_time <= float(first_safety_violation_time)
+            or mitigation_time < float(first_safety_violation_time)
         )
     )
     trajectory = _trajectory_sequences(actions)
