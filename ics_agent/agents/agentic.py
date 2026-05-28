@@ -185,6 +185,7 @@ class CachedQwenDecisionEngine:
             "risk_flags": context.get("risk_flags", []),
             "incident": context.get("incident"),
             "structured_memory": context.get("structured_memory"),
+            "structured_prior_knowledge": context.get("structured_prior_knowledge"),
             "decision_epoch": context.get("decision_epoch"),
             "role_goal": context.get("role_goal"),
             "role_constraints": context.get("role_constraints", []),
@@ -214,6 +215,7 @@ class CachedQwenDecisionEngine:
             "- summary must stay under 18 words and should not restate the full prompt context.\n"
             "- Avoid extra keys unless they are strictly necessary for the role memory.\n"
             "- Infer any diagnosis from the provided telemetry and history only.\n"
+            "- When structured_prior_knowledge is present, use it as defender-side doctrine grounded in visible evidence, not as hidden truth.\n"
             "- If the evidence is weak, set diagnosis to null instead of guessing.\n"
             "- If you want to hold position, prefer the noop candidate when available.\n\n"
             "Example JSON:\n"
@@ -495,6 +497,13 @@ class AgenticRoleAgent(RoleAgent):
             "black_box",
         }
 
+    def _uses_blue_team_prior_knowledge(self) -> bool:
+        return self.role in {"observer", "defender"} and self.knowledge_mode in {
+            "prior_knowledge",
+            "defender_prior_knowledge",
+            "observer_prior_knowledge",
+        }
+
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
             return []
@@ -695,12 +704,19 @@ class AgenticRoleAgent(RoleAgent):
             recent_action_effects=recent_action_effects,
             incident=incident,
         )
+        structured_prior_knowledge = self._structured_prior_knowledge(
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            incident=incident,
+            structured_memory=structured_memory,
+        )
         candidate_actions = self._candidate_actions(
             context,
             visible_remaining_playbook,
             telemetry_summary=telemetry_summary,
             incident=incident,
             structured_memory=structured_memory,
+            structured_prior_knowledge=structured_prior_knowledge,
         )
         scenario_id = self._visible_scenario_id(scenario)
         process_id = scenario.execution.get("process_id")
@@ -730,6 +746,10 @@ class AgenticRoleAgent(RoleAgent):
                 "Choose only from candidate_actions and prefer short exploit chains over repeated inspection.",
                 "Use structured_memory to decide when to commit, sustain, escalate, or reorient.",
             ]
+        elif structured_prior_knowledge is not None:
+            role_constraints.append(
+                "Use structured_prior_knowledge to connect plant semantics, safety thresholds, and mitigation doctrine to the current evidence."
+            )
         visible_relationship_notes = (
             [] if practical_black_box else telemetry_summary["relationship_notes"]
         )
@@ -757,6 +777,7 @@ class AgenticRoleAgent(RoleAgent):
             "risk_flags": visible_risk_flags,
             "incident": incident,
             "structured_memory": structured_memory,
+            "structured_prior_knowledge": structured_prior_knowledge,
             "decision_epoch": {
                 "observation_count": len(context.get("observations", [])),
                 "action_count": len(context.get("executed_actions", [])),
@@ -982,6 +1003,7 @@ class AgenticRoleAgent(RoleAgent):
         elif self.role == "observer":
             memory = self._observer_memory(
                 context=context,
+                observation=observation,
                 telemetry_summary=telemetry_summary,
             )
         elif self.role == "defender":
@@ -2219,6 +2241,7 @@ class AgenticRoleAgent(RoleAgent):
         self,
         *,
         context: dict[str, Any],
+        observation: dict[str, Any],
         telemetry_summary: dict[str, Any],
     ) -> dict[str, Any]:
         now = float(context.get("time_sec", 0.0))
@@ -2238,7 +2261,10 @@ class AgenticRoleAgent(RoleAgent):
             if now - float(entry.get("last_seen_time_sec", now)) > 20.0:
                 del ledger[token]
 
-        hypotheses = self._observer_hypotheses(telemetry_summary)
+        hypotheses = self._observer_hypotheses(
+            telemetry_summary,
+            observation=observation,
+        )
         top_hypothesis = hypotheses[0] if hypotheses else None
         suspicion_level = "low"
         suspicion_score = 0.0
@@ -2335,15 +2361,22 @@ class AgenticRoleAgent(RoleAgent):
                 "incident_hypothesis": incident.get("type", "none"),
                 "incident_type": incident.get("diagnosis") or incident.get("type"),
                 "severity": int(incident.get("severity", 0) or 0),
+                "attack_surface": incident.get("attack_surface"),
+                "containment_scope": incident.get("containment_scope"),
                 "confidence": confidence,
                 "lifecycle_state": incident.get("status", "none"),
                 "prior_mitigations_attempted": prior_mitigations,
                 "containment_effective": containment_effective,
                 "escalation_required": escalation_required,
+                "post_detection_guidance_active": incident.get(
+                    "post_detection_guidance_active"
+                ),
                 "observer_handoff": observer_handoff,
                 "why_it_matters": self._incident_consequence(incident),
                 "rolling_summary": (
                     f"{incident.get('status', 'none')} {incident.get('type', 'none')}; "
+                    f"surface={incident.get('attack_surface', 'unknown')}; "
+                    f"scope={incident.get('containment_scope', 'monitor_only')}; "
                     f"confidence={confidence}; escalation_required={escalation_required}."
                 ),
             }
@@ -2454,6 +2487,8 @@ class AgenticRoleAgent(RoleAgent):
     def _observer_hypotheses(
         self,
         telemetry_summary: dict[str, Any],
+        *,
+        observation: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         hypotheses: list[dict[str, Any]] = []
         risk_flags = set(telemetry_summary["risk_flags"])
@@ -2549,6 +2584,53 @@ class AgenticRoleAgent(RoleAgent):
                     "attention_target": "telemetry_integrity",
                 }
             )
+        if self._uses_blue_team_prior_knowledge() and observation is not None:
+            matched_patterns = self._matched_blue_team_patterns(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            )
+            for pattern in matched_patterns:
+                diagnosis = self._incident_diagnosis(
+                    incident_type=str(pattern.get("incident_type", ""))
+                )
+                if diagnosis is None:
+                    continue
+                evidence_tokens = list(pattern.get("evidence", []))[:6]
+                candidate = {
+                    "diagnosis": diagnosis,
+                    "confidence": round(float(pattern.get("confidence", 0.0)), 2),
+                    "evidence_tokens": evidence_tokens,
+                    "why_it_matters": pattern.get("why_it_matters"),
+                    "attention_target": pattern.get("attention_target", "plant_overview"),
+                }
+                merged = False
+                for existing in hypotheses:
+                    if existing.get("diagnosis") != diagnosis:
+                        continue
+                    existing["confidence"] = round(
+                        max(
+                            float(existing.get("confidence", 0.0)),
+                            float(candidate["confidence"]),
+                        ),
+                        2,
+                    )
+                    existing["evidence_tokens"] = list(
+                        dict.fromkeys(
+                            list(existing.get("evidence_tokens", []))
+                            + evidence_tokens
+                        )
+                    )[:6]
+                    if not existing.get("why_it_matters"):
+                        existing["why_it_matters"] = candidate["why_it_matters"]
+                    if (
+                        existing.get("attention_target") == "plant_overview"
+                        and candidate["attention_target"] != "plant_overview"
+                    ):
+                        existing["attention_target"] = candidate["attention_target"]
+                    merged = True
+                    break
+                if not merged:
+                    hypotheses.append(candidate)
         hypotheses.sort(
             key=lambda item: (
                 float(item.get("confidence", 0.0)),
@@ -2640,6 +2722,731 @@ class AgenticRoleAgent(RoleAgent):
             "telemetry_anomaly": "Telemetry inconsistency can hide the real process state and delay safe intervention.",
         }
         return mapping.get(incident_type)
+
+    def _structured_prior_knowledge(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        incident: dict[str, Any] | None,
+        structured_memory: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self._uses_blue_team_prior_knowledge():
+            return None
+        guidance_active = self._prior_knowledge_guidance_active(
+            incident=incident,
+            structured_memory=structured_memory,
+        )
+        matched_patterns: list[dict[str, Any]] = []
+        if guidance_active:
+            matched_patterns = self._matched_blue_team_patterns(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                prior_mitigations=list(
+                    structured_memory.get("prior_mitigations_attempted", [])
+                ),
+                containment_effective=structured_memory.get("containment_effective"),
+                incident=incident,
+            )
+        surface_assessment = self._attack_surface_assessment(
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            incident=incident,
+            prior_mitigations=list(
+                structured_memory.get("prior_mitigations_attempted", [])
+            ),
+            containment_effective=structured_memory.get("containment_effective"),
+        )
+        doctrine = self._prior_knowledge_doctrine(
+            matched_patterns=matched_patterns,
+            incident=incident,
+            structured_memory=structured_memory,
+        )
+        return {
+            "asset_semantics": {
+                "RW_Tank_Level": "Raw-water inventory for WT-P1; low-low and high-high bands are safety relevant.",
+                "P2_Selected": "Process 2 manual-control enable; unexpected activation expands the dosing attack surface.",
+                "ChemTreat_*_Valve_Sts": "Manual dosing path indicators; open valves plus falling tank levels imply active chemical movement.",
+            },
+            "safety_thresholds": {
+                "RW_Tank_Level_low_band": 450,
+                "RW_Tank_Level_high_high_band": 1180,
+            },
+            "alarm_meanings": {
+                "Alarm_RW_Tank_LL": "Low-low raw-water protection breach; controlled stop is usually justified.",
+                "Alarm_RW_Tank_HH": "High-high raw-water condition; if the plant is still driving it, immediate containment may be required.",
+            },
+            "attack_priors": [
+                "Unauthorized Process 2 activation with manual valve activity is suspicious.",
+                "Falling chemical inventory during unplanned Process 2 use is a strong containment trigger.",
+                "Abrupt sensor jumps or command-status mismatch can indicate telemetry integrity loss.",
+            ],
+            "matched_patterns": matched_patterns[:3],
+            "post_detection_guidance_active": guidance_active,
+            "attack_surface_assessment": surface_assessment,
+            "containment_history": {
+                "prior_mitigations_attempted": list(
+                    structured_memory.get("prior_mitigations_attempted", [])
+                )[-4:],
+                "containment_effective": structured_memory.get("containment_effective"),
+                "escalation_required": structured_memory.get("escalation_required"),
+            },
+            "current_doctrine": doctrine,
+        }
+
+    def _matched_blue_team_patterns(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        prior_mitigations: list[str] | None = None,
+        containment_effective: bool | None = None,
+        incident: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        patterns: list[dict[str, Any]] = []
+        for pattern in (
+            self._process2_pattern(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                prior_mitigations=prior_mitigations or [],
+                containment_effective=containment_effective,
+                incident=incident,
+            ),
+            self._raw_water_low_pattern(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            ),
+            self._raw_water_overflow_pattern(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            ),
+            self._telemetry_anomaly_pattern(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            ),
+        ):
+            if pattern is not None:
+                patterns.append(pattern)
+        patterns.sort(
+            key=lambda item: (
+                self._pattern_urgency_rank(str(item.get("urgency", "monitor"))),
+                int(item.get("severity", 0) or 0),
+                float(item.get("confidence", 0.0) or 0.0),
+                str(item.get("id", "")),
+            ),
+            reverse=True,
+        )
+        return patterns
+
+    def _attack_surface_assessment(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        incident: dict[str, Any] | None,
+        prior_mitigations: list[str] | None = None,
+        containment_effective: bool | None = None,
+    ) -> dict[str, Any]:
+        incident_type = str((incident or {}).get("type", "none"))
+        matched_patterns = self._matched_blue_team_patterns(
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            prior_mitigations=prior_mitigations,
+            containment_effective=containment_effective,
+            incident=incident,
+        )
+        selected_pattern = next(
+            (
+                pattern
+                for pattern in matched_patterns
+                if str(pattern.get("incident_type", "none")) == incident_type
+            ),
+            matched_patterns[0] if matched_patterns else None,
+        )
+        if selected_pattern is not None:
+            return {
+                "attack_surface": str(
+                    selected_pattern.get("attack_surface", "unknown")
+                ),
+                "containment_scope": str(
+                    selected_pattern.get("containment_scope", "monitor_only")
+                ),
+                "preferred_action": selected_pattern.get("preferred_action"),
+                "fallback_action": selected_pattern.get("fallback_action"),
+                "confidence": round(
+                    float(selected_pattern.get("confidence", 0.0) or 0.0), 2
+                ),
+                "evidence": list(selected_pattern.get("evidence", []))[:6],
+                "why_it_matters": selected_pattern.get("why_it_matters"),
+                "surface_rationale": selected_pattern.get(
+                    "surface_rationale", selected_pattern.get("why_it_matters")
+                ),
+            }
+
+        fallback = {
+            "attack_surface": "unknown",
+            "containment_scope": "monitor_only",
+            "preferred_action": None,
+            "fallback_action": None,
+            "confidence": 0.0,
+            "evidence": [],
+            "why_it_matters": self._incident_consequence(incident or {}),
+            "surface_rationale": None,
+        }
+        if incident_type == "process2_manual_dosing":
+            fallback.update(
+                {
+                    "attack_surface": "process2_manual_path",
+                    "containment_scope": "targeted_isolation",
+                    "preferred_action": "select_process",
+                    "confidence": 0.4,
+                }
+            )
+        elif incident_type in {"raw_water_low_protection", "raw_water_overflow"}:
+            fallback.update(
+                {
+                    "attack_surface": "raw_water_process_path",
+                    "containment_scope": "broader_containment",
+                    "preferred_action": "hmi_stop",
+                    "confidence": 0.4,
+                }
+            )
+        elif incident_type == "telemetry_anomaly":
+            fallback.update(
+                {
+                    "attack_surface": "telemetry_integrity",
+                    "containment_scope": "monitor_only",
+                    "confidence": 0.35,
+                }
+            )
+        return fallback
+
+    def _prior_knowledge_guidance_active(
+        self,
+        *,
+        incident: dict[str, Any] | None,
+        structured_memory: dict[str, Any],
+    ) -> bool:
+        if not self._uses_blue_team_prior_knowledge():
+            return False
+        if self.role != "defender":
+            return True
+        incident_payload = dict(incident or {})
+        incident_type = str(incident_payload.get("type", "none"))
+        if incident_type == "none":
+            return False
+        if str(incident_payload.get("status", "none")) in {"confirmed", "containing"}:
+            return True
+        return str(structured_memory.get("lifecycle_state", "none")) in {
+            "confirmed",
+            "containing",
+        }
+
+    def _process2_pattern(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        prior_mitigations: list[str],
+        containment_effective: bool | None,
+        incident: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        risk_flags = set(telemetry_summary["risk_flags"])
+        if "planned_process2_operation" in relationship_notes:
+            return None
+        process2_selected = "process2_selected" in relationship_notes
+        manual_dosing_active = "process2_manual_dosing_active" in relationship_notes
+        depleting = sorted(
+            flag for flag in risk_flags if str(flag).endswith("_depleting")
+        )
+        if not (process2_selected or manual_dosing_active or depleting):
+            return None
+        severity = 2 if process2_selected else 1
+        if manual_dosing_active:
+            severity = max(severity, 3)
+        if depleting:
+            severity = max(severity, 4 if len(depleting) >= 2 else 3)
+        if containment_effective is False and (manual_dosing_active or depleting):
+            severity = max(severity, 4)
+        broader_containment = False
+        if containment_effective is False and (manual_dosing_active or depleting):
+            broader_containment = True
+        if len(depleting) >= 2 and manual_dosing_active:
+            broader_containment = True
+        preferred_action = "select_process"
+        fallback_action = "hmi_stop" if manual_dosing_active or depleting else None
+        if (
+            broader_containment
+            or (
+                "select_process:off" in prior_mitigations
+                and (manual_dosing_active or depleting)
+            )
+        ):
+            preferred_action = "hmi_stop"
+            fallback_action = "select_process"
+        urgency = "monitor"
+        if preferred_action == "hmi_stop" or len(depleting) >= 2:
+            urgency = "immediate"
+        elif manual_dosing_active or depleting:
+            urgency = "prompt"
+        confidence = 0.48
+        confidence += 0.1 if process2_selected else 0.0
+        confidence += 0.15 if manual_dosing_active else 0.0
+        confidence += 0.08 * min(len(depleting), 2)
+        if incident and str((incident or {}).get("type")) == "process2_manual_dosing":
+            confidence += 0.06
+        evidence = []
+        if process2_selected:
+            evidence.append("process2_selected")
+        if manual_dosing_active:
+            evidence.append("process2_manual_dosing_active")
+        evidence.extend(depleting[:3])
+        containment_scope = (
+            "broader_containment"
+            if preferred_action == "hmi_stop"
+            else "targeted_isolation"
+        )
+        return {
+            "id": "process2_dosing_abuse",
+            "incident_type": "process2_manual_dosing",
+            "severity": severity,
+            "confidence": round(min(0.97, confidence), 2),
+            "urgency": urgency,
+            "preferred_action": preferred_action,
+            "fallback_action": fallback_action,
+            "attack_surface": "process2_manual_path",
+            "containment_scope": containment_scope,
+            "evidence": evidence,
+            "why_it_matters": "Unauthorized Process 2 use can drain chemical inventory and sustain unsafe dosing.",
+            "surface_rationale": (
+                "The visible evidence remains localized to the Process 2 manual-dosing path, so deselection is the least disruptive effective isolation."
+                if containment_scope == "targeted_isolation"
+                else "The Process 2 path is still active after prior isolation or across multiple chemical branches, so plant-wide containment is now justified."
+            ),
+            "attention_target": "WT-P2_manual_path",
+        }
+
+    def _raw_water_low_pattern(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        risk_flags = set(telemetry_summary["risk_flags"])
+        active_alarms = set(telemetry_summary["active_alarms"])
+        ll_alarm = "Alarm_RW_Tank_LL" in active_alarms
+        rw_level = self._coerce_number(observation.get("RW_Tank_Level"))
+        low_band = rw_level is not None and rw_level <= 450.0
+        abrupt_change = any(
+            str(note).startswith("abrupt_change:RW_Tank_Level")
+            for note in relationship_notes
+        )
+        command_divergence = "command_status_divergence" in risk_flags
+        pump_running = self._is_active_flag(observation.get("RW_Pump_Sts"))
+        if (
+            "planned_refill_response" in relationship_notes
+            and not ll_alarm
+            and not command_divergence
+            and not abrupt_change
+        ):
+            return None
+        if not (
+            ll_alarm
+            or low_band
+            or "raw_water_protection_risk" in risk_flags
+            or "raw_water_low_band" in risk_flags
+        ):
+            return None
+        attack_surface = (
+            "raw_water_telemetry_path"
+            if command_divergence or abrupt_change
+            else "raw_water_process_path"
+        )
+        severity = 3 if pump_running or ll_alarm else 2
+        if ll_alarm and (command_divergence or abrupt_change):
+            severity = max(severity, 4)
+        if rw_level is not None and rw_level <= 410.0 and pump_running:
+            severity = max(severity, 4)
+        urgency = "immediate" if severity >= 4 or (pump_running and ll_alarm) else "prompt"
+        confidence = 0.52
+        confidence += 0.16 if ll_alarm else 0.0
+        confidence += 0.08 if low_band else 0.0
+        confidence += 0.08 if pump_running else 0.0
+        confidence += 0.06 if command_divergence or abrupt_change else 0.0
+        evidence = []
+        if ll_alarm:
+            evidence.append("Alarm_RW_Tank_LL")
+        if low_band:
+            evidence.append("raw_water_low_band")
+        if pump_running:
+            evidence.append("RW_Pump_Sts=1")
+        if command_divergence:
+            evidence.append("command_status_divergence")
+        if abrupt_change:
+            evidence.append("abrupt_change:RW_Tank_Level")
+        return {
+            "id": "raw_water_low_protection",
+            "incident_type": "raw_water_low_protection",
+            "severity": severity,
+            "confidence": round(min(0.97, confidence), 2),
+            "urgency": urgency,
+            "preferred_action": "hmi_stop",
+            "fallback_action": None,
+            "attack_surface": attack_surface,
+            "containment_scope": "broader_containment",
+            "evidence": evidence[:5],
+            "why_it_matters": "Low raw-water protection can force unsafe permissives, refill logic, or shutdown transitions.",
+            "surface_rationale": (
+                "The raw-water signal path itself appears compromised, so plant-wide containment is safer than a narrow isolation."
+                if attack_surface == "raw_water_telemetry_path"
+                else "The unsafe condition is on the raw-water operating surface, so a controlled plant stop is the correct broad containment."
+            ),
+            "attention_target": "WT-P1_raw_water",
+        }
+
+    def _raw_water_overflow_pattern(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        risk_flags = set(telemetry_summary["risk_flags"])
+        active_alarms = set(telemetry_summary["active_alarms"])
+        hh_alarm = "Alarm_RW_Tank_HH" in active_alarms
+        rw_level = self._coerce_number(observation.get("RW_Tank_Level"))
+        high_band = rw_level is not None and rw_level >= 1180.0
+        abrupt_change = any(
+            str(note).startswith("abrupt_change:RW_Tank_Level")
+            for note in relationship_notes
+        )
+        command_divergence = "command_status_divergence" in risk_flags
+        pump_running = self._is_active_flag(observation.get("RW_Pump_Sts"))
+        if not (
+            hh_alarm
+            or high_band
+            or "overflow_risk" in risk_flags
+            or "raw_water_high_high_band" in risk_flags
+        ):
+            return None
+        attack_surface = (
+            "raw_water_telemetry_path"
+            if command_divergence or abrupt_change
+            else "raw_water_process_path"
+        )
+        severity = 3 if pump_running else 2
+        if hh_alarm and pump_running and (command_divergence or abrupt_change):
+            severity = max(severity, 4)
+        if rw_level is not None and rw_level >= 1220.0 and pump_running:
+            severity = max(severity, 4)
+        urgency = "immediate" if severity >= 4 else "prompt"
+        preferred_action = "hmi_estop" if severity >= 4 else "hmi_stop"
+        fallback_action = "hmi_stop" if preferred_action == "hmi_estop" else None
+        confidence = 0.54
+        confidence += 0.18 if hh_alarm else 0.0
+        confidence += 0.08 if high_band else 0.0
+        confidence += 0.08 if pump_running else 0.0
+        confidence += 0.06 if command_divergence or abrupt_change else 0.0
+        evidence = []
+        if hh_alarm:
+            evidence.append("Alarm_RW_Tank_HH")
+        if high_band:
+            evidence.append("raw_water_high_high_band")
+        if pump_running:
+            evidence.append("RW_Pump_Sts=1")
+        if command_divergence:
+            evidence.append("command_status_divergence")
+        if abrupt_change:
+            evidence.append("abrupt_change:RW_Tank_Level")
+        return {
+            "id": "raw_water_high_high_or_overflow",
+            "incident_type": "raw_water_overflow",
+            "severity": severity,
+            "confidence": round(min(0.97, confidence), 2),
+            "urgency": urgency,
+            "preferred_action": preferred_action,
+            "fallback_action": fallback_action,
+            "attack_surface": attack_surface,
+            "containment_scope": "broader_containment",
+            "evidence": evidence[:5],
+            "why_it_matters": "High-high raw-water behavior can outrun a normal stop and become an immediate safety issue.",
+            "surface_rationale": "The raw-water telemetry/control surface is already in a high-high state, so targeted isolation is insufficient.",
+            "attention_target": "WT-P1_high_high",
+        }
+
+    def _telemetry_anomaly_pattern(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        risk_flags = set(telemetry_summary["risk_flags"])
+        active_alarms = set(telemetry_summary["active_alarms"])
+        abrupt_change = any(
+            str(note).startswith("abrupt_change:")
+            for note in relationship_notes
+        )
+        command_divergence = "command_status_divergence" in risk_flags
+        process2_signals = (
+            "process2_selected" in relationship_notes
+            or "process2_manual_dosing_active" in relationship_notes
+            or any(str(flag).endswith("_depleting") for flag in risk_flags)
+        )
+        if not (
+            abrupt_change
+            or command_divergence
+            or "sensor_or_process_jump" in risk_flags
+        ):
+            return None
+        severity = 2 if active_alarms or command_divergence else 1
+        if active_alarms and command_divergence:
+            severity = 3
+        confidence = 0.46
+        confidence += 0.12 if command_divergence else 0.0
+        confidence += 0.1 if abrupt_change else 0.0
+        confidence += 0.08 if active_alarms else 0.0
+        attack_surface = (
+            "process2_manual_path"
+            if process2_signals and not active_alarms
+            else "telemetry_integrity"
+        )
+        containment_scope = (
+            "targeted_isolation"
+            if attack_surface == "process2_manual_path"
+            else "broader_containment"
+            if active_alarms or severity >= 3
+            else "monitor_only"
+        )
+        preferred_action = None
+        fallback_action = None
+        if containment_scope == "targeted_isolation":
+            preferred_action = "select_process"
+            fallback_action = "hmi_stop" if command_divergence else None
+        elif active_alarms or severity >= 3:
+            preferred_action = "hmi_stop"
+        urgency = (
+            "prompt"
+            if preferred_action is not None or containment_scope == "broader_containment"
+            else "monitor"
+        )
+        evidence = []
+        if command_divergence:
+            evidence.append("command_status_divergence")
+        if abrupt_change:
+            evidence.append("sensor_or_process_jump")
+        if process2_signals:
+            if "process2_selected" in relationship_notes:
+                evidence.append("process2_selected")
+            if "process2_manual_dosing_active" in relationship_notes:
+                evidence.append("process2_manual_dosing_active")
+        evidence.extend(sorted(active_alarms)[:2])
+        return {
+            "id": "telemetry_integrity_anomaly",
+            "incident_type": "telemetry_anomaly",
+            "severity": severity,
+            "confidence": round(min(0.97, confidence), 2),
+            "urgency": urgency,
+            "preferred_action": preferred_action,
+            "fallback_action": fallback_action,
+            "attack_surface": attack_surface,
+            "containment_scope": containment_scope,
+            "evidence": evidence[:5],
+            "why_it_matters": "Telemetry inconsistency can hide the real process state and delay safe intervention.",
+            "surface_rationale": (
+                "The anomaly is co-located with Process 2 evidence, so targeted deselection is the first containment step."
+                if containment_scope == "targeted_isolation"
+                else "The telemetry anomaly spans a plant-facing safety surface, so broad containment is safer than narrow isolation."
+                if containment_scope == "broader_containment"
+                else "The anomaly is visible but not yet severe enough to justify intervention before more evidence arrives."
+            ),
+            "attention_target": "telemetry_integrity",
+        }
+
+    def _prior_knowledge_doctrine(
+        self,
+        *,
+        matched_patterns: list[dict[str, Any]],
+        incident: dict[str, Any] | None,
+        structured_memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not matched_patterns:
+            return {
+                "focus_pattern": None,
+                "primary_action": (incident or {}).get("recommended_action"),
+                "secondary_action": None,
+                "attack_surface": (incident or {}).get("attack_surface"),
+                "containment_scope": (incident or {}).get(
+                    "containment_scope", "monitor_only"
+                ),
+                "holding_is_valid_only_when": "evidence_is_weak_and_no_new_high-risk_pattern_is_present",
+            }
+        top_pattern = matched_patterns[0]
+        return {
+            "focus_pattern": top_pattern.get("id"),
+            "primary_action": top_pattern.get("preferred_action"),
+            "secondary_action": top_pattern.get("fallback_action"),
+            "attack_surface": top_pattern.get("attack_surface"),
+            "containment_scope": top_pattern.get("containment_scope"),
+            "escalate_when": [
+                "containment_has_already_been_attempted_but_the_pattern_persists",
+                "matched_pattern_urgency_is_immediate",
+                "observer_or_defender_memory_marks_escalation_required",
+            ],
+            "holding_is_valid_only_when": (
+                "containment_is_already_effective"
+                if structured_memory.get("containment_effective") is True
+                else "matched_pattern_urgency_is_monitor_and_evidence_is_not_worsening"
+            ),
+        }
+
+    def _rank_defender_candidates_with_prior_knowledge(
+        self,
+        *,
+        candidates: list[dict[str, Any]],
+        incident: dict[str, Any] | None,
+        structured_memory: dict[str, Any],
+        structured_prior_knowledge: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not candidates:
+            return []
+        post_detection_guidance_active = bool(
+            (structured_prior_knowledge or {}).get("post_detection_guidance_active")
+        )
+        if not post_detection_guidance_active:
+            return candidates
+        matched_patterns = list(
+            (structured_prior_knowledge or {}).get("matched_patterns", [])
+        )
+        top_pattern = matched_patterns[0] if matched_patterns else {}
+        surface_assessment = dict(
+            (structured_prior_knowledge or {}).get("attack_surface_assessment") or {}
+        )
+        urgency = str(top_pattern.get("urgency", "monitor"))
+        preferred_action = str(
+            surface_assessment.get("preferred_action")
+            or top_pattern.get("preferred_action")
+            or (incident or {}).get("recommended_action")
+            or ""
+        )
+        secondary_action = str(
+            surface_assessment.get("fallback_action")
+            or top_pattern.get("fallback_action")
+            or ""
+        )
+        incident_type = str((incident or {}).get("type", "none"))
+        escalation_required = bool(structured_memory.get("escalation_required"))
+        containment_effective = structured_memory.get("containment_effective")
+        attack_surface = str(
+            surface_assessment.get("attack_surface")
+            or top_pattern.get("attack_surface")
+            or (incident or {}).get("attack_surface")
+            or "unknown"
+        )
+        containment_scope = str(
+            surface_assessment.get("containment_scope")
+            or top_pattern.get("containment_scope")
+            or (incident or {}).get("containment_scope")
+            or "monitor_only"
+        )
+        existing_action_types = {
+            str((normalize_action(item.get("action")) or {}).get("type", ""))
+            for item in candidates
+        }
+        if (
+            preferred_action in {"hmi_stop", "hmi_estop"}
+            and preferred_action not in existing_action_types
+            and preferred_action in set(self.profile.get("allowed_action_types", []))
+        ):
+            synthetic_action = {"type": preferred_action, "process_id": "WT-P1"}
+            candidates = list(candidates) + [
+                {
+                    "id": action_key(synthetic_action),
+                    "summary": (
+                        "Escalate from Process 2 isolation to a controlled stop because the suspicious dosing pattern persisted."
+                        if preferred_action == "hmi_stop"
+                        else "Use estop because the matched safety pattern is immediate and a normal stop is too slow."
+                    ),
+                    "action": synthetic_action,
+                    "source": "prior_knowledge_doctrine",
+                    "priority": 88 if preferred_action == "hmi_stop" else 96,
+                    "guardrail_reason": "prior_knowledge_doctrine",
+                }
+            ]
+        ranked: list[dict[str, Any]] = []
+        for item in candidates:
+            updated = dict(item)
+            action = normalize_action(item.get("action"))
+            if action is None:
+                ranked.append(updated)
+                continue
+            score = int(item.get("priority", 0) or 0)
+            action_type = str(action.get("type", ""))
+            if preferred_action and action_type == preferred_action:
+                score += 40
+            if secondary_action and action_type == secondary_action:
+                score += 18
+            if containment_scope == "targeted_isolation":
+                if action_type == "select_process" and not action.get("active", True):
+                    score += 26
+                if action_type in {"hmi_stop", "hmi_estop"} and not escalation_required:
+                    score -= 18
+            elif containment_scope == "broader_containment":
+                if action_type in {"hmi_stop", "hmi_estop"}:
+                    score += 18
+                if (
+                    attack_surface == "process2_manual_path"
+                    and action_type == "select_process"
+                    and preferred_action in {"hmi_stop", "hmi_estop"}
+                ):
+                    score -= 10
+            elif containment_scope == "monitor_only":
+                if action_type in {"hmi_stop", "hmi_estop", "select_process"}:
+                    score -= 8
+            if incident_type == "process2_manual_dosing":
+                if action_type == "select_process" and not action.get("active", True):
+                    score += 18
+                    if escalation_required and preferred_action == "hmi_stop":
+                        score -= 16
+                if escalation_required and action_type == "hmi_stop":
+                    score += 24
+            if incident_type == "raw_water_low_protection" and action_type == "hmi_stop":
+                score += 20
+            if incident_type == "raw_water_overflow":
+                if action_type == "hmi_estop" and int(top_pattern.get("severity", 0) or 0) >= 4:
+                    score += 20
+                elif action_type == "hmi_stop":
+                    score += 12
+            if incident_type == "telemetry_anomaly" and action_type == "hmi_stop":
+                score += 10
+            if action_type == "noop":
+                if urgency == "immediate":
+                    score -= 40
+                elif urgency == "prompt":
+                    score -= 22
+                if containment_effective is True:
+                    score += 14
+            updated["priority"] = score
+            ranked.append(updated)
+        return sorted(
+            ranked,
+            key=lambda item: (
+                int(item.get("priority", 0) or 0),
+                str(item.get("source", "")),
+                item["id"],
+            ),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _pattern_urgency_rank(value: str) -> int:
+        return {
+            "monitor": 1,
+            "prompt": 2,
+            "immediate": 3,
+        }.get(str(value), 0)
 
     def _canonical_action_descriptor(
         self,
@@ -2745,12 +3552,18 @@ class AgenticRoleAgent(RoleAgent):
         now = float(context["time_sec"])
         recent_alerts = context.get("alerts", [])[-self.alert_window :]
         recent_actions = context.get("executed_actions", [])[-self.action_window :]
+        prior_mitigations = [
+            self._canonical_action_descriptor(item.get("action"))
+            for item in recent_actions
+            if item.get("role") == "defender" and item.get("action") is not None
+        ][-4:]
         diagnoses = [
             str(item.get("diagnosis"))
             for item in context.get("decisions", [])[-self.decision_window :]
             if item.get("role") in {"observer", "defender"} and item.get("diagnosis")
         ]
         incident_type = self._classify_incident(
+            observation=context.get("observation", {}),
             risk_flags=telemetry_summary["risk_flags"],
             active_alarms=telemetry_summary["active_alarms"],
             relationship_notes=telemetry_summary["relationship_notes"],
@@ -2771,6 +3584,9 @@ class AgenticRoleAgent(RoleAgent):
                 "observer_alert_count": 0,
                 "attacker_action_count": 0,
                 "defender_action_count": 0,
+                "attack_surface": "unknown",
+                "containment_scope": "monitor_only",
+                "post_detection_guidance_active": False,
                 "new_evidence": [],
                 "evidence_tokens": [],
             },
@@ -2785,6 +3601,9 @@ class AgenticRoleAgent(RoleAgent):
                         "recommended_action": None,
                         "new_evidence": [],
                         "evidence_tokens": [],
+                        "attack_surface": "unknown",
+                        "containment_scope": "monitor_only",
+                        "post_detection_guidance_active": False,
                         "last_seen_time_sec": now,
                     }
                 )
@@ -2805,6 +3624,9 @@ class AgenticRoleAgent(RoleAgent):
                 "observer_alert_count": 0,
                 "attacker_action_count": 0,
                 "defender_action_count": 0,
+                "attack_surface": "unknown",
+                "containment_scope": "monitor_only",
+                "post_detection_guidance_active": False,
                 "new_evidence": [],
                 "evidence_tokens": [],
             }
@@ -2849,6 +3671,26 @@ class AgenticRoleAgent(RoleAgent):
             severity=severity,
             observation=context.get("observation", {}),
             telemetry_summary=telemetry_summary,
+            prior_state=state,
+            defender_action_count=defender_action_count,
+            prior_mitigations=prior_mitigations,
+        )
+        containment_effective = self._containment_effective(
+            incident={"type": incident_type},
+            telemetry_summary=telemetry_summary,
+            observation=context.get("observation", {}),
+            prior_mitigations=prior_mitigations,
+        )
+        surface_assessment = self._attack_surface_assessment(
+            observation=context.get("observation", {}),
+            telemetry_summary=telemetry_summary,
+            incident={
+                "type": incident_type,
+                "severity": severity,
+                "recommended_action": recommended_action,
+            },
+            prior_mitigations=prior_mitigations,
+            containment_effective=containment_effective,
         )
         evidence_tokens = self._incident_evidence_tokens(
             incident_type=incident_type,
@@ -2895,6 +3737,14 @@ class AgenticRoleAgent(RoleAgent):
                 "observer_alert_count": observer_alert_count,
                 "attacker_action_count": attacker_action_count,
                 "defender_action_count": defender_action_count,
+                "attack_surface": surface_assessment.get("attack_surface", "unknown"),
+                "containment_scope": surface_assessment.get(
+                    "containment_scope", "monitor_only"
+                ),
+                "post_detection_guidance_active": self._prior_knowledge_guidance_active(
+                    incident={"type": incident_type, "status": status},
+                    structured_memory={"lifecycle_state": status},
+                ),
                 "new_evidence": new_evidence,
                 "evidence_tokens": sorted(evidence_tokens),
             }
@@ -2902,6 +3752,41 @@ class AgenticRoleAgent(RoleAgent):
         return dict(state)
 
     def _classify_incident(
+        self,
+        *,
+        observation: dict[str, Any],
+        risk_flags: list[str],
+        active_alarms: list[str],
+        relationship_notes: list[str],
+        diagnoses: list[str],
+    ) -> str:
+        baseline_incident_type = self._baseline_incident_type(
+            risk_flags=risk_flags,
+            active_alarms=active_alarms,
+            relationship_notes=relationship_notes,
+            diagnoses=diagnoses,
+        )
+        if baseline_incident_type == "none":
+            return "none"
+        if self._uses_blue_team_prior_knowledge():
+            matched_patterns = self._matched_blue_team_patterns(
+                observation=observation,
+                telemetry_summary={
+                    "risk_flags": risk_flags,
+                    "active_alarms": active_alarms,
+                    "relationship_notes": relationship_notes,
+                },
+            )
+            if matched_patterns:
+                top_pattern = matched_patterns[0]
+                if (
+                    float(top_pattern.get("confidence", 0.0) or 0.0) >= 0.55
+                    or str(top_pattern.get("urgency")) in {"prompt", "immediate"}
+                ):
+                    return str(top_pattern.get("incident_type", "none"))
+        return baseline_incident_type
+
+    def _baseline_incident_type(
         self,
         *,
         risk_flags: list[str],
@@ -2955,6 +3840,13 @@ class AgenticRoleAgent(RoleAgent):
         observation: dict[str, Any],
         telemetry_summary: dict[str, Any],
     ) -> int:
+        if self._uses_blue_team_prior_knowledge() and incident_type != "none":
+            for pattern in self._matched_blue_team_patterns(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            ):
+                if str(pattern.get("incident_type")) == incident_type:
+                    return int(pattern.get("severity", 0) or 0)
         risk_flags = telemetry_summary["risk_flags"]
         relationship_notes = telemetry_summary["relationship_notes"]
         pump_running = self._is_active_flag(observation.get("RW_Pump_Sts"))
@@ -2993,7 +3885,32 @@ class AgenticRoleAgent(RoleAgent):
         severity: int,
         observation: dict[str, Any],
         telemetry_summary: dict[str, Any],
+        prior_state: dict[str, Any] | None = None,
+        defender_action_count: int = 0,
+        prior_mitigations: list[str] | None = None,
     ) -> str | None:
+        if self._uses_blue_team_prior_knowledge() and incident_type != "none":
+            containment_effective = self._containment_effective(
+                incident={"type": incident_type},
+                telemetry_summary=telemetry_summary,
+                observation=observation,
+                prior_mitigations=list(prior_mitigations or []),
+            )
+            surface_assessment = self._attack_surface_assessment(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                incident={
+                    "type": incident_type,
+                    "severity": severity,
+                    "defender_action_count": defender_action_count,
+                    **dict(prior_state or {}),
+                },
+                prior_mitigations=list(prior_mitigations or []),
+                containment_effective=containment_effective,
+            )
+            preferred_action = str(surface_assessment.get("preferred_action") or "")
+            if preferred_action:
+                return preferred_action
         if incident_type == "process2_manual_dosing":
             if severity >= 3:
                 return "select_process"
@@ -3297,6 +4214,7 @@ class AgenticRoleAgent(RoleAgent):
         telemetry_summary: dict[str, Any],
         incident: dict[str, Any] | None,
         structured_memory: dict[str, Any],
+        structured_prior_knowledge: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
         if self.role == "operator":
             return self._strict_playbook_candidates(
@@ -3325,7 +4243,7 @@ class AgenticRoleAgent(RoleAgent):
                 telemetry_summary=telemetry_summary,
                 structured_memory=structured_memory,
             )
-        return build_candidate_actions(
+        candidates = build_candidate_actions(
             role=self.role,
             allowed_action_types=list(self.profile.get("allowed_action_types", [])),
             scenario=context["scenario"],
@@ -3339,6 +4257,14 @@ class AgenticRoleAgent(RoleAgent):
             now=float(context["time_sec"]),
             playbook_anticipation_sec=self.playbook_anticipation_sec,
         )
+        if self.role == "defender" and structured_prior_knowledge is not None:
+            return self._rank_defender_candidates_with_prior_knowledge(
+                candidates=candidates,
+                incident=incident,
+                structured_memory=structured_memory,
+                structured_prior_knowledge=structured_prior_knowledge,
+            )
+        return candidates
 
     def _adaptive_attacker_candidates(
         self,
@@ -4674,6 +5600,23 @@ class AgenticRoleAgent(RoleAgent):
             decision_type = "note"
             action = None
 
+        if (
+            self.role == "defender"
+            and self._uses_blue_team_prior_knowledge()
+            and action is not None
+            and not bool(
+                (context.get("structured_prior_knowledge") or {}).get(
+                    "post_detection_guidance_active"
+                )
+            )
+        ):
+            action = None
+            decision_type = "note"
+            if not summary:
+                summary = (
+                    "Hold intervention until the baseline detector confirms the incident."
+                )
+
         if self._planned_refill_guardrail_active(context):
             if decision_type == "alert":
                 decision_type = "note"
@@ -4822,10 +5765,26 @@ class AgenticRoleAgent(RoleAgent):
         *,
         incident: dict[str, Any],
     ) -> bool:
+        structured_memory = dict(context.get("structured_memory") or {})
+        structured_prior_knowledge = dict(
+            context.get("structured_prior_knowledge") or {}
+        )
+        matched_patterns = list(structured_prior_knowledge.get("matched_patterns", []))
         if str(incident.get("type", "none")) == "none":
             return False
         if str(incident.get("recommended_action") or "").strip() == "":
             return False
+        if (
+            self._uses_blue_team_prior_knowledge()
+            and not bool(
+                structured_prior_knowledge.get("post_detection_guidance_active")
+            )
+        ):
+            return False
+        if structured_memory.get("escalation_required"):
+            return True
+        if matched_patterns and str(matched_patterns[0].get("urgency")) == "immediate":
+            return True
         if int(incident.get("severity", 0) or 0) >= 4:
             return True
         if str(incident.get("status")) in {"confirmed", "containing"}:
@@ -5030,6 +5989,8 @@ class AgenticRoleAgent(RoleAgent):
     def _reasoning_evidence(self, context: dict[str, Any]) -> dict[str, Any]:
         structured_memory = context.get("structured_memory") or {}
         defender_awareness = structured_memory.get("defender_intervention_awareness") or {}
+        structured_prior_knowledge = context.get("structured_prior_knowledge") or {}
+        matched_patterns = list(structured_prior_knowledge.get("matched_patterns", []))
         defender_action_count = sum(
             1 for item in context.get("recent_actions", []) if item.get("role") == "defender"
         )
@@ -5067,6 +6028,13 @@ class AgenticRoleAgent(RoleAgent):
             or structured_memory.get("lifecycle_state")
             or structured_memory.get("current_phase")
             or structured_memory.get("current_tactic_phase"),
+            "top_pattern_id": matched_patterns[0].get("id") if matched_patterns else None,
+            "top_pattern_urgency": matched_patterns[0].get("urgency")
+            if matched_patterns
+            else None,
+            "immediate_pattern_count": sum(
+                1 for item in matched_patterns if item.get("urgency") == "immediate"
+            ),
         }
 
     def _has_material_new_evidence(
@@ -5087,11 +6055,21 @@ class AgenticRoleAgent(RoleAgent):
             return True
         if current.get("process2_signal_count", 0) > previous.get("process2_signal_count", 0):
             return True
+        if current.get("immediate_pattern_count", 0) > previous.get(
+            "immediate_pattern_count", 0
+        ):
+            return True
         if set(current.get("active_alarms", ())).difference(previous.get("active_alarms", ())):
             return True
         if set(current.get("risk_flags", ())).difference(previous.get("risk_flags", ())):
             return True
         if current.get("incident_severity", 0) > previous.get("incident_severity", 0):
+            return True
+        if current.get("top_pattern_id") != previous.get("top_pattern_id"):
+            return True
+        if self._pattern_urgency_rank(str(current.get("top_pattern_urgency"))) > self._pattern_urgency_rank(
+            str(previous.get("top_pattern_urgency"))
+        ):
             return True
         if current.get("memory_focus") != previous.get("memory_focus"):
             return True
