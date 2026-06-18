@@ -7,6 +7,20 @@ It reuses the working host-side OpenPLC testbed from the sibling
 `sphere-usecases` repo, but moves experiment control, scenario metadata,
 agent-role swapping, metrics, reporting, and results storage into this repo.
 
+## SPHERE Remote Backend
+
+The repo now includes an explicit `sphere_openplc` environment backend for the
+SPHERE-hosted OpenPLC water-treatment runtime. It keeps the portal-side
+experiment pinned to a stable realization and moves scenario variation into
+`ics-agent`.
+
+- operator notes and commands:
+  `docs/sphere_openplc.md`
+- representative remote subset config:
+  `configs/experiments/sphere_phase1_representative.yaml`
+- full remote `18`-scenario attack-suite config:
+  `configs/experiments/sphere_attack_suite18.yaml`
+
 ## Current Status
 
 As of 2026-04-15, the attack-only agentic defender refresh has been
