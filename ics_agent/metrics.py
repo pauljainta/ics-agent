@@ -645,6 +645,34 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "intervention": defender_intervention_metrics,
         "trajectory": trajectory["defender_sequence"],
     }
+    phase_boundary = dict(bundle.get("config_snapshot", {}).get("phase_boundary") or {})
+    wargame_origin = float(phase_boundary.get("wargame_t0_elapsed_sec", 0.0) or 0.0)
+    phase_window_metrics = {
+        "phase_a_duration_sec": phase_boundary.get("phase_a_duration_sec"),
+        "wargame_t0_utc": phase_boundary.get("wargame_t0_utc"),
+        "metric_window": phase_boundary.get("metric_window"),
+        "metric_clock_origin": phase_boundary.get("metric_clock_origin"),
+        "time_to_first_attacker_action_sec": _relative_time(
+            _first_time(attacker_actions, lambda _item: True),
+            attack_start=wargame_origin,
+        ),
+        "time_to_first_detection_sec": _relative_time(
+            detection_time,
+            attack_start=wargame_origin,
+        ),
+        "time_to_first_recognition_sec": _relative_time(
+            recognition_time,
+            attack_start=wargame_origin,
+        ),
+        "time_to_first_defender_action_sec": _relative_time(
+            first_defender_action_time,
+            attack_start=wargame_origin,
+        ),
+        "time_to_first_safety_violation_sec": _relative_time(
+            first_safety_violation_time,
+            attack_start=wargame_origin,
+        ),
+    }
 
     return {
         "suite_type": (
@@ -712,4 +740,5 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender": defender_role_metrics,
         "system": system_metrics,
         "trajectory": trajectory,
+        "phase_window": phase_window_metrics,
     }

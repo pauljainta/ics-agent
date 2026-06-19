@@ -143,5 +143,10 @@ def test_sphere_backend_start_cleans_partial_local_transport(monkeypatch) -> Non
     with pytest.raises(EnvironmentError, match="boom"):
         backend.start()
 
-    assert stopped == ["bridge", "controller_tunnel", "simulator_tunnel"]
+    assert stopped == [
+        "controller_tunnel",
+        "simulator_tunnel",
+        "attacker_tunnel",
+        "defender_tunnel",
+    ]
     assert backend.started is False

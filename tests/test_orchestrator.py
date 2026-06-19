@@ -83,8 +83,23 @@ class FakeEnvironment:
             }
         return {"state_name": self.state["STATE_NAME"]}
 
+    def remote_role_proxy(self, **_kwargs):
+        return None
+
+    def record_role_runtime(self, _role: str, _runtime_info: dict[str, object]) -> None:
+        return None
+
     def stop(self):
         return None
+
+
+class RemoteAwareFakeEnvironment(FakeEnvironment):
+    def __init__(self, config=None) -> None:
+        super().__init__(config=config)
+        self.runtime_records: list[tuple[str, dict[str, object]]] = []
+
+    def record_role_runtime(self, role: str, runtime_info: dict[str, object]) -> None:
+        self.runtime_records.append((role, dict(runtime_info)))
 
 
 def test_orchestrator_runs_live_smoke_with_fake_environment(
@@ -352,6 +367,103 @@ def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
         "surface": "io_image",
     }
     assert bundle.executed_actions[0]["result"]["surface"] == "io_image"
+
+
+def test_execute_online_roles_can_dispatch_actions_via_remote_agent(tmp_path) -> None:
+    orchestrator = ExperimentOrchestrator()
+    scenario = orchestrator.catalog.get("attack/wt-attack-sensor-rw-refill-spoof")
+    env = RemoteAwareFakeEnvironment()
+    env.reset()
+    bundle = RunBundle(
+        experiment_id="pytest",
+        condition_name="black_box_attacker__agentic_defender",
+        run_id="trial-remote-001",
+        scenario=scenario,
+        run_dir=tmp_path / "trial-remote-001",
+        config_snapshot={},
+    )
+
+    class RemoteAgent:
+        mode = "online"
+
+        def __init__(self) -> None:
+            self.runtime_info = {
+                "execution_residency": "remote",
+                "hostname": "local-gpu-controller",
+                "assigned_node": "attacker_foothold",
+            }
+            self.applied_actions: list[dict[str, object]] = []
+
+        def step(self, _context):
+            return [
+                RoleDecision(
+                    role="attacker",
+                    agent_name="pytest_remote_attacker",
+                    decision_type="action",
+                    summary="Apply the attack through the remote role runtime.",
+                    time_sec=1.0,
+                    timestamp_utc="2026-06-18T00:00:01Z",
+                    action={
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 390,
+                    },
+                    labels=["agentic", "remote"],
+                )
+            ]
+
+        def apply_action(self, action):
+            self.applied_actions.append(dict(action))
+            return {
+                "state_name": "RUNNING",
+                "applied_via": "remote_role_service",
+            }
+
+    class RejectLocalActEnvironment(RemoteAwareFakeEnvironment):
+        def act(self, action):
+            raise AssertionError(
+                "env.act should not be called when the agent exposes apply_action()"
+            )
+
+    env = RejectLocalActEnvironment()
+    env.reset()
+    agent = RemoteAgent()
+
+    executed = orchestrator._execute_online_roles(
+        roles=["attacker"],
+        agents={"attacker": agent},
+        context={
+            "scenario": scenario,
+            "time_sec": 1.0,
+            "observation": env.observe_flat(),
+            "observations": [],
+            "alerts": [],
+            "decisions": [],
+            "executed_actions": [],
+            "planned_events": {},
+            "playbooks": {},
+        },
+        bundle=bundle,
+        scenario=scenario,
+        condition={"attacker": "black_box_attacker"},
+        env=env,
+        elapsed=1.0,
+    )
+
+    assert executed is True
+    assert agent.applied_actions == [
+        {"type": "set_sensor", "name": "RW_Tank_Level", "value": 390}
+    ]
+    assert env.runtime_records[0][0] == "attacker"
+    assert env.runtime_records[0][1]["execution_residency"] == "remote"
+    assert bundle.executed_actions[0]["action"] == {
+        "type": "set_sensor",
+        "name": "RW_Tank_Level",
+        "value": 390,
+    }
+    assert bundle.executed_actions[0]["execution_residency"] == "remote"
+    assert bundle.executed_actions[0]["runtime_host"] == "local-gpu-controller"
+    assert bundle.executed_actions[0]["assigned_node"] == "attacker_foothold"
 
 
 def test_orchestrator_runs_replay_mode_from_saved_results(

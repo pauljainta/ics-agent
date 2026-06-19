@@ -696,22 +696,76 @@ class ExperimentOrchestrator:
             },
         )
 
-        agents = {
-            role: self._create_agent(profile_id)
-            for role, profile_id in condition.items()
-        }
-        for agent in agents.values():
-            agent.reset(scenario)
-
         env = OpenPLCEnvironment(config.get("environment", {}))
         started = False
+        phase_a_started_monotonic = time.time()
+        phase_a_started_utc = utc_now()
+        agents: dict[str, Any] = {}
         try:
             if config.get("execution_mode", "live") == "live":
                 env.start()
                 started = True
+                for role, profile_id in condition.items():
+                    profile = deepcopy(self.agent_profiles[profile_id])
+                    agent = env.remote_role_proxy(
+                        role=role,
+                        profile_name=profile_id,
+                        profile=profile,
+                    )
+                    if agent is None:
+                        agent = self._create_agent(profile_id)
+                    agents[role] = agent
+                for role, agent in agents.items():
+                    agent.reset(scenario)
+                    runtime_info = getattr(agent, "runtime_info", None)
+                    if isinstance(runtime_info, dict) and runtime_info:
+                        env.record_role_runtime(role, runtime_info)
+                        bundle.system_events.append(
+                            {
+                                "timestamp_utc": utc_now(),
+                                "time_sec": None,
+                                "event_type": "role_residency",
+                                "role": role,
+                                "execution_residency": runtime_info.get(
+                                    "execution_residency",
+                                    "remote",
+                                ),
+                                "assigned_node": runtime_info.get("assigned_node"),
+                                "runtime_host": runtime_info.get("hostname"),
+                                "runtime_pid": runtime_info.get("pid"),
+                            }
+                        )
                 env.reset(scenario.execution.get("initial_conditions"))
+                phase_a_duration_sec = round(
+                    max(0.0, time.time() - phase_a_started_monotonic),
+                    3,
+                )
+                phase_boundary = {
+                    "phase_a_started_utc": phase_a_started_utc,
+                    "phase_a_completed_utc": utc_now(),
+                    "phase_a_duration_sec": phase_a_duration_sec,
+                    "wargame_t0_utc": utc_now(),
+                    "wargame_t0_elapsed_sec": 0.0,
+                    "metric_window": "phase_b_only",
+                    "metric_clock_origin": "wargame_t0",
+                }
+                bundle.config_snapshot["phase_boundary"] = phase_boundary
+                bundle.system_events.append(
+                    {
+                        "timestamp_utc": phase_boundary["wargame_t0_utc"],
+                        "time_sec": 0.0,
+                        "event_type": "wargame_t0",
+                        "phase_a_duration_sec": phase_a_duration_sec,
+                    }
+                )
                 self._run_live_loop(bundle, scenario, agents, condition, env)
             else:
+                agents = {
+                    role: self._create_agent(profile_id)
+                    for role, profile_id in condition.items()
+                }
+                for agent in agents.values():
+                    agent.reset(scenario)
                 replay_source = config.get("replay_source")
                 if not replay_source:
                     raise ConfigError("replay execution requires replay_source")
@@ -728,17 +782,6 @@ class ExperimentOrchestrator:
             bundle.status = "failed"
             bundle.passed = False
             bundle.errors.append({"timestamp_utc": utc_now(), "error": str(exc)})
-        finally:
-            if started:
-                try:
-                    env.stop()
-                except EnvironmentError as exc:
-                    bundle.errors.append(
-                        {
-                            "timestamp_utc": utc_now(),
-                            "error": f"environment teardown failed: {exc}",
-                        }
-                    )
 
         bundle.metrics = compute_metrics(
             bundle.__dict__,
@@ -759,7 +802,7 @@ class ExperimentOrchestrator:
             "alerts": bundle.alerts,
         }
         for role, agent in agents.items():
-            if agent.mode != "offline":
+            if getattr(agent, "mode", "online") != "offline":
                 continue
             try:
                 for decision in agent.finalize(offline_context):
@@ -792,6 +835,29 @@ class ExperimentOrchestrator:
         }
         resolved_bundle = self._bundle_dict(bundle)
         write_run_bundle(run_dir, resolved_bundle)
+        if started:
+            try:
+                env.export_run_artifacts(run_dir, resolved_bundle)
+            except Exception as exc:
+                bundle.errors.append(
+                    {
+                        "timestamp_utc": utc_now(),
+                        "error": f"environment artifact export failed: {exc}",
+                    }
+                )
+                resolved_bundle = self._bundle_dict(bundle)
+                write_run_bundle(run_dir, resolved_bundle)
+            try:
+                env.stop()
+            except EnvironmentError as exc:
+                bundle.errors.append(
+                    {
+                        "timestamp_utc": utc_now(),
+                        "error": f"environment teardown failed: {exc}",
+                    }
+                )
+                resolved_bundle = self._bundle_dict(bundle)
+                write_run_bundle(run_dir, resolved_bundle)
         return resolved_bundle
 
     def _aggregate_attack_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1503,11 +1569,14 @@ class ExperimentOrchestrator:
         executed_action = False
         for role in roles:
             agent = agents.get(role)
-            if agent is None or agent.mode != "online":
+            if agent is None or getattr(agent, "mode", "online") != "online":
                 continue
             for decision in agent.step(context):
                 rendered = decision.as_dict()
                 bundle.decisions.append(rendered)
+                runtime_info = getattr(agent, "runtime_info", None)
+                if isinstance(runtime_info, dict) and runtime_info:
+                    env.record_role_runtime(role, runtime_info)
                 if decision.decision_type == "alert":
                     bundle.alerts.append(rendered)
                 action, error = self._sanitize_action(
@@ -1530,7 +1599,14 @@ class ExperimentOrchestrator:
                 if action is None:
                     continue
 
-                state_after = env.act(action)
+                action_executor = getattr(agent, "apply_action", None)
+                if callable(action_executor):
+                    state_after = action_executor(action)
+                else:
+                    state_after = env.act(action)
+                runtime_info = getattr(agent, "runtime_info", runtime_info)
+                if isinstance(runtime_info, dict) and runtime_info:
+                    env.record_role_runtime(role, runtime_info)
                 executed_action = True
                 record = {
                     "timestamp_utc": utc_now(),
@@ -1543,6 +1619,12 @@ class ExperimentOrchestrator:
                     "labels": decision.labels,
                     "diagnosis": decision.diagnosis,
                 }
+                if isinstance(runtime_info, dict) and runtime_info:
+                    record["execution_residency"] = runtime_info.get(
+                        "execution_residency"
+                    )
+                    record["runtime_host"] = runtime_info.get("hostname")
+                    record["assigned_node"] = runtime_info.get("assigned_node")
                 recon_result = state_after.get("reconnaissance")
                 if isinstance(recon_result, dict):
                     record["result"] = recon_result
