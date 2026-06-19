@@ -144,6 +144,7 @@ def test_sphere_backend_start_cleans_partial_local_transport(monkeypatch) -> Non
         backend.start()
 
     assert stopped == [
+        "bridge",
         "controller_tunnel",
         "simulator_tunnel",
         "attacker_tunnel",

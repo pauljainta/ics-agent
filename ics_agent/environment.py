@@ -221,7 +221,7 @@ class _SphereOpenPLCBackend:
                 "xdc_fqdn": self._xdc_fqdn,
                 "controller_forward": f"127.0.0.1:{self.controller_forward_port}",
                 "simulator_forward": f"127.0.0.1:{self.simulator_forward_port}",
-                "bridge": self.bridge_host if self.start_bridge else "disabled",
+                "bridge": "local" if self.start_bridge else "disabled",
                 "remote_roles": self.remote_role_hosts,
             }
             return dict(self._start_result)
@@ -252,7 +252,7 @@ class _SphereOpenPLCBackend:
 
     def _restart_remote_runtime(self, conditions: dict[str, int]) -> None:
         if self.start_bridge:
-            self._stop_remote_bridge()
+            self._stop_local_process("bridge")
         self._stop_remote_process("controller", "controller", self.remote_controller_port)
         self._stop_remote_process("simulator", "simulator", self.remote_simulator_port)
         self._ensure_remote_process(
@@ -285,14 +285,14 @@ class _SphereOpenPLCBackend:
                 log_name="tunnel-simulator.log",
             )
         if self.start_bridge:
-            self._ensure_remote_bridge()
+            self._start_bridge()
 
     def _soft_reset_remote_runtime(self, conditions: dict[str, int]) -> None:
         direct_env = self._require_direct_env()
         testbed = direct_env.testbed
 
         if self.start_bridge:
-            self._stop_remote_bridge()
+            self._stop_local_process("bridge")
         if not self._local_port_listening(self.controller_forward_port):
             self._stop_local_process("controller_tunnel")
             self._start_tunnel(
@@ -324,7 +324,7 @@ class _SphereOpenPLCBackend:
         testbed._clear_external_controls()
         time.sleep(float(self.config.get("reset_wait_sec", 1.5)))
         if self.start_bridge:
-            self._ensure_remote_bridge()
+            self._start_bridge()
 
     def observe_flat(self) -> dict[str, Any]:
         return self._require_direct_env().observe_flat()
@@ -339,9 +339,10 @@ class _SphereOpenPLCBackend:
         return self._require_direct_env().inspect_surface(action)
 
     def stop(self) -> None:
-        if self.keep_running:
-            return
         self._cleanup_local_transport()
+        if self.keep_running:
+            self.started = False
+            return
         if self.stop_remote_runtime:
             self._stop_remote_process(
                 "controller", "controller", self.remote_controller_port
@@ -349,17 +350,26 @@ class _SphereOpenPLCBackend:
             self._stop_remote_process(
                 "simulator", "simulator", self.remote_simulator_port
             )
-            if self.start_bridge:
-                self._stop_remote_bridge()
             for target in sorted(set(self.remote_role_hosts.values())):
                 self._stop_remote_role_service(target)
         self.started = False
 
     def _cleanup_local_transport(self) -> None:
+        self._stop_local_process("bridge")
+        self._stop_orphan_local_bridges()
         self._stop_local_process("controller_tunnel")
+        self._stop_orphan_local_tunnel(self.controller_forward_port, self.remote_controller_port, "controller")
         self._stop_local_process("simulator_tunnel")
+        self._stop_orphan_local_tunnel(self.simulator_forward_port, self.remote_simulator_port, "simulator")
         for role in self.remote_role_hosts:
             self._stop_local_process(f"{role}_tunnel")
+            local_port = self.remote_role_local_ports.get(role)
+            if local_port is not None:
+                self._stop_orphan_local_tunnel(
+                    local_port,
+                    self.remote_role_port,
+                    self.remote_role_hosts[role],
+                )
 
     def _prepare_transport(self) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -438,14 +448,6 @@ class _SphereOpenPLCBackend:
             simulator=f"{self.simulator_process_ip}:{self.remote_simulator_port}",
         )
 
-        if self.start_bridge:
-            self._ensure_remote_bridge()
-            self._phase_event(
-                "phase_a",
-                "bridge_ready",
-                bridge_host=self.bridge_host,
-            )
-
         role_targets = sorted(set(self.remote_role_hosts.values()))
         if role_targets:
             self._stage_remote_role_workspace(role_targets)
@@ -457,10 +459,29 @@ class _SphereOpenPLCBackend:
                 role_hosts=self.remote_role_hosts,
             )
 
+        self._stop_local_process("bridge")
+        self._stop_orphan_local_bridges()
         self._stop_local_process("controller_tunnel")
+        self._stop_orphan_local_tunnel(
+            self.controller_forward_port,
+            self.remote_controller_port,
+            "controller",
+        )
         self._stop_local_process("simulator_tunnel")
+        self._stop_orphan_local_tunnel(
+            self.simulator_forward_port,
+            self.remote_simulator_port,
+            "simulator",
+        )
         for role in self.remote_role_hosts:
             self._stop_local_process(f"{role}_tunnel")
+            local_port = self.remote_role_local_ports.get(role)
+            if local_port is not None:
+                self._stop_orphan_local_tunnel(
+                    local_port,
+                    self.remote_role_port,
+                    self.remote_role_hosts[role],
+                )
 
         self._ensure_local_port_free(
             self.controller_forward_port, process_name="controller tunnel"
@@ -506,6 +527,13 @@ class _SphereOpenPLCBackend:
             simulator_forward=self.simulator_forward_port,
             remote_role_ports=self.remote_role_local_ports,
         )
+        if self.start_bridge:
+            self._start_bridge()
+            self._phase_event(
+                "phase_a",
+                "bridge_ready",
+                bridge_host="local",
+            )
 
     def _direct_environment_config(self) -> dict[str, Any]:
         local_backend = _normalized_backend_name(self.config.get("local_backend", "auto"))
@@ -585,7 +613,7 @@ class _SphereOpenPLCBackend:
             },
             "role_runtime_info": self._role_runtime_info,
             "backend_config": {
-                "bridge_host": self.bridge_host,
+                "bridge_host": "local" if self.start_bridge else "disabled",
                 "remote_roles": self.remote_role_hosts,
                 "metric_boundary": bundle.get("config_snapshot", {}).get("phase_boundary"),
             },
@@ -653,11 +681,11 @@ class _SphereOpenPLCBackend:
             remote_logs_dir / "simulator_runtime.log",
         )
         if self.start_bridge:
-            self._fetch_remote_file(
-                self.bridge_host,
-                self._remote_file_path(self.remote_state_dir, "bridge.log"),
-                remote_logs_dir / "bridge.log",
-            )
+            bridge_log_path = self.logs_dir / "modbus_bridge.log"
+            if bridge_log_path.exists():
+                (remote_logs_dir / "bridge.log").write_text(bridge_log_path.read_text())
+            else:
+                (remote_logs_dir / "bridge.log").write_text("local bridge log missing\n")
         for role, host in self.remote_role_hosts.items():
             self._fetch_remote_file(
                 host,
@@ -1633,6 +1661,48 @@ class _SphereOpenPLCBackend:
                 except OSError:
                     pass
         path.unlink(missing_ok=True)
+
+    def _stop_orphan_local_bridges(self) -> None:
+        pattern = (
+            r"modbus_bridge\.py --controller 127\.0\.0\.1:"
+            + str(self.controller_forward_port)
+            + r" --simulator 127\.0\.0\.1:"
+            + str(self.simulator_forward_port)
+        )
+        try:
+            subprocess.run(
+                ["pkill", "-f", pattern],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            return
+
+    def _stop_orphan_local_tunnel(
+        self,
+        local_port: int,
+        remote_port: int,
+        target: str,
+    ) -> None:
+        pattern = (
+            str(local_port)
+            + r":127\.0\.0\.1:"
+            + str(remote_port)
+            + r" "
+            + re.escape(target)
+        )
+        try:
+            subprocess.run(
+                ["pkill", "-f", pattern],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            return
 
     @staticmethod
     def _tail_log(path: Path, lines: int = 20) -> str:
