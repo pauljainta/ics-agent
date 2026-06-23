@@ -1097,6 +1097,93 @@ def test_rule_based_attacker_waits_for_running_before_runtime_sensor_attack() ->
     }
 
 
+def test_optionb_mitre_scripted_attacker_adds_reconnaissance_before_manipulation(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "mitre_scripted.yaml"
+    config = {
+        "experiment_name": "pytest_optionb_mitre_scripted",
+        "scenario_selectors": ["attack/wt-attack-sensor-rw-refill-spoof"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "conditions": [
+            {
+                "name": "scripted_attacker__scripted_defender",
+                "profiles": {
+                    "attacker": "scripted_attacker_optionb_mitre",
+                    "defender": "scripted_defender_optionb_mitre",
+                    "observer": "scripted_observer_optionb_mitre",
+                    "planner": "scripted_planner",
+                    "operator": "scripted_operator",
+                    "offline_analysis": "scripted_offline_analyst",
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+
+    summary = ExperimentOrchestrator().run(config_path)
+    run = summary["conditions"][0]["runs"][0]
+
+    assert run["metrics"]["mitre_phase"]["phase_model"] == "optionb_mitre_staged"
+    assert run["metrics"]["mitre_phase"]["highest_attacker_phase_reached"] in {
+        "manipulation",
+        "impact",
+    }
+    attacker_sequence = run["metrics"]["trajectory"]["attacker_sequence"]
+    assert attacker_sequence[0] == "inspect_surface:tags"
+    assert "set_sensor:RW_Tank_Level" in attacker_sequence
+
+
+def test_optionb_mitre_rule_based_defender_detects_before_manipulation(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "mitre_rule_based_blue.yaml"
+    config = {
+        "experiment_name": "pytest_optionb_mitre_rule_based_blue",
+        "scenario_selectors": ["attack/wt-attack-p2-hcl-drain"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "conditions": [
+            {
+                "name": "scripted_attacker__rule_based_defender",
+                "profiles": {
+                    "attacker": "scripted_attacker_optionb_mitre",
+                    "defender": "rule_based_defender_optionb_mitre",
+                    "observer": "rule_based_observer_optionb_mitre",
+                    "planner": "scripted_planner",
+                    "operator": "scripted_operator",
+                    "offline_analysis": "scripted_offline_analyst",
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+
+    summary = ExperimentOrchestrator().run(config_path)
+    run = summary["conditions"][0]["runs"][0]
+    mitre_phase = run["metrics"]["mitre_phase"]
+
+    assert mitre_phase["first_defender_detection_phase"] in {
+        "access_presence_suspicion",
+        "discovery_recognition",
+    }
+    assert mitre_phase["defender_detection_before_manipulation"] is True
+    assert mitre_phase["first_defender_action_phase"] == "containment_mitigation"
+
+
 def test_orchestrator_aggregates_trajectory_diversity_per_scenario() -> None:
     orchestrator = ExperimentOrchestrator()
     runs = [

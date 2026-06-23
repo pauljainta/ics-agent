@@ -3,6 +3,22 @@ from __future__ import annotations
 from typing import Any
 
 from .base import RoleAgent
+from ..mitre import (
+    attacker_manipulation_started,
+    attacker_recon_count,
+    context_phase_events,
+    normalize_action,
+    optionb_mitre_enabled,
+    phase_metadata,
+    phase_reached,
+    process2_valve_open,
+    read_observation_value,
+    rw_high_high,
+    rw_low_or_spoof,
+    scenario_attack_profile,
+    unexpected_process2_selection,
+    uf_high,
+)
 from ..types import RoleDecision
 
 
@@ -99,12 +115,482 @@ class RuleBasedRoleAgent(RoleAgent):
     def step(self, context: dict[str, Any]) -> list[RoleDecision]:
         if self.mode == "offline":
             return []
+        if optionb_mitre_enabled(self.profile):
+            return self._step_optionb_mitre(context)
         if self.role == "attacker":
             return self._step_attacker(context)
         if self.role in {"defender", "observer"}:
             return self._step_rules(context)
         if self.role == "planner":
             return self._step_planner(context)
+        return []
+
+    def _step_optionb_mitre(self, context: dict[str, Any]) -> list[RoleDecision]:
+        if self.role == "attacker":
+            return self._step_optionb_mitre_attacker(context)
+        if self.role in {"observer", "defender"}:
+            return self._step_optionb_mitre_blue_team(context)
+        if self.role == "planner":
+            return self._step_planner(context)
+        return []
+
+    def _step_optionb_mitre_attacker(
+        self,
+        context: dict[str, Any],
+    ) -> list[RoleDecision]:
+        now = float(context["time_sec"])
+        attack_profile = scenario_attack_profile(context)
+        schedule = dict(attack_profile.get("phase_schedule") or {})
+        emitted: set[str] = self._state.setdefault("mitre_phases_emitted", set())
+        observation = context.get("observation", {})
+        state_name = str(observation.get("STATE_NAME") or observation.get("state_name") or "")
+
+        if (
+            "staged_entry_context" not in emitted
+            and now >= float(schedule.get("staged_entry_context", 0.0))
+        ):
+            emitted.add("staged_entry_context")
+            return [
+                self.decision(
+                    decision_type="note",
+                    summary="Adaptive attacker established staged Option B access context before touching plant-facing controls.",
+                    time_sec=now,
+                    confidence=1.0,
+                    labels=["rule-based", "optionb-mitre", "attacker"],
+                    metadata=phase_metadata(
+                        phase_family="attacker",
+                        phase="staged_entry_context",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                    ),
+                )
+            ]
+
+        if (
+            "discovery" not in emitted
+            and now >= float(schedule.get("discovery", 0.0))
+        ):
+            emitted.add("discovery")
+            return [
+                self.decision(
+                    decision_type="action",
+                    summary="Adaptively inspect shared process tags before choosing a manipulation surface.",
+                    time_sec=now,
+                    action={
+                        "type": "inspect_surface",
+                        "surface": attack_profile["discovery_surface"],
+                    },
+                    confidence=1.0,
+                    labels=["rule-based", "optionb-mitre", "attacker"],
+                    metadata=phase_metadata(
+                        phase_family="attacker",
+                        phase="discovery",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                        discovery_surface=attack_profile["discovery_surface"],
+                    ),
+                )
+            ]
+
+        if "process_understanding" not in emitted and attacker_recon_count(context) >= 1:
+            emitted.add("process_understanding")
+            return [
+                self.decision(
+                    decision_type="note",
+                    summary=f"Adaptive attacker chose the `{attack_profile['family']}` tactic family after observing process context.",
+                    time_sec=now,
+                    confidence=1.0,
+                    labels=["rule-based", "optionb-mitre", "attacker"],
+                    metadata=phase_metadata(
+                        phase_family="attacker",
+                        phase="process_understanding",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                    ),
+                )
+            ]
+
+        qualification_ready = not attack_profile["runtime_required"] or state_name == "RUNNING"
+        if "control_path_qualification" not in emitted and qualification_ready:
+            emitted.add("control_path_qualification")
+            return [
+                self.decision(
+                    decision_type="action",
+                    summary="Adaptively qualify the selected process-facing surface before manipulation.",
+                    time_sec=now,
+                    action={
+                        "type": "inspect_surface",
+                        "surface": attack_profile["qualification_surface"],
+                    },
+                    confidence=1.0,
+                    labels=["rule-based", "optionb-mitre", "attacker"],
+                    metadata=phase_metadata(
+                        phase_family="attacker",
+                        phase="control_path_qualification",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                        qualification_surface=attack_profile["qualification_surface"],
+                        runtime_ready=qualification_ready,
+                    ),
+                )
+            ]
+
+        plan = context.get("planned_events", {}).get(self.role, [])
+        cursor = int(self._state.get("cursor", 0))
+        decisions: list[RoleDecision] = []
+        while cursor < len(plan):
+            event = plan[cursor]
+            if not self._planned_attack_event_ready(event, context):
+                break
+            action = normalize_action(event.get("action"))
+            if not action:
+                cursor += 1
+                continue
+            action_type = action.get("type", "unknown")
+            decisions.append(
+                self.decision(
+                    decision_type="action",
+                    summary=f"Adaptively execute staged manipulation `{action_type}` when the process state permits it.",
+                    time_sec=now,
+                    action=action,
+                    confidence=1.0,
+                    labels=["rule-based", "optionb-mitre", "attacker"],
+                    metadata=phase_metadata(
+                        phase_family="attacker",
+                        phase="manipulation",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                        plan_index=cursor,
+                        scheduled_time_sec=float(event.get("time_sec", now)),
+                    ),
+                )
+            )
+            cursor += 1
+
+        self._state["cursor"] = cursor
+        return decisions
+
+    def _step_optionb_mitre_blue_team(
+        self,
+        context: dict[str, Any],
+    ) -> list[RoleDecision]:
+        now = float(context["time_sec"])
+        observation = context.get("observation", {})
+        attack_profile = scenario_attack_profile(context)
+        emitted: set[str] = self._state.setdefault("mitre_phases_emitted", set())
+        manipulation_started = attacker_manipulation_started(context)
+        state_name = str(observation.get("STATE_NAME") or observation.get("state_name") or "")
+        latest_attacker_action = None
+        for item in context.get("executed_actions", []) or []:
+            if item.get("role") == "attacker":
+                latest_attacker_action = normalize_action(item.get("action"))
+
+        if (
+            self.role == "observer"
+            and "access_presence_suspicion" not in emitted
+            and attacker_recon_count(context) >= 1
+        ):
+            emitted.add("access_presence_suspicion")
+            return [
+                self.decision(
+                    decision_type="alert",
+                    summary="Observer raised early suspicion from staged-path discovery activity.",
+                    time_sec=now,
+                    confidence=1.0,
+                    diagnosis=str(attack_profile["family"]),
+                    labels=["rule-based", "optionb-mitre", "observer"],
+                    metadata=phase_metadata(
+                        phase_family="defender",
+                        phase="access_presence_suspicion",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                    ),
+                )
+            ]
+
+        if (
+            self.role == "observer"
+            and "discovery_recognition" not in emitted
+            and phase_reached(
+                context,
+                role="attacker",
+                phase_family="attacker",
+                phase="control_path_qualification",
+            )
+        ):
+            emitted.add("discovery_recognition")
+            return [
+                self.decision(
+                    decision_type="alert",
+                    summary="Observer recognized staged qualification of a safety-relevant control path.",
+                    time_sec=now,
+                    confidence=1.0,
+                    diagnosis=str(attack_profile["family"]),
+                    labels=["rule-based", "optionb-mitre", "observer"],
+                    metadata=phase_metadata(
+                        phase_family="defender",
+                        phase="discovery_recognition",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                    ),
+                )
+            ]
+
+        if (
+            self.role == "observer"
+            and "manipulation_detection" not in emitted
+            and (
+                manipulation_started
+                or rw_high_high(observation)
+                or rw_low_or_spoof(observation)
+                or unexpected_process2_selection(observation)
+            )
+        ):
+            emitted.add("manipulation_detection")
+            return [
+                self.decision(
+                    decision_type="alert",
+                    summary="Observer detected active plant-facing misuse before physical impact escalated further.",
+                    time_sec=now,
+                    confidence=1.0,
+                    diagnosis=str(attack_profile["family"]),
+                    labels=["rule-based", "optionb-mitre", "observer"],
+                    metadata=phase_metadata(
+                        phase_family="defender",
+                        phase="manipulation_detection",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                    ),
+                )
+            ]
+
+        if (
+            self.role == "defender"
+            and "access_presence_suspicion" not in emitted
+            and attacker_recon_count(context) >= 1
+        ):
+            emitted.add("access_presence_suspicion")
+            return [
+                self.decision(
+                    decision_type="alert",
+                    summary="Defender flagged early staged-path presence from reconnaissance against plant-facing surfaces.",
+                    time_sec=now,
+                    confidence=1.0,
+                    diagnosis=str(attack_profile["family"]),
+                    labels=["rule-based", "optionb-mitre", "defender"],
+                    metadata=phase_metadata(
+                        phase_family="defender",
+                        phase="access_presence_suspicion",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                    ),
+                )
+            ]
+
+        if (
+            self.role == "defender"
+            and "discovery_recognition" not in emitted
+            and phase_reached(
+                context,
+                role="attacker",
+                phase_family="attacker",
+                phase="control_path_qualification",
+            )
+        ):
+            emitted.add("discovery_recognition")
+            return [
+                self.decision(
+                    decision_type="alert",
+                    summary="Defender recognized staged qualification of a process-relevant attack surface.",
+                    time_sec=now,
+                    confidence=1.0,
+                    diagnosis=str(attack_profile["family"]),
+                    labels=["rule-based", "optionb-mitre", "defender"],
+                    metadata=phase_metadata(
+                        phase_family="defender",
+                        phase="discovery_recognition",
+                        policy_mode="adaptive",
+                        attack_profile=attack_profile,
+                    ),
+                )
+            ]
+
+        if attack_profile["family"] == "sensor_spoofing":
+            if (
+                attack_profile["runtime_required"]
+                and state_name == "RUNNING"
+                and "containment_mitigation" not in emitted
+                and phase_reached(
+                    context,
+                    role="attacker",
+                    phase_family="attacker",
+                    phase="control_path_qualification",
+                )
+                and not manipulation_started
+            ):
+                emitted.add("containment_mitigation")
+                return [
+                    self.decision(
+                        decision_type="action",
+                        summary="Preemptively stop the plant once staged qualification identifies a critical sensor manipulation path.",
+                        time_sec=now,
+                        action={"type": "hmi_stop", "process_id": "WT-P1"},
+                        confidence=1.0,
+                        diagnosis="sensor_spoofing_preempted",
+                        labels=["rule-based", "optionb-mitre", "defender"],
+                        metadata=phase_metadata(
+                            phase_family="defender",
+                            phase="containment_mitigation",
+                            policy_mode="adaptive",
+                            attack_profile=attack_profile,
+                            evidence="qualified_sensor_surface_pre_manipulation",
+                        ),
+                    )
+                ]
+            if rw_high_high(observation) and "containment_mitigation" not in emitted:
+                emitted.add("containment_mitigation")
+                return [
+                    self.decision(
+                        decision_type="action",
+                        summary="Emergency-stop the plant on high-high sensor misuse evidence.",
+                        time_sec=now,
+                        action={"type": "hmi_estop", "process_id": "WT-P1"},
+                        confidence=1.0,
+                        diagnosis="raw_water_alarm_condition",
+                        labels=["rule-based", "optionb-mitre", "defender"],
+                        metadata=phase_metadata(
+                            phase_family="defender",
+                            phase="containment_mitigation",
+                            policy_mode="adaptive",
+                            attack_profile=attack_profile,
+                            evidence="rw_high_high",
+                        ),
+                    )
+                ]
+            if (
+                manipulation_started
+                and "containment_mitigation" not in emitted
+                and (rw_low_or_spoof(observation) or uf_high(observation))
+            ):
+                emitted.add("containment_mitigation")
+                return [
+                    self.decision(
+                        decision_type="action",
+                        summary="Stop the plant once adaptive detection confirms live sensor misuse.",
+                        time_sec=now,
+                        action={"type": "hmi_stop", "process_id": "WT-P1"},
+                        confidence=1.0,
+                        diagnosis="sensor_spoofing",
+                        labels=["rule-based", "optionb-mitre", "defender"],
+                        metadata=phase_metadata(
+                            phase_family="defender",
+                            phase="containment_mitigation",
+                            policy_mode="adaptive",
+                            attack_profile=attack_profile,
+                            evidence="sensor_runtime_threshold",
+                        ),
+                    )
+                ]
+
+        if attack_profile["family"] in {
+            "process2_manual_control",
+            "process2_selection_abuse",
+        }:
+            if (
+                unexpected_process2_selection(observation)
+                and "containment_mitigation" not in emitted
+            ):
+                emitted.add("containment_mitigation")
+                return [
+                    self.decision(
+                        decision_type="action",
+                        summary="Immediately deselect Process 2 once adaptive detection sees unauthorized selection.",
+                        time_sec=now,
+                        action={"process_id": "WT-P2", "type": "select_process", "active": False},
+                        confidence=1.0,
+                        diagnosis="unauthorized_chemical_dosing",
+                        labels=["rule-based", "optionb-mitre", "defender"],
+                        metadata=phase_metadata(
+                            phase_family="defender",
+                            phase="containment_mitigation",
+                            policy_mode="adaptive",
+                            attack_profile=attack_profile,
+                            evidence="unexpected_process2_selection",
+                        ),
+                    )
+                ]
+            if (
+                process2_valve_open(observation)
+                and "manipulation_detection" not in emitted
+            ):
+                emitted.add("manipulation_detection")
+                return [
+                    self.decision(
+                        decision_type="alert",
+                        summary="Defender confirmed active Process 2 manipulation from valve-state evidence.",
+                        time_sec=now,
+                        confidence=1.0,
+                        diagnosis="unauthorized_chemical_dosing",
+                        labels=["rule-based", "optionb-mitre", "defender"],
+                        metadata=phase_metadata(
+                            phase_family="defender",
+                            phase="manipulation_detection",
+                            policy_mode="adaptive",
+                            attack_profile=attack_profile,
+                        ),
+                    )
+                ]
+
+        if attack_profile["family"] == "hmi_control_abuse":
+            if (
+                latest_attacker_action
+                and latest_attacker_action.get("type") == "hmi_start"
+                and state_name == "RUNNING"
+                and "containment_mitigation" not in emitted
+                and manipulation_started
+            ):
+                emitted.add("containment_mitigation")
+                return [
+                    self.decision(
+                        decision_type="action",
+                        summary="Stop the plant once adaptive logic confirms HMI chatter while the process is still running.",
+                        time_sec=now,
+                        action={"type": "hmi_stop", "process_id": "WT-P1"},
+                        confidence=1.0,
+                        diagnosis="hmi_control_abuse",
+                        labels=["rule-based", "optionb-mitre", "defender"],
+                        metadata=phase_metadata(
+                            phase_family="defender",
+                            phase="containment_mitigation",
+                            policy_mode="adaptive",
+                            attack_profile=attack_profile,
+                            evidence="hmi_chatter_running",
+                        ),
+                    )
+                ]
+            if (
+                manipulation_started
+                and "manipulation_detection" not in emitted
+            ):
+                emitted.add("manipulation_detection")
+                return [
+                    self.decision(
+                        decision_type="alert",
+                        summary="Defender detected HMI misuse after staged qualification reached an execution-capable state.",
+                        time_sec=now,
+                        confidence=1.0,
+                        diagnosis="hmi_control_abuse",
+                        labels=["rule-based", "optionb-mitre", "defender"],
+                        metadata=phase_metadata(
+                            phase_family="defender",
+                            phase="manipulation_detection",
+                            policy_mode="adaptive",
+                            attack_profile=attack_profile,
+                            latest_action_type=(latest_attacker_action or {}).get("type"),
+                        ),
+                    )
+                ]
+
         return []
 
     def _step_attacker(self, context: dict[str, Any]) -> list[RoleDecision]:

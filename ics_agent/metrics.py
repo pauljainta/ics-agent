@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from .mitre import (
+    ATTACKER_PHASE_ORDER,
+    ATTACKER_PHASES,
+    DEFENDER_PHASE_ORDER,
+    DEFENDER_PHASES,
+    OPTIONB_MITRE_MODEL_ID,
+)
+
 
 BLUE_TEAM_ALERT_ROLES = {"observer", "defender"}
 SHUTDOWN_ACTION_TYPES = {"hmi_stop", "hmi_estop"}
@@ -256,6 +264,80 @@ def _canonicalize_action(action: dict[str, Any] | None) -> str:
     if action_type == "set_sensor":
         return f"{action_type}:{action.get('name', 'unknown')}"
     return action_type
+
+
+def _mitre_phase_events(
+    decisions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    alerts: list[dict[str, Any]],
+    *,
+    role: str | None = None,
+    phase_family: str | None = None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for source in (decisions, actions, alerts):
+        for item in source:
+            if role and item.get("role") != role:
+                continue
+            metadata = item.get("metadata") or {}
+            if metadata.get("phase_model") != OPTIONB_MITRE_MODEL_ID:
+                continue
+            if phase_family and metadata.get("phase_family") != phase_family:
+                continue
+            items.append(item)
+    return sorted(items, key=lambda item: float(item.get("time_sec", 0.0)))
+
+
+def _phase_name(item: dict[str, Any]) -> str | None:
+    metadata = item.get("metadata") or {}
+    phase = metadata.get("mitre_phase")
+    return str(phase) if phase else None
+
+
+def _phase_order(item: dict[str, Any], *, phase_family: str) -> int:
+    metadata = item.get("metadata") or {}
+    explicit = metadata.get("mitre_phase_order")
+    if explicit is not None:
+        try:
+            return int(explicit)
+        except (TypeError, ValueError):
+            return 0
+    phase = _phase_name(item)
+    if not phase:
+        return 0
+    return (
+        ATTACKER_PHASE_ORDER.get(phase, 0)
+        if phase_family == "attacker"
+        else DEFENDER_PHASE_ORDER.get(phase, 0)
+    )
+
+
+def _first_candidate(
+    candidates: list[dict[str, Any]],
+    *,
+    attack_start: float | None,
+) -> dict[str, Any] | None:
+    for item in candidates:
+        if attack_start is None or float(item.get("time_sec", 0.0)) >= float(attack_start):
+            return item
+    return None
+
+
+def _highest_attacker_phase(
+    events: list[dict[str, Any]],
+    *,
+    first_safety_violation_time: float | None,
+) -> tuple[str | None, int]:
+    if first_safety_violation_time is not None:
+        return "impact", ATTACKER_PHASE_ORDER["impact"]
+    highest_phase = None
+    highest_order = 0
+    for item in events:
+        order = _phase_order(item, phase_family="attacker")
+        if order > highest_order:
+            highest_order = order
+            highest_phase = _phase_name(item)
+    return highest_phase, highest_order
 
 
 def _trajectory_sequences(actions: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -674,6 +756,160 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         ),
     }
 
+    attacker_phase_events = _mitre_phase_events(
+        decisions,
+        actions,
+        alerts,
+        role="attacker",
+        phase_family="attacker",
+    )
+    defender_phase_events = _mitre_phase_events(
+        decisions,
+        actions,
+        alerts,
+        role="defender",
+        phase_family="defender",
+    )
+    observer_phase_events = _mitre_phase_events(
+        decisions,
+        actions,
+        alerts,
+        role="observer",
+        phase_family="defender",
+    )
+    blue_team_phase_events = sorted(
+        defender_phase_events + observer_phase_events,
+        key=lambda item: float(item.get("time_sec", 0.0)),
+    )
+    manipulation_start_item = _first_candidate(
+        [
+            item
+            for item in actions
+            if item.get("role") == "attacker"
+            and (
+                _phase_name(item) == "manipulation"
+                or _action_type(item) != "inspect_surface"
+            )
+        ],
+        attack_start=attack_start,
+    )
+    manipulation_start_time = (
+        None
+        if manipulation_start_item is None
+        else float(manipulation_start_item.get("time_sec", 0.0))
+    )
+    first_defender_detection_item = _first_candidate(
+        defender_detections,
+        attack_start=attack_start,
+    )
+    first_blue_team_detection_item = _first_candidate(
+        sorted(
+            observer_detections + defender_detections,
+            key=lambda item: float(item.get("time_sec", 0.0)),
+        ),
+        attack_start=attack_start,
+    )
+    first_defender_action_item = _first_candidate(
+        defender_actions,
+        attack_start=attack_start,
+    )
+    highest_attacker_phase, highest_attacker_phase_order = _highest_attacker_phase(
+        attacker_phase_events,
+        first_safety_violation_time=first_safety_violation_time,
+    )
+    first_blue_team_detection_phase = (
+        _phase_name(first_blue_team_detection_item)
+        if first_blue_team_detection_item is not None
+        else None
+    )
+    first_defender_detection_phase = (
+        _phase_name(first_defender_detection_item)
+        if first_defender_detection_item is not None
+        else None
+    )
+    first_defender_action_phase = (
+        _phase_name(first_defender_action_item)
+        if first_defender_action_item is not None
+        else None
+    )
+    first_blue_team_detection_order = (
+        0
+        if first_blue_team_detection_item is None
+        else _phase_order(first_blue_team_detection_item, phase_family="defender")
+    )
+    first_defender_detection_order = (
+        0
+        if first_defender_detection_item is None
+        else _phase_order(first_defender_detection_item, phase_family="defender")
+    )
+    first_defender_action_order = (
+        0
+        if first_defender_action_item is None
+        else _phase_order(first_defender_action_item, phase_family="defender")
+    )
+    mitre_phase_metrics = {
+        "phase_model": (
+            OPTIONB_MITRE_MODEL_ID if attacker_phase_events or blue_team_phase_events else None
+        ),
+        "highest_attacker_phase_reached": highest_attacker_phase,
+        "highest_attacker_phase_order": highest_attacker_phase_order,
+        "first_blue_team_detection_phase": first_blue_team_detection_phase,
+        "first_blue_team_detection_phase_order": first_blue_team_detection_order or None,
+        "first_defender_detection_phase": first_defender_detection_phase,
+        "first_defender_detection_phase_order": first_defender_detection_order or None,
+        "first_defender_action_phase": first_defender_action_phase,
+        "first_defender_action_phase_order": first_defender_action_order or None,
+        "manipulation_start_elapsed_sec": manipulation_start_time,
+        "blue_team_detection_elapsed_sec": detection_time,
+        "defender_detection_elapsed_sec": defender_detection_time,
+        "first_defender_action_elapsed_sec": first_defender_action_time,
+        "blue_team_detection_before_manipulation": (
+            None
+            if manipulation_start_time is None
+            else bool(
+                detection_time is not None
+                and float(detection_time) < float(manipulation_start_time)
+            )
+        ),
+        "defender_detection_before_manipulation": (
+            None
+            if manipulation_start_time is None
+            else bool(
+                defender_detection_time is not None
+                and float(defender_detection_time) < float(manipulation_start_time)
+            )
+        ),
+        "first_defender_action_before_manipulation": (
+            None
+            if manipulation_start_time is None
+            else bool(
+                first_defender_action_time is not None
+                and float(first_defender_action_time) < float(manipulation_start_time)
+            )
+        ),
+        "manipulation_to_blue_team_detection_delay_sec": (
+            None
+            if manipulation_start_time is None or detection_time is None
+            else round(float(detection_time) - float(manipulation_start_time), 3)
+        ),
+        "manipulation_to_defender_detection_delay_sec": (
+            None
+            if manipulation_start_time is None or defender_detection_time is None
+            else round(float(defender_detection_time) - float(manipulation_start_time), 3)
+        ),
+        "manipulation_to_first_defender_action_delay_sec": (
+            None
+            if manipulation_start_time is None or first_defender_action_time is None
+            else round(
+                float(first_defender_action_time) - float(manipulation_start_time),
+                3,
+            )
+        ),
+        "attacker_phase_event_count": len(attacker_phase_events),
+        "defender_phase_event_count": len(defender_phase_events),
+        "observer_phase_event_count": len(observer_phase_events),
+    }
+
     return {
         "suite_type": (
             "attack"
@@ -741,4 +977,5 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "system": system_metrics,
         "trajectory": trajectory,
         "phase_window": phase_window_metrics,
+        "mitre_phase": mitre_phase_metrics,
     }

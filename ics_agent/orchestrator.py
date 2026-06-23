@@ -14,6 +14,7 @@ from .agents import AgenticRoleAgent, RuleBasedRoleAgent, ScriptedRoleAgent
 from .config import ConfigError, load_config, require_fields, resolve_repo_path
 from .environment import EnvironmentError, OpenPLCEnvironment
 from .knowledge import validate_manual_paths
+from .mitre import ATTACKER_PHASES
 from .metrics import compute_metrics
 from .paths import REPO_ROOT, portable_path, results_root
 from .reporting import write_json, write_run_bundle
@@ -392,6 +393,9 @@ class ExperimentOrchestrator:
             condition_summary["attack_metrics"] = self._aggregate_attack_metrics(
                 condition_summary["runs"]
             )
+            condition_summary["mitre_phase_metrics"] = self._aggregate_mitre_phase_metrics(
+                condition_summary["runs"]
+            )
             condition_summary["trajectory_metrics"] = self._aggregate_trajectory_metrics(
                 condition_summary["runs"] + trajectory_baseline_runs,
                 condition=condition,
@@ -413,6 +417,10 @@ class ExperimentOrchestrator:
                 condition_summary["nominal_metrics"],
             )
             write_json(
+                condition_root / "mitre_phase_metrics.json",
+                condition_summary["mitre_phase_metrics"],
+            )
+            write_json(
                 condition_root / "trajectory_metrics_summary.json",
                 condition_summary["trajectory_metrics"],
             )
@@ -426,6 +434,13 @@ class ExperimentOrchestrator:
             ]
         )
         suite_summary["attack_metrics"] = self._aggregate_attack_metrics(
+            [
+                run
+                for condition in suite_summary["conditions"]
+                for run in condition.get("runs", [])
+            ]
+        )
+        suite_summary["mitre_phase_metrics"] = self._aggregate_mitre_phase_metrics(
             [
                 run
                 for condition in suite_summary["conditions"]
@@ -455,6 +470,10 @@ class ExperimentOrchestrator:
         write_json(
             experiment_root / "nominal_metrics_summary.json",
             suite_summary["nominal_metrics"],
+        )
+        write_json(
+            experiment_root / "mitre_phase_metrics.json",
+            suite_summary["mitre_phase_metrics"],
         )
         write_json(
             experiment_root / "trajectory_metrics_summary.json",
@@ -1126,6 +1145,120 @@ class ExperimentOrchestrator:
             "per_run_metrics": per_run_metrics,
         }
 
+    def _aggregate_mitre_phase_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
+        attack_runs = [run for run in runs if run.get("suite") == "attack"]
+        completed = [run for run in attack_runs if run.get("status") == "completed"]
+        per_run_metrics = []
+        distribution = {phase: 0 for phase in ATTACKER_PHASES}
+        per_condition_distribution: dict[str, dict[str, int]] = {}
+
+        def average(metric_name: str) -> float | None:
+            values = []
+            for run in per_run_metrics:
+                value = run.get(metric_name)
+                if value is None:
+                    continue
+                values.append(float(value))
+            if not values:
+                return None
+            return round(sum(values) / len(values), 4)
+
+        for run in completed:
+            mitre = dict(run.get("metrics", {}).get("mitre_phase") or {})
+            item = {
+                "condition_name": run.get("condition_name"),
+                "scenario": run.get("scenario"),
+                "run_id": run.get("run_id"),
+                "status": run.get("status"),
+                "highest_attacker_phase_reached": mitre.get(
+                    "highest_attacker_phase_reached"
+                ),
+                "first_blue_team_detection_phase": mitre.get(
+                    "first_blue_team_detection_phase"
+                ),
+                "first_defender_detection_phase": mitre.get(
+                    "first_defender_detection_phase"
+                ),
+                "first_defender_action_phase": mitre.get(
+                    "first_defender_action_phase"
+                ),
+                "blue_team_detection_before_manipulation": mitre.get(
+                    "blue_team_detection_before_manipulation"
+                ),
+                "defender_detection_before_manipulation": mitre.get(
+                    "defender_detection_before_manipulation"
+                ),
+                "first_defender_action_before_manipulation": mitre.get(
+                    "first_defender_action_before_manipulation"
+                ),
+                "manipulation_to_blue_team_detection_delay_sec": mitre.get(
+                    "manipulation_to_blue_team_detection_delay_sec"
+                ),
+                "manipulation_to_defender_detection_delay_sec": mitre.get(
+                    "manipulation_to_defender_detection_delay_sec"
+                ),
+                "manipulation_to_first_defender_action_delay_sec": mitre.get(
+                    "manipulation_to_first_defender_action_delay_sec"
+                ),
+            }
+            per_run_metrics.append(item)
+
+            highest_phase = str(item.get("highest_attacker_phase_reached") or "")
+            if highest_phase in distribution:
+                distribution[highest_phase] += 1
+                condition_name = str(item.get("condition_name") or "")
+                condition_bucket = per_condition_distribution.setdefault(
+                    condition_name,
+                    {phase: 0 for phase in ATTACKER_PHASES},
+                )
+                condition_bucket[highest_phase] += 1
+
+        return {
+            "attack_run_count": len(attack_runs),
+            "completed_attack_run_count": len(completed),
+            "phase_model_present_run_count": sum(
+                1
+                for run in completed
+                if run.get("metrics", {}).get("mitre_phase", {}).get("phase_model")
+            ),
+            "highest_attacker_phase_distribution": distribution,
+            "per_condition_highest_phase_distribution": per_condition_distribution,
+            "blue_team_detection_before_manipulation_run_count": sum(
+                1
+                for item in per_run_metrics
+                if item.get("blue_team_detection_before_manipulation") is True
+            ),
+            "defender_detection_before_manipulation_run_count": sum(
+                1
+                for item in per_run_metrics
+                if item.get("defender_detection_before_manipulation") is True
+            ),
+            "first_defender_action_before_manipulation_run_count": sum(
+                1
+                for item in per_run_metrics
+                if item.get("first_defender_action_before_manipulation") is True
+            ),
+            "blue_team_detection_before_manipulation_rate": average(
+                "blue_team_detection_before_manipulation"
+            ),
+            "defender_detection_before_manipulation_rate": average(
+                "defender_detection_before_manipulation"
+            ),
+            "first_defender_action_before_manipulation_rate": average(
+                "first_defender_action_before_manipulation"
+            ),
+            "manipulation_to_blue_team_detection_delay_sec_avg": average(
+                "manipulation_to_blue_team_detection_delay_sec"
+            ),
+            "manipulation_to_defender_detection_delay_sec_avg": average(
+                "manipulation_to_defender_detection_delay_sec"
+            ),
+            "manipulation_to_first_defender_action_delay_sec_avg": average(
+                "manipulation_to_first_defender_action_delay_sec"
+            ),
+            "per_run_metrics": per_run_metrics,
+        }
+
     def _aggregate_nominal_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
         nominal_runs = [run for run in runs if run.get("suite") == "normal"]
         completed = [run for run in nominal_runs if run.get("status") == "completed"]
@@ -1618,6 +1751,7 @@ class ExperimentOrchestrator:
                     or state_after.get("STATE_NAME"),
                     "labels": decision.labels,
                     "diagnosis": decision.diagnosis,
+                    "metadata": dict(decision.metadata or {}),
                 }
                 if isinstance(runtime_info, dict) and runtime_info:
                     record["execution_residency"] = runtime_info.get(
