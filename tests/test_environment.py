@@ -98,6 +98,48 @@ def test_sphere_backend_reference_helpers() -> None:
         _SphereOpenPLCBackend._split_ref("badref")
 
 
+def test_sphere_backend_mrg_command_uses_explicit_server() -> None:
+    backend = _SphereOpenPLCBackend(
+        {
+            "experiment": "openplcwater.lgarcia",
+            "merge_server": "merge.example.invalid",
+        }
+    )
+
+    assert backend._mrg_command("whoami") == [
+        "mrg",
+        "-s",
+        "merge.example.invalid",
+        "whoami",
+    ]
+
+
+def test_sphere_backend_ssh_config_uses_staged_proxy_chain(tmp_path) -> None:
+    backend = _SphereOpenPLCBackend(
+        {
+            "experiment": "openplcwater.lgarcia",
+            "access_host": "access",
+            "engineering_host": "engineering",
+            "remote_roles": {"attacker": "engineering"},
+        }
+    )
+    backend._merge_user = "researcher"
+    backend._xdc_host = "x1-researcher"
+    backend.ssh_config_path = tmp_path / "ssh_config"
+    backend.identity_file = tmp_path / "missing_merge_key"
+
+    backend._write_ssh_config()
+    config_text = backend.ssh_config_path.read_text()
+
+    assert "Host access" in config_text
+    assert "Host engineering" in config_text
+    assert "Host controller" in config_text
+    assert "Host simulator" in config_text
+    assert "ProxyJump x1-researcher" in config_text
+    assert "ProxyJump access" in config_text
+    assert "ProxyJump engineering" in config_text
+
+
 def test_sphere_backend_ssh_checked_retries_transient_failures() -> None:
     backend = _SphereOpenPLCBackend(
         {

@@ -81,9 +81,22 @@ class _SphereOpenPLCBackend:
         self.experiment_ref = str(
             config.get("experiment", "openplcwater.lgarcia")
         ).strip()
+        self.merge_server = str(
+            config.get(
+                "merge_server",
+                os.environ.get(
+                    "MRG_SERVER",
+                    os.environ.get("MERGE_SERVER", "merge.example.invalid"),
+                ),
+            )
+        ).strip() or None
         self.realization_name = str(config.get("realization", "wargamestable")).strip()
         self.revision = str(config.get("revision", "")).strip() or None
         self.xdc_name = str(config.get("xdc", "")).strip() or "x0"
+        self.access_host = str(config.get("access_host", "access")).strip() or None
+        self.engineering_host = (
+            str(config.get("engineering_host", "engineering")).strip() or None
+        )
 
         self.controller_forward_port = int(config.get("controller_port", 2502))
         self.simulator_forward_port = int(config.get("simulator_port", 2503))
@@ -223,6 +236,11 @@ class _SphereOpenPLCBackend:
                 "simulator_forward": f"127.0.0.1:{self.simulator_forward_port}",
                 "bridge": "local" if self.start_bridge else "disabled",
                 "remote_roles": self.remote_role_hosts,
+                "staged_hops": [
+                    host
+                    for host in (self.access_host, self.engineering_host)
+                    if host
+                ],
             }
             return dict(self._start_result)
         except Exception:
@@ -376,7 +394,7 @@ class _SphereOpenPLCBackend:
         self.helper_root.mkdir(parents=True, exist_ok=True)
 
         self._phase_event("phase_a", "bootstrap_start", experiment=self.experiment_ref)
-        self._merge_user = self._run_checked(["mrg", "whoami"]).strip()
+        self._merge_user = self._run_checked(self._mrg_command("whoami")).strip()
         if not self._merge_user:
             raise EnvironmentError(
                 "Merge authentication is unavailable; `mrg whoami` returned no user"
@@ -602,6 +620,26 @@ class _SphereOpenPLCBackend:
                     "process_ip": self.simulator_process_ip,
                     "runtime_port": self.remote_simulator_port,
                 },
+                **(
+                    {
+                        self.access_host: {
+                            "runtime": "access_hop",
+                            "service_port": 22,
+                        }
+                    }
+                    if self.access_host
+                    else {}
+                ),
+                **(
+                    {
+                        self.engineering_host: {
+                            "runtime": "engineering_hmi",
+                            "service_port": 22,
+                        }
+                    }
+                    if self.engineering_host
+                    else {}
+                ),
                 **{
                     host: {
                         "runtime": role,
@@ -615,6 +653,12 @@ class _SphereOpenPLCBackend:
             "backend_config": {
                 "bridge_host": "local" if self.start_bridge else "disabled",
                 "remote_roles": self.remote_role_hosts,
+                "merge_server": self.merge_server,
+                "staged_hops": [
+                    host
+                    for host in (self.access_host, self.engineering_host)
+                    if host
+                ],
                 "metric_boundary": bundle.get("config_snapshot", {}).get("phase_boundary"),
             },
             "repo_commits": bundle.get("config_snapshot", {}).get("reproducibility", {}),
@@ -720,6 +764,13 @@ class _SphereOpenPLCBackend:
             )
         return parts[0], parts[1]
 
+    def _mrg_command(self, *args: str) -> list[str]:
+        command = ["mrg"]
+        if self.merge_server:
+            command.extend(["-s", self.merge_server])
+        command.extend(args)
+        return command
+
     @staticmethod
     def _qualify_realization_ref(
         value: str, experiment_name: str, project_name: str
@@ -751,15 +802,14 @@ class _SphereOpenPLCBackend:
                     f"realization `{self._realization_ref}` is missing and no revision was configured"
                 )
             self._run_checked(
-                [
-                    "mrg",
+                self._mrg_command(
                     "--syncwait",
                     "30m",
                     "realize",
                     self._realization_ref,
                     "revision",
                     self.revision,
-                ]
+                )
             )
             payload = self._show_json("realization", self._realization_ref)
         if payload is None:
@@ -778,7 +828,9 @@ class _SphereOpenPLCBackend:
         if self._show_json("materialization", self._realization_ref) is not None:
             return
         self._run_checked(
-            ["mrg", "--syncwait", "30m", "materialize", self._realization_ref]
+            self._mrg_command(
+                "--syncwait", "30m", "materialize", self._realization_ref
+            )
         )
         if self._show_json("materialization", self._realization_ref) is None:
             raise EnvironmentError(
@@ -790,8 +842,7 @@ class _SphereOpenPLCBackend:
         if self._show_json("xdc", self._xdc_ref) is not None:
             return
         self._run_checked(
-            [
-                "mrg",
+            self._mrg_command(
                 "--syncwait",
                 "10m",
                 "new",
@@ -799,7 +850,7 @@ class _SphereOpenPLCBackend:
                 self._xdc_ref,
                 "--duration",
                 str(self.config.get("xdc_duration", "2w")),
-            ]
+            )
         )
         if self._show_json("xdc", self._xdc_ref) is None:
             raise EnvironmentError(f"XDC `{self._xdc_ref}` was not created successfully")
@@ -817,8 +868,7 @@ class _SphereOpenPLCBackend:
         )
         if materialization != self._realization_ref:
             self._run_checked(
-                [
-                    "mrg",
+                self._mrg_command(
                     "--syncwait",
                     "10m",
                     "xdc",
@@ -826,7 +876,7 @@ class _SphereOpenPLCBackend:
                     "--force",
                     self._xdc_ref,
                     self._realization_ref,
-                ]
+                )
             )
             payload = self._show_json("xdc", self._xdc_ref)
             if payload is None:
@@ -868,7 +918,30 @@ class _SphereOpenPLCBackend:
                 "",
             ]
         )
-        for host in ["controller", "simulator", *sorted(set(self.remote_role_hosts.values()))]:
+        host_specs: list[tuple[str, str]] = []
+        if self.access_host:
+            host_specs.append((self.access_host, self._xdc_host))
+        if self.engineering_host:
+            host_specs.append(
+                (
+                    self.engineering_host,
+                    self.access_host or self._xdc_host,
+                )
+            )
+
+        control_proxy = self.engineering_host or self.access_host or self._xdc_host
+        seen_hosts = {host for host, _ in host_specs}
+        for host in [
+            "controller",
+            "simulator",
+            *sorted(set(self.remote_role_hosts.values())),
+        ]:
+            if host in seen_hosts:
+                continue
+            host_specs.append((host, control_proxy))
+            seen_hosts.add(host)
+
+        for host, proxy_jump in host_specs:
             lines.extend(
                 [
                     f"Host {host}",
@@ -880,7 +953,7 @@ class _SphereOpenPLCBackend:
                 lines.append(f"    IdentityFile {self.identity_file}")
             lines.extend(
                 [
-                    f"    ProxyJump {self._xdc_host}",
+                    f"    ProxyJump {proxy_jump}",
                     "",
                 ]
             )
@@ -1390,7 +1463,7 @@ class _SphereOpenPLCBackend:
 
     def _show_json(self, kind: str, ref: str) -> dict[str, Any] | None:
         try:
-            text = self._run_checked(["mrg", "show", kind, ref, "--json"])
+            text = self._run_checked(self._mrg_command("show", kind, ref, "--json"))
         except EnvironmentError:
             return None
         try:

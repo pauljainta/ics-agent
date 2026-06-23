@@ -10,6 +10,21 @@ runtime pinned to one durable realization:
 - realization: `wargamestable.openplcwater.lgarcia`
 - revision: `7054831a885ac69f8cc5ffb2cccc432e892dadb6`
 
+The backend can also target a derived Option B realization by overriding the
+environment config with:
+
+- `merge_server: merge.example.invalid`
+- `realization: optionbsmoke`
+- `revision: <derived optionb revision>`
+- `xdc: optionb0`
+- `access_host: access`
+- `engineering_host: engineering`
+- `remote_bind_host: 0.0.0.0`
+
+On this server, the installed `mrg` requires the SPHERE server to be passed
+explicitly, so the backend now injects `-s merge.example.invalid` whenever
+`merge_server` is configured.
+
 What the backend manages locally and non-interactively:
 
 - verifies `mrg whoami`
