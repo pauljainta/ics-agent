@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .paths import REPO_ROOT, SPHERE_WT_OPENPLC_DIR, SPHERE_WT_OPENPLC_SCRIPTS
+from .paths import OPENPLC_SUPPORT_DIR, OPENPLC_SUPPORT_SCRIPTS, REPO_ROOT
 from .remote_roles import RemoteRoleAgentProxy
 from .utils import stable_hash, utc_now
 
@@ -31,7 +31,7 @@ def _import_openplc_module(module_name: str):
         return importlib.import_module(module_name)
     except ModuleNotFoundError:
         pyc_path = (
-            SPHERE_WT_OPENPLC_SCRIPTS
+            OPENPLC_SUPPORT_SCRIPTS
             / "__pycache__"
             / f"{module_name}.cpython-310.pyc"
         )
@@ -961,12 +961,11 @@ class _SphereOpenPLCBackend:
 
     def _stage_remote_runtime(self, targets: list[str] | tuple[str, ...] | None = None) -> None:
         sources = [
-            SPHERE_WT_OPENPLC_SCRIPTS / "__pycache__" / "native_plc_runtime.py",
-            SPHERE_WT_OPENPLC_SCRIPTS
-            / "__pycache__"
-            / "native_plc_runtime.cpython-310.pyc",
-            SPHERE_WT_OPENPLC_SCRIPTS / "__pycache__" / "modbus_raw.cpython-310.pyc",
-            SPHERE_WT_OPENPLC_SCRIPTS / "modbus_bridge.py",
+            OPENPLC_SUPPORT_SCRIPTS / "native_plc_runtime.py",
+            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / "native_plc_runtime.cpython-310.pyc",
+            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / "modbus_raw.cpython-310.pyc",
+            OPENPLC_SUPPORT_SCRIPTS / "modbus_bridge.py",
+            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / "modbus_bridge.cpython-310.pyc",
         ]
         missing = [str(path) for path in sources if not path.exists()]
         if missing:
@@ -1012,8 +1011,7 @@ class _SphereOpenPLCBackend:
         tracked_paths = [
             REPO_ROOT / "ics_agent",
             REPO_ROOT / "configs",
-            SPHERE_WT_OPENPLC_SCRIPTS / "__pycache__" / "openplc_testbed.cpython-310.pyc",
-            SPHERE_WT_OPENPLC_SCRIPTS / "__pycache__" / "modbus_raw.cpython-310.pyc",
+            REPO_ROOT / "vendor",
         ]
         manifest: list[tuple[str, int, int]] = []
         for path in tracked_paths:
@@ -1043,29 +1041,7 @@ class _SphereOpenPLCBackend:
         with tarfile.open(archive_path, "w:gz") as handle:
             handle.add(REPO_ROOT / "ics_agent", arcname="ics-agent/ics_agent")
             handle.add(REPO_ROOT / "configs", arcname="ics-agent/configs")
-            handle.add(
-                SPHERE_WT_OPENPLC_SCRIPTS / "__pycache__" / "openplc_testbed.cpython-310.pyc",
-                arcname=(
-                    "sphere-usecases/water-treatment/implementations/openplc/scripts/"
-                    "__pycache__/openplc_testbed.cpython-310.pyc"
-                ),
-            )
-            handle.add(
-                SPHERE_WT_OPENPLC_SCRIPTS / "__pycache__" / "modbus_raw.cpython-310.pyc",
-                arcname=(
-                    "sphere-usecases/water-treatment/implementations/openplc/scripts/"
-                    "__pycache__/modbus_raw.cpython-310.pyc"
-                ),
-            )
-            handle.add(
-                SPHERE_WT_OPENPLC_SCRIPTS
-                / "__pycache__"
-                / "native_plc_runtime.cpython-310.pyc",
-                arcname=(
-                    "sphere-usecases/water-treatment/implementations/openplc/scripts/"
-                    "__pycache__/native_plc_runtime.cpython-310.pyc"
-                ),
-            )
+            handle.add(REPO_ROOT / "vendor", arcname="ics-agent/vendor")
         return archive_path, stage_hash
 
     def _stage_remote_role_workspace(
@@ -1095,7 +1071,7 @@ class _SphereOpenPLCBackend:
             )
             extract_command = (
                 f"rm -rf {self._remote_shell_path(self.remote_workspace_dir)}/ics-agent "
-                f"{self._remote_shell_path(self.remote_workspace_dir)}/sphere-usecases && "
+                f"{self._remote_shell_path(self.remote_workspace_dir)}/vendor && "
                 f"mkdir -p {self._remote_shell_path(self.remote_workspace_dir)} && "
                 f"tar -xzf {self._remote_shell_path(self.remote_workspace_dir)}/.payload.tar.gz "
                 f"-C {self._remote_shell_path(self.remote_workspace_dir)} && "
@@ -1405,7 +1381,7 @@ class _SphereOpenPLCBackend:
             process = subprocess.Popen(
                 [
                     sys.executable,
-                    str(SPHERE_WT_OPENPLC_SCRIPTS / "modbus_bridge.py"),
+                    str(OPENPLC_SUPPORT_SCRIPTS / "modbus_bridge.py"),
                     "--controller",
                     f"127.0.0.1:{self.controller_forward_port}",
                     "--simulator",
@@ -1799,7 +1775,7 @@ class OpenPLCEnvironment:
             self._backend_impl = _SphereOpenPLCBackend(cfg)
             return
 
-        scripts_path = str(SPHERE_WT_OPENPLC_SCRIPTS)
+        scripts_path = str(OPENPLC_SUPPORT_SCRIPTS)
         sys.path = [entry for entry in sys.path if entry not in ("", scripts_path)]
         sys.path.insert(0, scripts_path)
         _import_openplc_module("modbus_raw")
@@ -1810,7 +1786,7 @@ class OpenPLCEnvironment:
         self._testbed_cls = openplc_testbed.OpenPLCWaterTreatmentTestbed
         self._testbed_error = openplc_testbed.TestbedError
         self.testbed = self._testbed_cls(
-            base_dir=Path(cfg.get("base_dir", SPHERE_WT_OPENPLC_DIR)),
+            base_dir=Path(cfg.get("base_dir", OPENPLC_SUPPORT_DIR)),
             controller_host=cfg.get("controller_host", "127.0.0.1"),
             controller_port=cfg.get("controller_port") or None,
             simulator_host=cfg.get("simulator_host", "127.0.0.1"),

@@ -37,7 +37,6 @@ Do **not** modify the paper repo in this task.
 
 - Workspace root: `/home/researcher/Agentic_ICS`
 - Main code repo: `/home/researcher/Agentic_ICS/ics-agent`
-- SPHERE repo: `/home/researcher/Agentic_ICS/sphere-usecases`
 
 ## Architecture Assumptions
 
@@ -101,7 +100,6 @@ VM.
 4. Materialize or attach the required XDC and ensure the environment-side VMs
    are reachable.
 5. Apply only the minimum configuration or deployment changes required in:
-   - `sphere-usecases/water-treatment/implementations/openplc`
    - `ics-agent` SPHERE backend/config files
 6. Keep all authentication local-only and never print or commit secrets.
 
@@ -213,16 +211,7 @@ If the infrastructure preparation and small unit test succeed:
 - do **not** stage secrets or auth files
 - commit and push if changes were required
 
-### `sphere-usecases`
-
-- inspect `git status`
-- stage only relevant code/config/docs changes
-- do **not** stage results
-- do **not** stage progress logs
-- do **not** stage secrets or auth files
-- commit and push if changes were required
-
-If one repo stayed unchanged, do not create an empty commit for it.
+If no tracked `ics-agent` files changed, do not create an empty commit.
 
 ## Secret Handling
 

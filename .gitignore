@@ -6,6 +6,8 @@ __pycache__/
 .Python
 .pytest_cache/
 .ruff_cache/
+!vendor/openplc/scripts/__pycache__/
+!vendor/openplc/scripts/__pycache__/*.pyc
 
 # Environments
 .venv/

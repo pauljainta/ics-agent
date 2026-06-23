@@ -25,6 +25,10 @@ On this server, the installed `mrg` requires the SPHERE server to be passed
 explicitly, so the backend now injects `-s merge.example.invalid` whenever
 `merge_server` is configured.
 
+The runtime payload used for local bridging, remote controller/simulator
+staging, and remote role services is vendored under `vendor/openplc/`, so a
+sibling `sphere-usecases` checkout is no longer required to run the backend.
+
 What the backend manages locally and non-interactively:
 
 - verifies `mrg whoami`

@@ -7,14 +7,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
 DEFAULT_ARTIFACT_ROOT = WORKSPACE_ROOT / "Artifact"
-SPHERE_WT_OPENPLC_DIR = (
-    WORKSPACE_ROOT
-    / "sphere-usecases"
-    / "water-treatment"
-    / "implementations"
-    / "openplc"
-)
-SPHERE_WT_OPENPLC_SCRIPTS = SPHERE_WT_OPENPLC_DIR / "scripts"
+OPENPLC_SUPPORT_DIR = REPO_ROOT / "vendor" / "openplc"
+OPENPLC_SUPPORT_SCRIPTS = OPENPLC_SUPPORT_DIR / "scripts"
 
 
 def artifact_root() -> Path:
@@ -69,7 +63,7 @@ def portable_path(path: Path) -> str:
     except ValueError:
         pass
 
-    for anchor in (REPO_ROOT, WORKSPACE_ROOT, SPHERE_WT_OPENPLC_DIR):
+    for anchor in (REPO_ROOT, WORKSPACE_ROOT, OPENPLC_SUPPORT_DIR):
         try:
             return resolved.relative_to(anchor.resolve()).as_posix()
         except ValueError:

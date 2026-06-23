@@ -3,9 +3,9 @@
 `ics-agent` is now the config-driven experiment and agent orchestration repo for
 the OpenPLC water-treatment wargaming stack in this workspace.
 
-It reuses the working host-side OpenPLC testbed from the sibling
-`sphere-usecases` repo, but moves experiment control, scenario metadata,
-agent-role swapping, metrics, reporting, and results storage into this repo.
+It now carries the OpenPLC support payload it needs under `vendor/openplc/`, so
+experiment control, scenario metadata, agent-role swapping, metrics,
+reporting, results storage, and SPHERE runtime staging all live in this repo.
 
 ## SPHERE Remote Backend
 

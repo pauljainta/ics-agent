@@ -537,7 +537,6 @@ def _prepare_manifest(
         "reproducibility": reproducibility,
         "repo_commits": {
             "ics_agent": _git_commit(REPO_ROOT),
-            "sphere_usecases": _git_commit(WORKSPACE_ROOT / "sphere-usecases"),
         },
     }
     write_json(RUN_MANIFEST_PATH, manifest)
