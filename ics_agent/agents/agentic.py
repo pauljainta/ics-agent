@@ -791,9 +791,17 @@ class AgenticRoleAgent(RoleAgent):
             observation=observation,
             recent_actions=recent_actions,
         )
+        defender_reasoning = self._defender_reasoning_context(
+            context=context,
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            recent_actions=memory_recent_actions,
+            recent_alerts=recent_alerts,
+        )
         incident = self._incident_context(
             context=context,
             telemetry_summary=telemetry_summary,
+            defender_reasoning=defender_reasoning,
         )
         structured_memory = self._role_memory_context(
             context=context,
@@ -805,6 +813,7 @@ class AgenticRoleAgent(RoleAgent):
             recent_alerts=recent_alerts,
             recent_action_effects=recent_action_effects,
             incident=incident,
+            defender_reasoning=defender_reasoning,
         )
         structured_prior_knowledge = self._structured_prior_knowledge(
             observation=observation,
@@ -826,6 +835,7 @@ class AgenticRoleAgent(RoleAgent):
             structured_memory=structured_memory,
             structured_prior_knowledge=structured_prior_knowledge,
             mitre_context=mitre_context,
+            defender_reasoning=defender_reasoning,
         )
         scenario_id = self._visible_scenario_id(scenario)
         process_id = scenario.execution.get("process_id")
@@ -855,6 +865,10 @@ class AgenticRoleAgent(RoleAgent):
                 "Choose only from candidate_actions and prefer short exploit chains over repeated inspection.",
                 "Use structured_memory to decide when to commit, sustain, escalate, or reorient.",
             ]
+        elif defender_reasoning is not None:
+            role_constraints.append(
+                "Use estimated_state, trust_assessment, and control_logic_checks to reason about likely plant behavior rather than trusting every reported signal equally."
+            )
         elif structured_prior_knowledge is not None:
             role_constraints.append(
                 "Use structured_prior_knowledge to connect plant semantics, safety thresholds, and mitigation doctrine to the current evidence."
@@ -888,6 +902,15 @@ class AgenticRoleAgent(RoleAgent):
             "risk_flags": visible_risk_flags,
             "incident": incident,
             "structured_memory": structured_memory,
+            "estimated_state": None
+            if defender_reasoning is None
+            else defender_reasoning.get("estimated_state"),
+            "trust_assessment": None
+            if defender_reasoning is None
+            else defender_reasoning.get("trust_assessment"),
+            "control_logic_checks": None
+            if defender_reasoning is None
+            else defender_reasoning.get("control_logic_checks"),
             "structured_prior_knowledge": structured_prior_knowledge,
             "mitre_context": mitre_context,
             "staged_path": [] if mitre_context is None else mitre_context.get("staged_path", []),
@@ -1149,6 +1172,7 @@ class AgenticRoleAgent(RoleAgent):
         recent_alerts: list[dict[str, Any]],
         recent_action_effects: list[dict[str, Any]],
         incident: dict[str, Any] | None,
+        defender_reasoning: dict[str, Any] | None,
     ) -> dict[str, Any]:
         if self.role == "attacker":
             memory = self._attacker_memory(
@@ -1173,6 +1197,7 @@ class AgenticRoleAgent(RoleAgent):
                 telemetry_summary=telemetry_summary,
                 recent_alerts=recent_alerts,
                 incident=incident,
+                defender_reasoning=defender_reasoning,
             )
         elif self.role == "planner":
             memory = self._planner_memory(
@@ -2481,6 +2506,7 @@ class AgenticRoleAgent(RoleAgent):
         telemetry_summary: dict[str, Any],
         recent_alerts: list[dict[str, Any]],
         incident: dict[str, Any] | None,
+        defender_reasoning: dict[str, Any] | None,
     ) -> dict[str, Any]:
         incident = dict(incident or {})
         state = self._state.setdefault("role_memory", {})
@@ -2517,6 +2543,11 @@ class AgenticRoleAgent(RoleAgent):
             incident=incident,
             containment_effective=containment_effective,
         )
+        estimated_state = dict((defender_reasoning or {}).get("estimated_state") or {})
+        trust_assessment = dict((defender_reasoning or {}).get("trust_assessment") or {})
+        control_logic_checks = dict(
+            (defender_reasoning or {}).get("control_logic_checks") or {}
+        )
         state.update(
             {
                 "incident_hypothesis": incident.get("type", "none"),
@@ -2534,6 +2565,21 @@ class AgenticRoleAgent(RoleAgent):
                 ),
                 "observer_handoff": observer_handoff,
                 "why_it_matters": self._incident_consequence(incident),
+                "estimated_state_summary": estimated_state.get("summary"),
+                "estimated_state_confidence": estimated_state.get("confidence"),
+                "trust_focus": trust_assessment.get("suspicious_surface"),
+                "low_trust_signal_count": trust_assessment.get("low_trust_signal_count", 0),
+                "corroborated_mismatches": list(
+                    trust_assessment.get("corroborated_mismatches", [])
+                )[:4],
+                "failed_control_logic_checks": [
+                    item.get("id")
+                    for item in control_logic_checks.get("checks", [])
+                    if item.get("status") == "failed"
+                ][:4],
+                "control_logic_attention_required": control_logic_checks.get(
+                    "immediate_attention_required", False
+                ),
                 "rolling_summary": (
                     f"{incident.get('status', 'none')} {incident.get('type', 'none')}; "
                     f"surface={incident.get('attack_surface', 'unknown')}; "
@@ -3601,6 +3647,134 @@ class AgenticRoleAgent(RoleAgent):
             reverse=True,
         )
 
+    def _rank_defender_candidates_with_reasoning(
+        self,
+        *,
+        candidates: list[dict[str, Any]],
+        incident: dict[str, Any] | None,
+        structured_memory: dict[str, Any],
+        defender_reasoning: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not candidates:
+            return []
+        estimated_state = dict((defender_reasoning or {}).get("estimated_state") or {})
+        trust_assessment = dict((defender_reasoning or {}).get("trust_assessment") or {})
+        control_logic_checks = dict(
+            (defender_reasoning or {}).get("control_logic_checks") or {}
+        )
+        suspicious_surface = str(
+            trust_assessment.get("suspicious_surface")
+            or (incident or {}).get("attack_surface")
+            or "unknown"
+        )
+        failed_checks = {
+            str(item.get("id"))
+            for item in control_logic_checks.get("checks", [])
+            if item.get("status") == "failed"
+        }
+        low_trust_signal_count = int(trust_assessment.get("low_trust_signal_count", 0) or 0)
+        existing_action_types = {
+            str((normalize_action(item.get("action")) or {}).get("type", ""))
+            for item in candidates
+        }
+        if (
+            "hmi_stop" not in existing_action_types
+            and "hmi_stop" in set(self.profile.get("allowed_action_types", []))
+            and (
+                "dosing_persists_after_process2_deselect" in failed_checks
+                or "manual_dosing_requires_process2_selection" in failed_checks
+                or (
+                    control_logic_checks.get("immediate_attention_required")
+                    and low_trust_signal_count >= 1
+                    and str((incident or {}).get("type", "none")) != "none"
+                )
+            )
+        ):
+            candidates = list(candidates) + [
+                {
+                    "id": action_key({"type": "hmi_stop", "process_id": "WT-P1"}),
+                    "summary": "Escalate to a controlled stop because the expected plant response did not occur and the suspicious surface remains active.",
+                    "action": {"type": "hmi_stop", "process_id": "WT-P1"},
+                    "source": "defender_reasoning",
+                    "priority": 93,
+                    "guardrail_reason": "defender_reasoning",
+                }
+            ]
+
+        ranked: list[dict[str, Any]] = []
+        for item in candidates:
+            updated = dict(item)
+            action = normalize_action(item.get("action"))
+            if action is None:
+                ranked.append(updated)
+                continue
+            score = int(item.get("priority", 0) or 0)
+            action_type = str(action.get("type", ""))
+            if control_logic_checks.get("immediate_attention_required") and action_type in {
+                "hmi_stop",
+                "hmi_estop",
+            }:
+                score += 24
+            if low_trust_signal_count >= 2 and action_type in {"hmi_stop", "hmi_estop"}:
+                score += 12
+            if action_type == "noop":
+                score -= 12 * len(failed_checks)
+                if low_trust_signal_count >= 1:
+                    score -= 10
+
+            if suspicious_surface == "process2_manual_path":
+                if action_type == "select_process" and not action.get("active", True):
+                    score += 18
+                if "dosing_persists_after_process2_deselect" in failed_checks:
+                    if action_type == "hmi_stop":
+                        score += 34
+                    if action_type == "select_process" and not action.get("active", True):
+                        score -= 12
+                if "manual_dosing_requires_process2_selection" in failed_checks and action_type == "hmi_stop":
+                    score += 24
+
+            if suspicious_surface in {"raw_water_control_path", "RW_Tank_Level"}:
+                if action_type == "hmi_stop":
+                    score += 18
+                if (
+                    "high_high_raw_water_should_not_keep_rising" in failed_checks
+                    and action_type == "hmi_estop"
+                ):
+                    score += 26
+                if (
+                    "raw_water_low_should_recover_or_shutdown" in failed_checks
+                    and action_type == "hmi_stop"
+                ):
+                    score += 18
+
+            if estimated_state.get("raw_water_state") in {
+                "low_and_not_recovering",
+                "high_high_and_rising",
+            } and action_type in {"hmi_stop", "hmi_estop"}:
+                score += 12
+            if estimated_state.get("process2_state") == "manual_dosing_active":
+                if action_type == "select_process" and not action.get("active", True):
+                    score += 12
+            if estimated_state.get("process2_state") == "manual_dosing_persists_after_isolation":
+                if action_type == "hmi_stop":
+                    score += 20
+
+            if structured_memory.get("containment_effective") is True and action_type == "noop":
+                score += 12
+
+            updated["priority"] = score
+            ranked.append(updated)
+
+        return sorted(
+            ranked,
+            key=lambda item: (
+                int(item.get("priority", 0) or 0),
+                str(item.get("source", "")),
+                item["id"],
+            ),
+            reverse=True,
+        )
+
     @staticmethod
     def _pattern_urgency_rank(value: str) -> int:
         return {
@@ -3665,6 +3839,522 @@ class AgenticRoleAgent(RoleAgent):
             "risk_flags": risk_flags,
         }
 
+    def _defender_reasoning_context(
+        self,
+        *,
+        context: dict[str, Any],
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        recent_actions: list[dict[str, Any]],
+        recent_alerts: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if self.role != "defender":
+            return None
+        control_logic_checks = self._defender_control_logic_checks(
+            context=context,
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            recent_actions=recent_actions,
+        )
+        persistence = self._update_defender_reasoning_persistence(
+            telemetry_summary=telemetry_summary,
+            control_logic_checks=control_logic_checks,
+        )
+        trust_assessment = self._defender_trust_assessment(
+            telemetry_summary=telemetry_summary,
+            control_logic_checks=control_logic_checks,
+            persistence=persistence,
+        )
+        estimated_state = self._defender_estimated_state(
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            control_logic_checks=control_logic_checks,
+            trust_assessment=trust_assessment,
+            recent_alerts=recent_alerts,
+        )
+        return {
+            "estimated_state": estimated_state,
+            "trust_assessment": trust_assessment,
+            "control_logic_checks": control_logic_checks,
+        }
+
+    def _defender_control_logic_checks(
+        self,
+        *,
+        context: dict[str, Any],
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        recent_actions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        now = float(context.get("time_sec", 0.0))
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        risk_flags = set(telemetry_summary["risk_flags"])
+        active_alarms = set(telemetry_summary["active_alarms"])
+        raw_water_trend = telemetry_summary["short_horizon_trends"].get("RW_Tank_Level", {})
+        chemical_depleting = sorted(
+            flag for flag in risk_flags if str(flag).endswith("_depleting")
+        )
+        state_name = str(
+            observation.get("STATE_NAME") or observation.get("state_name") or "UNKNOWN"
+        ).upper()
+        pump_running = self._is_active_flag(observation.get("RW_Pump_Sts"))
+        p2_selected = self._is_active_flag(observation.get("P2_Selected"))
+        manual_dosing_active = "process2_manual_dosing_active" in relationship_notes
+        checks: list[dict[str, Any]] = []
+        immediate_attention_required = False
+
+        def add_check(
+            check_id: str,
+            *,
+            expectation: str,
+            observed: str,
+            status: str,
+            evidence: list[str],
+        ) -> None:
+            checks.append(
+                {
+                    "id": check_id,
+                    "expectation": expectation,
+                    "observed": observed,
+                    "status": status,
+                    "evidence": evidence[:4],
+                }
+            )
+
+        for note in sorted(relationship_notes):
+            if not note.startswith("command_status_mismatch:"):
+                continue
+            mismatch = note.split(":", 1)[1]
+            add_check(
+                f"command_status_mismatch:{mismatch}",
+                expectation="Critical actuator status should track the commanded state.",
+                observed=f"Observed mismatch on {mismatch}.",
+                status="failed",
+                evidence=[note],
+            )
+            if mismatch.startswith("RW_Tank_") and (
+                active_alarms
+                or "raw_water_low_band" in risk_flags
+                or "raw_water_high_high_band" in risk_flags
+            ):
+                immediate_attention_required = True
+
+        if manual_dosing_active and not p2_selected:
+            add_check(
+                "manual_dosing_requires_process2_selection",
+                expectation="Manual Process 2 dosing should require `P2_Selected=1`.",
+                observed="Manual dosing evidence remains active while Process 2 is deselected.",
+                status="failed",
+                evidence=["process2_manual_dosing_active", "P2_Selected=0", *chemical_depleting[:2]],
+            )
+            if chemical_depleting:
+                immediate_attention_required = True
+
+        recent_deselect = self._latest_recent_action(
+            recent_actions,
+            role="defender",
+            action_types={"select_process"},
+            predicate=lambda action: not bool(action.get("active", True)),
+        )
+        if recent_deselect is not None:
+            deselect_time = self._coerce_number(recent_deselect.get("time_sec"))
+            deselect_age = now - float(deselect_time if deselect_time is not None else now)
+            if deselect_age >= 1.0:
+                failed = p2_selected or manual_dosing_active or bool(chemical_depleting)
+                add_check(
+                    "dosing_persists_after_process2_deselect",
+                    expectation="After Process 2 deselection, manual dosing should cease and chemical drain should arrest.",
+                    observed=(
+                        "Process 2 evidence persisted after the defender attempted targeted isolation."
+                        if failed
+                        else "Process 2 evidence subsided after targeted isolation."
+                    ),
+                    status="failed" if failed else "passed",
+                    evidence=[
+                        "recent_defender_process2_deselect",
+                        *chemical_depleting[:2],
+                        "process2_manual_dosing_active" if manual_dosing_active else "manual_dosing_cleared",
+                    ],
+                )
+                if failed and (manual_dosing_active or chemical_depleting):
+                    immediate_attention_required = True
+
+        low_raw_water = "Alarm_RW_Tank_LL" in active_alarms or "raw_water_low_band" in risk_flags
+        if low_raw_water:
+            refill_active = self._is_active_flag(observation.get("RW_Tank_PR_Valve_Cmd")) or (
+                self._is_active_flag(observation.get("RW_Tank_PR_Valve_Sts"))
+            )
+            recovering = str(raw_water_trend.get("direction", "stable")) == "rising"
+            shutdown_state = state_name == "SHUTDOWN" or not pump_running
+            failed = pump_running and not recovering and not shutdown_state
+            add_check(
+                "raw_water_low_should_recover_or_shutdown",
+                expectation="Low raw-water inventory should either recover through the refill path or transition toward shutdown.",
+                observed=(
+                    f"Raw-water trend is `{raw_water_trend.get('direction', 'stable')}` while the pump is still running."
+                    if failed
+                    else "The low raw-water condition is either recovering or the plant is no longer driving it."
+                ),
+                status="failed" if failed else "passed",
+                evidence=[
+                    "Alarm_RW_Tank_LL" if "Alarm_RW_Tank_LL" in active_alarms else "raw_water_low_band",
+                    "refill_path_active" if refill_active else "refill_path_not_visible",
+                    f"raw_water_trend:{raw_water_trend.get('direction', 'stable')}",
+                ],
+            )
+            if failed and ("Alarm_RW_Tank_LL" in active_alarms or refill_active):
+                immediate_attention_required = True
+
+        high_raw_water = (
+            "Alarm_RW_Tank_HH" in active_alarms or "raw_water_high_high_band" in risk_flags
+        )
+        if high_raw_water:
+            still_rising = str(raw_water_trend.get("direction", "stable")) == "rising"
+            failed = pump_running and still_rising
+            add_check(
+                "high_high_raw_water_should_not_keep_rising",
+                expectation="High-high raw-water conditions should stop rising once containment or pump removal takes effect.",
+                observed=(
+                    "The high-high raw-water signal is still rising while the plant continues to drive flow."
+                    if failed
+                    else "The high-high raw-water condition is no longer rising or the pump is already out."
+                ),
+                status="failed" if failed else "passed",
+                evidence=[
+                    "Alarm_RW_Tank_HH" if "Alarm_RW_Tank_HH" in active_alarms else "raw_water_high_high_band",
+                    f"raw_water_trend:{raw_water_trend.get('direction', 'stable')}",
+                    "pump_running" if pump_running else "pump_not_running",
+                ],
+            )
+            if failed:
+                immediate_attention_required = True
+
+        recent_stop = self._latest_recent_action(
+            recent_actions,
+            role="defender",
+            action_types={"hmi_stop", "hmi_estop"},
+        )
+        if recent_stop is not None:
+            stop_time = self._coerce_number(recent_stop.get("time_sec"))
+            stop_age = now - float(stop_time if stop_time is not None else now)
+            if stop_age >= 2.0:
+                failed = pump_running or state_name != "SHUTDOWN"
+                add_check(
+                    "stop_should_halt_pump_and_drive_shutdown",
+                    expectation="A recent defender stop should halt the pump path and move the plant toward shutdown.",
+                    observed=(
+                        f"State remains `{state_name}` with pump_running={pump_running} after the stop command."
+                        if failed
+                        else "The plant is honoring the recent stop command."
+                    ),
+                    status="failed" if failed else "passed",
+                    evidence=[
+                        "recent_defender_stop",
+                        f"state_name:{state_name.lower()}",
+                        "pump_running" if pump_running else "pump_not_running",
+                    ],
+                )
+                if failed:
+                    immediate_attention_required = True
+
+        return {
+            "checks": checks[:6],
+            "failed_check_count": sum(1 for item in checks if item.get("status") == "failed"),
+            "immediate_attention_required": immediate_attention_required,
+        }
+
+    def _update_defender_reasoning_persistence(
+        self,
+        *,
+        telemetry_summary: dict[str, Any],
+        control_logic_checks: dict[str, Any],
+    ) -> dict[str, int]:
+        tracker = self._state.setdefault("defender_reasoning", {}).setdefault(
+            "persistence_counts", {}
+        )
+        active_tokens: set[str] = {
+            str(item.get("id"))
+            for item in control_logic_checks.get("checks", [])
+            if item.get("status") == "failed" and str(item.get("id", "")).strip()
+        }
+        active_tokens.update(
+            str(flag)
+            for flag in telemetry_summary["risk_flags"]
+            if str(flag) in {"command_status_divergence", "sensor_or_process_jump"}
+            or str(flag).endswith("_depleting")
+            or str(flag) in {"raw_water_low_band", "raw_water_high_high_band"}
+        )
+        active_tokens.update(
+            str(note)
+            for note in telemetry_summary["relationship_notes"]
+            if str(note).startswith("command_status_mismatch:")
+            or str(note).startswith("abrupt_change:")
+        )
+        for token in active_tokens:
+            tracker[token] = int(tracker.get(token, 0) or 0) + 1
+        for token in list(tracker.keys()):
+            if token not in active_tokens:
+                tracker.pop(token, None)
+        return {
+            token: int(tracker.get(token, 0) or 0)
+            for token in sorted(active_tokens)
+        }
+
+    def _defender_trust_assessment(
+        self,
+        *,
+        telemetry_summary: dict[str, Any],
+        control_logic_checks: dict[str, Any],
+        persistence: dict[str, int],
+    ) -> dict[str, Any]:
+        entries = {
+            "RW_Tank_Level": {"name": "RW_Tank_Level", "score": 0.92, "reasons": [], "tokens": set()},
+            "raw_water_control_path": {
+                "name": "raw_water_control_path",
+                "score": 0.92,
+                "reasons": [],
+                "tokens": set(),
+            },
+            "process2_manual_path": {
+                "name": "process2_manual_path",
+                "score": 0.92,
+                "reasons": [],
+                "tokens": set(),
+            },
+            "telemetry_integrity": {
+                "name": "telemetry_integrity",
+                "score": 0.92,
+                "reasons": [],
+                "tokens": set(),
+            },
+        }
+
+        def touch(name: str, reason: str, token: str, delta: float) -> None:
+            entry = entries[name]
+            entry["score"] = max(0.05, round(float(entry["score"]) - delta, 3))
+            if reason not in entry["reasons"]:
+                entry["reasons"].append(reason)
+            entry["tokens"].add(token)
+
+        for note in telemetry_summary["relationship_notes"]:
+            if str(note).startswith("command_status_mismatch:RW_Tank_"):
+                touch("raw_water_control_path", "command_status_mismatch", str(note), 0.32)
+                touch("telemetry_integrity", "control_path_divergence", str(note), 0.12)
+            elif str(note).startswith("command_status_mismatch:ChemTreat_"):
+                touch("process2_manual_path", "command_status_mismatch", str(note), 0.3)
+            elif str(note) == "process2_manual_dosing_active":
+                touch("process2_manual_path", "unexpected_manual_dosing", str(note), 0.08)
+            elif str(note) == "process2_selected":
+                touch("process2_manual_path", "process2_enabled", str(note), 0.05)
+            elif str(note).startswith("abrupt_change:RW_Tank_Level"):
+                touch("RW_Tank_Level", "abrupt_signal_change", str(note), 0.35)
+                touch("telemetry_integrity", "abrupt_signal_change", str(note), 0.18)
+            elif str(note).startswith("abrupt_change:ChemTreat_"):
+                touch("process2_manual_path", "abrupt_chemical_change", str(note), 0.18)
+                touch("telemetry_integrity", "abrupt_signal_change", str(note), 0.18)
+
+        for flag in telemetry_summary["risk_flags"]:
+            if str(flag) == "command_status_divergence":
+                touch("telemetry_integrity", "command_status_divergence", str(flag), 0.18)
+            elif str(flag) == "sensor_or_process_jump":
+                touch("telemetry_integrity", "sensor_or_process_jump", str(flag), 0.28)
+            elif str(flag).endswith("_depleting"):
+                touch("process2_manual_path", "chemical_inventory_depleting", str(flag), 0.14)
+
+        for item in control_logic_checks.get("checks", []):
+            if item.get("status") != "failed":
+                continue
+            check_id = str(item.get("id", ""))
+            if check_id in {
+                "dosing_persists_after_process2_deselect",
+                "manual_dosing_requires_process2_selection",
+            }:
+                touch("process2_manual_path", check_id, check_id, 0.28)
+            elif check_id in {
+                "raw_water_low_should_recover_or_shutdown",
+                "high_high_raw_water_should_not_keep_rising",
+                "stop_should_halt_pump_and_drive_shutdown",
+            }:
+                touch("raw_water_control_path", check_id, check_id, 0.24)
+                touch("RW_Tank_Level", check_id, check_id, 0.12)
+            elif check_id.startswith("command_status_mismatch:RW_Tank_"):
+                touch("raw_water_control_path", check_id, check_id, 0.12)
+            elif check_id.startswith("command_status_mismatch:ChemTreat_"):
+                touch("process2_manual_path", check_id, check_id, 0.12)
+
+        visible_signals: list[dict[str, Any]] = []
+        for entry in entries.values():
+            token_counts = [int(persistence.get(token, 0) or 0) for token in entry["tokens"]]
+            persistence_count = max(token_counts) if token_counts else 0
+            if persistence_count >= 2:
+                entry["score"] = max(
+                    0.05,
+                    round(float(entry["score"]) - (0.08 * min(3, persistence_count - 1)), 3),
+                )
+            trust_state = self._trust_state_label(float(entry["score"]))
+            if entry["reasons"] or trust_state != "trusted":
+                visible_signals.append(
+                    {
+                        "name": entry["name"],
+                        "trust": trust_state,
+                        "score": round(float(entry["score"]), 2),
+                        "persistence_count": persistence_count,
+                        "reasons": list(entry["reasons"])[:4],
+                    }
+                )
+
+        visible_signals.sort(
+            key=lambda item: (
+                float(item.get("score", 1.0)),
+                int(item.get("persistence_count", 0)),
+                str(item.get("name", "")),
+            )
+        )
+        suspicious_surface = (
+            visible_signals[0]["name"] if visible_signals else "unknown"
+        )
+        corroborated_mismatches = sorted(
+            token for token, count in persistence.items() if int(count or 0) >= 2
+        )
+        if not corroborated_mismatches:
+            corroborated_mismatches = [
+                str(item.get("id"))
+                for item in control_logic_checks.get("checks", [])
+                if item.get("status") == "failed"
+            ][:3]
+        low_trust_signal_count = sum(
+            1
+            for item in visible_signals
+            if str(item.get("trust")) in {"degraded", "low"}
+        )
+        return {
+            "signals": visible_signals[:4],
+            "suspicious_surface": suspicious_surface,
+            "overall_status": "degraded" if low_trust_signal_count else "stable",
+            "low_trust_signal_count": low_trust_signal_count,
+            "corroborated_mismatches": corroborated_mismatches[:4],
+            "persistence": {key: int(value or 0) for key, value in persistence.items()},
+        }
+
+    def _defender_estimated_state(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        control_logic_checks: dict[str, Any],
+        trust_assessment: dict[str, Any],
+        recent_alerts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        relationship_notes = set(telemetry_summary["relationship_notes"])
+        risk_flags = set(telemetry_summary["risk_flags"])
+        active_alarms = set(telemetry_summary["active_alarms"])
+        raw_water_trend = telemetry_summary["short_horizon_trends"].get("RW_Tank_Level", {})
+        state_name = str(
+            observation.get("STATE_NAME") or observation.get("state_name") or "UNKNOWN"
+        ).upper()
+        pump_running = self._is_active_flag(observation.get("RW_Pump_Sts"))
+        p2_selected = self._is_active_flag(observation.get("P2_Selected"))
+        manual_dosing_active = "process2_manual_dosing_active" in relationship_notes
+        failed_checks = [
+            str(item.get("id"))
+            for item in control_logic_checks.get("checks", [])
+            if item.get("status") == "failed"
+        ]
+
+        raw_water_state = "steady"
+        if "Alarm_RW_Tank_HH" in active_alarms or "raw_water_high_high_band" in risk_flags:
+            if pump_running and str(raw_water_trend.get("direction", "stable")) == "rising":
+                raw_water_state = "high_high_and_rising"
+            elif pump_running:
+                raw_water_state = "high_high_present"
+            else:
+                raw_water_state = "high_high_but_pump_removed"
+        elif "Alarm_RW_Tank_LL" in active_alarms or "raw_water_low_band" in risk_flags:
+            if str(raw_water_trend.get("direction", "stable")) == "rising":
+                raw_water_state = "low_but_recovering"
+            elif pump_running:
+                raw_water_state = "low_and_not_recovering"
+            else:
+                raw_water_state = "low_and_shutdown"
+        elif raw_water_trend:
+            raw_water_state = f"raw_water_{raw_water_trend.get('direction', 'stable')}"
+
+        chemical_depleting = sorted(
+            flag for flag in risk_flags if str(flag).endswith("_depleting")
+        )
+        process2_state = "process2_isolated"
+        if "dosing_persists_after_process2_deselect" in failed_checks:
+            process2_state = "manual_dosing_persists_after_isolation"
+        elif "manual_dosing_requires_process2_selection" in failed_checks:
+            process2_state = "manual_dosing_without_selection"
+        elif manual_dosing_active and chemical_depleting:
+            process2_state = "manual_dosing_active"
+        elif p2_selected:
+            process2_state = "process2_enabled"
+
+        expected_process_response = [
+            item.get("expectation")
+            for item in control_logic_checks.get("checks", [])
+            if item.get("status") == "failed"
+        ][:3]
+        corroborated_count = len(trust_assessment.get("corroborated_mismatches", []))
+        observer_alert_count = sum(
+            1 for item in recent_alerts if item.get("role") == "observer"
+        )
+        confidence = 0.36
+        confidence += 0.08 * min(len(failed_checks), 3)
+        confidence += 0.05 * min(corroborated_count, 3)
+        confidence += 0.05 * min(observer_alert_count, 2)
+        confidence += 0.04 * min(len(chemical_depleting), 2)
+        confidence = round(min(0.95, confidence), 2)
+        summary = (
+            f"{state_name.lower()} with raw_water={raw_water_state}, "
+            f"process2={process2_state}, trust_focus={trust_assessment.get('suspicious_surface', 'unknown')}."
+        )
+        return {
+            "plant_mode": state_name.lower(),
+            "raw_water_state": raw_water_state,
+            "process2_state": process2_state,
+            "expected_process_response": expected_process_response,
+            "observed_mismatches": failed_checks[:4],
+            "confidence": confidence,
+            "summary": summary,
+        }
+
+    def _latest_recent_action(
+        self,
+        recent_actions: list[dict[str, Any]],
+        *,
+        role: str | None = None,
+        action_types: set[str] | None = None,
+        predicate=None,
+    ) -> dict[str, Any] | None:
+        for item in reversed(recent_actions):
+            if role is not None and str(item.get("role")) != role:
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            action_type = str(action.get("type", ""))
+            if action_types is not None and action_type not in action_types:
+                continue
+            if predicate is not None and not predicate(action):
+                continue
+            payload = dict(item)
+            payload["action"] = action
+            return payload
+        return None
+
+    @staticmethod
+    def _trust_state_label(score: float) -> str:
+        if score >= 0.8:
+            return "trusted"
+        if score >= 0.6:
+            return "guarded"
+        if score >= 0.4:
+            return "degraded"
+        return "low"
+
     def _planned_relationship_notes(self, context: dict[str, Any]) -> list[str]:
         if context["scenario"].suite not in {"normal", "readiness", "recheck", "smoke"}:
             return []
@@ -3706,6 +4396,7 @@ class AgenticRoleAgent(RoleAgent):
         *,
         context: dict[str, Any],
         telemetry_summary: dict[str, Any],
+        defender_reasoning: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         if self.role != "defender":
             return None
@@ -3835,6 +4526,7 @@ class AgenticRoleAgent(RoleAgent):
             prior_state=state,
             defender_action_count=defender_action_count,
             prior_mitigations=prior_mitigations,
+            defender_reasoning=defender_reasoning,
         )
         containment_effective = self._containment_effective(
             incident={"type": incident_type},
@@ -4049,7 +4741,16 @@ class AgenticRoleAgent(RoleAgent):
         prior_state: dict[str, Any] | None = None,
         defender_action_count: int = 0,
         prior_mitigations: list[str] | None = None,
+        defender_reasoning: dict[str, Any] | None = None,
     ) -> str | None:
+        control_logic_checks = dict(
+            (defender_reasoning or {}).get("control_logic_checks") or {}
+        )
+        failed_checks = {
+            str(item.get("id"))
+            for item in control_logic_checks.get("checks", [])
+            if item.get("status") == "failed"
+        }
         if self._uses_blue_team_prior_knowledge() and incident_type != "none":
             containment_effective = self._containment_effective(
                 incident={"type": incident_type},
@@ -4073,14 +4774,23 @@ class AgenticRoleAgent(RoleAgent):
             if preferred_action:
                 return preferred_action
         if incident_type == "process2_manual_dosing":
+            if {
+                "dosing_persists_after_process2_deselect",
+                "manual_dosing_requires_process2_selection",
+            }.intersection(failed_checks):
+                return "hmi_stop"
             if severity >= 3:
                 return "select_process"
             return None
         if incident_type == "raw_water_overflow":
+            if "high_high_raw_water_should_not_keep_rising" in failed_checks and severity >= 3:
+                return "hmi_estop" if severity >= 4 else "hmi_stop"
             if severity >= 4:
                 return "hmi_estop"
             return "hmi_stop"
         if incident_type == "raw_water_low_protection":
+            if "raw_water_low_should_recover_or_shutdown" in failed_checks:
+                return "hmi_stop"
             return "hmi_stop"
         if incident_type == "telemetry_anomaly" and telemetry_summary["active_alarms"]:
             return "hmi_stop"
@@ -4377,6 +5087,7 @@ class AgenticRoleAgent(RoleAgent):
         structured_memory: dict[str, Any],
         structured_prior_knowledge: dict[str, Any] | None,
         mitre_context: dict[str, Any] | None,
+        defender_reasoning: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
         if self.role == "operator":
             return self._strict_playbook_candidates(
@@ -4428,12 +5139,25 @@ class AgenticRoleAgent(RoleAgent):
             now=float(context["time_sec"]),
             playbook_anticipation_sec=self.playbook_anticipation_sec,
         )
+        if self.role == "defender":
+            candidates = self._rank_defender_candidates_with_reasoning(
+                candidates=candidates,
+                incident=incident,
+                structured_memory=structured_memory,
+                defender_reasoning=defender_reasoning,
+            )
         if self.role == "defender" and structured_prior_knowledge is not None:
             candidates = self._rank_defender_candidates_with_prior_knowledge(
                 candidates=candidates,
                 incident=incident,
                 structured_memory=structured_memory,
                 structured_prior_knowledge=structured_prior_knowledge,
+            )
+            candidates = self._rank_defender_candidates_with_reasoning(
+                candidates=candidates,
+                incident=incident,
+                structured_memory=structured_memory,
+                defender_reasoning=defender_reasoning,
             )
         return candidates
 
@@ -6161,6 +6885,8 @@ class AgenticRoleAgent(RoleAgent):
         structured_prior_knowledge = dict(
             context.get("structured_prior_knowledge") or {}
         )
+        trust_assessment = dict(context.get("trust_assessment") or {})
+        control_logic_checks = dict(context.get("control_logic_checks") or {})
         matched_patterns = list(structured_prior_knowledge.get("matched_patterns", []))
         if str(incident.get("type", "none")) == "none":
             return False
@@ -6173,7 +6899,11 @@ class AgenticRoleAgent(RoleAgent):
             )
         ):
             return False
+        if control_logic_checks.get("immediate_attention_required"):
+            return True
         if structured_memory.get("escalation_required"):
+            return True
+        if int(trust_assessment.get("low_trust_signal_count", 0) or 0) >= 2:
             return True
         if matched_patterns and str(matched_patterns[0].get("urgency")) == "immediate":
             return True
@@ -6195,27 +6925,27 @@ class AgenticRoleAgent(RoleAgent):
         incident: dict[str, Any],
     ) -> dict[str, Any] | None:
         recommended_action = str(incident.get("recommended_action") or "")
-        matching = [
-            item
-            for item in context.get("candidate_actions", [])
-            if str(item.get("action", {}).get("type")) == recommended_action
-        ]
-        if not matching:
-            matching = [
-                item
-                for item in context.get("candidate_actions", [])
-                if item.get("guardrail_reason")
-            ]
-        if not matching:
+        candidate_pool: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in context.get("candidate_actions", []):
+            action_type = str(item.get("action", {}).get("type", ""))
+            if action_type == recommended_action or item.get("guardrail_reason"):
+                candidate_id = str(item.get("id", ""))
+                if candidate_id in seen_ids:
+                    continue
+                seen_ids.add(candidate_id)
+                candidate_pool.append(item)
+        if not candidate_pool:
             return None
-        matching.sort(
+        candidate_pool.sort(
             key=lambda item: (
                 int(item.get("priority", 0)),
+                int(str(item.get("action", {}).get("type", "")) == recommended_action),
                 str(item.get("guardrail_reason") or ""),
             ),
             reverse=True,
         )
-        return matching[0]
+        return candidate_pool[0]
 
     def _recent_same_action(
         self,
@@ -6390,6 +7120,8 @@ class AgenticRoleAgent(RoleAgent):
         structured_memory = context.get("structured_memory") or {}
         defender_awareness = structured_memory.get("defender_intervention_awareness") or {}
         structured_prior_knowledge = context.get("structured_prior_knowledge") or {}
+        trust_assessment = context.get("trust_assessment") or {}
+        control_logic_checks = context.get("control_logic_checks") or {}
         matched_patterns = list(structured_prior_knowledge.get("matched_patterns", []))
         defender_action_count = sum(
             1 for item in context.get("recent_actions", []) if item.get("role") == "defender"
@@ -6420,6 +7152,15 @@ class AgenticRoleAgent(RoleAgent):
             "incident_type": (context.get("incident") or {}).get("type"),
             "incident_status": (context.get("incident") or {}).get("status"),
             "incident_severity": int((context.get("incident") or {}).get("severity", 0) or 0),
+            "low_trust_signal_count": int(
+                trust_assessment.get("low_trust_signal_count", 0) or 0
+            ),
+            "failed_control_logic_check_count": int(
+                control_logic_checks.get("failed_check_count", 0) or 0
+            ),
+            "immediate_attention_required": bool(
+                control_logic_checks.get("immediate_attention_required")
+            ),
             "memory_focus": structured_memory.get("recommended_attention_target")
             or structured_memory.get("leverage_hypothesis")
             or structured_memory.get("best_known_attack_surface")
@@ -6454,6 +7195,18 @@ class AgenticRoleAgent(RoleAgent):
         if current.get("defender_action_count", 0) > previous.get("defender_action_count", 0):
             return True
         if current.get("process2_signal_count", 0) > previous.get("process2_signal_count", 0):
+            return True
+        if current.get("low_trust_signal_count", 0) > previous.get(
+            "low_trust_signal_count", 0
+        ):
+            return True
+        if current.get("failed_control_logic_check_count", 0) > previous.get(
+            "failed_control_logic_check_count", 0
+        ):
+            return True
+        if current.get("immediate_attention_required") and not previous.get(
+            "immediate_attention_required"
+        ):
             return True
         if current.get("immediate_pattern_count", 0) > previous.get(
             "immediate_pattern_count", 0

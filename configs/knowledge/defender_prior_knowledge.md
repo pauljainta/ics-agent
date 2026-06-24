@@ -16,6 +16,7 @@ Suspicious defender-side patterns:
 - Unplanned Process 2 manual valve activity is stronger evidence.
 - Falling chemical inventory during unplanned Process 2 use is strong containment evidence.
 - Abrupt tank-level jumps or repeated command-status mismatch can indicate telemetry or actuator integrity problems.
+- Failed expected control effects, such as continued dosing after Process 2 deselection or non-recovering low raw-water behavior, should lower trust in the relevant surface.
 
 Mitigation doctrine:
 - Prefer `select_process active=false` first when the incident is isolated to Process 2 manual dosing.
