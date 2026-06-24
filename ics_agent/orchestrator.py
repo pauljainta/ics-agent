@@ -80,27 +80,37 @@ class ExperimentOrchestrator:
                 normalized["allowed_action_types"] = allowed
         return normalized
 
-    def validate_runtime(self) -> dict[str, Any]:
-        agentic_profile_count = 0
-        knowledge_file_count = 0
-
-        for profile_id, profile in self.agent_profiles.items():
-            if not isinstance(profile, dict):
-                raise ConfigError(f"profile {profile_id} must be a mapping")
-            role = str(profile.get("role", "")).strip()
-            if not role:
-                raise ConfigError(f"profile {profile_id} is missing a role")
-            allowed = profile.get("allowed_action_types")
-            if not isinstance(allowed, list) or not allowed:
-                raise ConfigError(
-                    f"profile {profile_id} must define non-empty allowed_action_types"
+    @staticmethod
+    def _deep_merge_mapping(
+        base: dict[str, Any],
+        override: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = deepcopy(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = ExperimentOrchestrator._deep_merge_mapping(
+                    merged[key],
+                    value,
                 )
+            else:
+                merged[key] = deepcopy(value)
+        return merged
 
-            family = str(profile.get("family", "scripted"))
-            if family != "agentic":
-                continue
+    def _validate_runtime_profile(self, profile_id: str, profile: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(profile, dict):
+            raise ConfigError(f"profile {profile_id} must be a mapping")
+        role = str(profile.get("role", "")).strip()
+        if not role:
+            raise ConfigError(f"profile {profile_id} is missing a role")
+        allowed = profile.get("allowed_action_types")
+        if not isinstance(allowed, list) or not allowed:
+            raise ConfigError(
+                f"profile {profile_id} must define non-empty allowed_action_types"
+            )
 
-            agentic_profile_count += 1
+        family = str(profile.get("family", "scripted"))
+        knowledge_file_count = 0
+        if family == "agentic":
             llm = profile.get("llm", {})
             if not isinstance(llm, dict):
                 raise ConfigError(f"profile {profile_id} llm config must be a mapping")
@@ -119,7 +129,72 @@ class ExperimentOrchestrator:
                 profile.get("knowledge_files"),
                 profile_id=profile_id,
             )
-            knowledge_file_count += len(knowledge_paths)
+            knowledge_file_count = len(knowledge_paths)
+
+        return {
+            "role": role,
+            "family": family,
+            "knowledge_file_count": knowledge_file_count,
+        }
+
+    def _validated_profile_overrides(
+        self,
+        *,
+        profiles: dict[str, str],
+        raw_overrides: Any,
+        condition_label: str,
+    ) -> dict[str, dict[str, Any]]:
+        if raw_overrides in (None, {}):
+            return {}
+        if not isinstance(raw_overrides, dict):
+            raise ConfigError(f"{condition_label} profile_overrides must be a mapping")
+
+        validated: dict[str, dict[str, Any]] = {}
+        for role, override in raw_overrides.items():
+            if role not in profiles:
+                raise ConfigError(
+                    f"{condition_label} profile_overrides references unknown role `{role}`"
+                )
+            if not isinstance(override, dict):
+                raise ConfigError(
+                    f"{condition_label} profile_overrides[{role}] must be a mapping"
+                )
+            validated[str(role)] = deepcopy(override)
+        return validated
+
+    def _effective_condition_profiles(
+        self,
+        *,
+        profiles: dict[str, str],
+        profile_overrides: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        effective: dict[str, dict[str, Any]] = {}
+        for role, profile_id in profiles.items():
+            base_profile = deepcopy(self.agent_profiles[profile_id])
+            override = dict(profile_overrides.get(role, {}))
+            merged = (
+                self._deep_merge_mapping(base_profile, override)
+                if override
+                else base_profile
+            )
+            normalized = self._normalized_profile(merged)
+            metadata = self._validate_runtime_profile(profile_id, normalized)
+            if metadata["role"] != role:
+                raise ConfigError(
+                    f"profile override for `{profile_id}` changed role to `{metadata['role']}`; expected `{role}`"
+                )
+            effective[str(role)] = normalized
+        return effective
+
+    def validate_runtime(self) -> dict[str, Any]:
+        agentic_profile_count = 0
+        knowledge_file_count = 0
+
+        for profile_id, profile in self.agent_profiles.items():
+            metadata = self._validate_runtime_profile(profile_id, profile)
+            if metadata["family"] == "agentic":
+                agentic_profile_count += 1
+                knowledge_file_count += int(metadata["knowledge_file_count"])
 
         return {
             "profile_count": len(self.agent_profiles),
@@ -148,10 +223,15 @@ class ExperimentOrchestrator:
     def _collect_decoding_settings(
         self,
         profiles: dict[str, str],
+        *,
+        effective_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any]]:
         settings: dict[str, dict[str, Any]] = {}
         for role, profile_id in profiles.items():
-            profile = self.agent_profiles.get(profile_id, {})
+            profile = (
+                dict((effective_profiles or {}).get(role) or {})
+                or self.agent_profiles.get(profile_id, {})
+            )
             if not isinstance(profile, dict) or profile.get("family") != "agentic":
                 continue
             llm = profile.get("llm", {})
@@ -188,17 +268,25 @@ class ExperimentOrchestrator:
                 profiles,
                 override=condition_spec.get("name"),
             )
-            suite_settings[condition_name] = self._collect_decoding_settings(profiles)
+            suite_settings[condition_name] = self._collect_decoding_settings(
+                profiles,
+                effective_profiles=condition_spec.get("effective_profiles"),
+            )
         return suite_settings
 
     def _condition_reproducibility(
         self,
         condition_name: str,
         profiles: dict[str, str],
+        *,
+        effective_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         payload = dict(self._current_reproducibility)
         suite_decoding = dict(payload.get("suite_decoding") or {})
-        payload["decoding"] = self._collect_decoding_settings(profiles)
+        payload["decoding"] = self._collect_decoding_settings(
+            profiles,
+            effective_profiles=effective_profiles,
+        )
         payload["suite_decoding"] = suite_decoding
         payload["condition_name"] = condition_name
         return payload
@@ -340,6 +428,7 @@ class ExperimentOrchestrator:
             condition_reproducibility = self._condition_reproducibility(
                 condition_name,
                 condition,
+                effective_profiles=condition_spec.get("effective_profiles"),
             )
             condition_summary: dict[str, Any] = {
                 "condition_name": condition_name,
@@ -373,6 +462,7 @@ class ExperimentOrchestrator:
                         experiment_id=experiment_id,
                         condition_name=condition_name,
                         condition=condition,
+                        effective_profiles=condition_spec.get("effective_profiles"),
                         scenario=scenario,
                         run_id=run_id,
                         run_dir=run_dir,
@@ -542,7 +632,27 @@ class ExperimentOrchestrator:
                         f"conditions[{index}] must define a non-empty `profiles` mapping"
                     )
                 validated = self._validate_condition_profiles(profiles)
-                resolved.append({"name": item.get("name"), "profiles": validated})
+                condition_label = (
+                    f"conditions[{index}]"
+                    if not item.get("name")
+                    else f"condition `{item.get('name')}`"
+                )
+                profile_overrides = self._validated_profile_overrides(
+                    profiles=validated,
+                    raw_overrides=item.get("profile_overrides"),
+                    condition_label=condition_label,
+                )
+                resolved.append(
+                    {
+                        "name": item.get("name"),
+                        "profiles": validated,
+                        "profile_overrides": profile_overrides,
+                        "effective_profiles": self._effective_condition_profiles(
+                            profiles=validated,
+                            profile_overrides=profile_overrides,
+                        ),
+                    }
+                )
             return resolved
 
         role_matrix = config.get("role_matrix")
@@ -563,7 +673,15 @@ class ExperimentOrchestrator:
                     )
             choices.append(profile_ids)
         return [
-            {"name": None, "profiles": dict(zip(roles, combo, strict=True))}
+            {
+                "name": None,
+                "profiles": dict(zip(roles, combo, strict=True)),
+                "profile_overrides": {},
+                "effective_profiles": self._effective_condition_profiles(
+                    profiles=dict(zip(roles, combo, strict=True)),
+                    profile_overrides={},
+                ),
+            }
             for combo in itertools.product(*choices)
         ]
 
@@ -593,14 +711,27 @@ class ExperimentOrchestrator:
             f"{role}-{profile}" for role, profile in sorted(condition.items())
         )
 
-    def _create_agent(self, profile_id: str):
-        profile = deepcopy(self.agent_profiles[profile_id])
+    def _create_agent(self, profile_id: str, *, profile: dict[str, Any] | None = None):
+        profile = deepcopy(profile or self.agent_profiles[profile_id])
         family = str(profile.get("family", "scripted"))
         if family == "agentic":
             return AgenticRoleAgent(profile_id, profile)
         if family == "rule_based":
             return RuleBasedRoleAgent(profile_id, profile)
         return ScriptedRoleAgent(profile_id, profile)
+
+    def _create_condition_agent(
+        self,
+        *,
+        role: str,
+        profile_id: str,
+        effective_profiles: dict[str, dict[str, Any]] | None,
+    ):
+        base_profile = self.agent_profiles[profile_id]
+        profile = deepcopy((effective_profiles or {}).get(role) or base_profile)
+        if profile == base_profile:
+            return self._create_agent(profile_id)
+        return self._create_agent(profile_id, profile=profile)
 
     def _build_plan(
         self, scenario: ScenarioDefinition
@@ -681,6 +812,7 @@ class ExperimentOrchestrator:
         experiment_id: str,
         condition_name: str,
         condition: dict[str, str],
+        effective_profiles: dict[str, dict[str, Any]] | None = None,
         scenario: ScenarioDefinition,
         run_id: str,
         run_dir: Path,
@@ -700,15 +832,25 @@ class ExperimentOrchestrator:
                 "reproducibility": self._condition_reproducibility(
                     condition_name,
                     condition,
+                    effective_profiles=effective_profiles,
                 ),
+                "profile_overrides": {
+                    role: profile
+                    for role, profile in (effective_profiles or {}).items()
+                    if profile != self.agent_profiles.get(condition.get(role, ""))
+                },
                 "profile_assets": {
                     role: {
-                        "prompt_file": self.agent_profiles[profile_id]
+                        "prompt_file": (
+                            dict((effective_profiles or {}).get(role) or {})
+                            or self.agent_profiles[profile_id]
+                        )
                         .get("llm", {})
                         .get("prompt_file"),
-                        "knowledge_files": self.agent_profiles[profile_id].get(
-                            "knowledge_files", []
-                        ),
+                        "knowledge_files": (
+                            dict((effective_profiles or {}).get(role) or {})
+                            or self.agent_profiles[profile_id]
+                        ).get("knowledge_files", []),
                     }
                     for role, profile_id in condition.items()
                 },
@@ -717,7 +859,7 @@ class ExperimentOrchestrator:
 
         env = OpenPLCEnvironment(config.get("environment", {}))
         started = False
-        phase_a_started_monotonic = time.time()
+        phase_a_started_monotonic = time.monotonic()
         phase_a_started_utc = utc_now()
         agents: dict[str, Any] = {}
         try:
@@ -725,14 +867,21 @@ class ExperimentOrchestrator:
                 env.start()
                 started = True
                 for role, profile_id in condition.items():
-                    profile = deepcopy(self.agent_profiles[profile_id])
+                    profile = deepcopy(
+                        (effective_profiles or {}).get(role)
+                        or self.agent_profiles[profile_id]
+                    )
                     agent = env.remote_role_proxy(
                         role=role,
                         profile_name=profile_id,
                         profile=profile,
                     )
                     if agent is None:
-                        agent = self._create_agent(profile_id)
+                        agent = self._create_condition_agent(
+                            role=role,
+                            profile_id=profile_id,
+                            effective_profiles=effective_profiles,
+                        )
                     agents[role] = agent
                 for role, agent in agents.items():
                     agent.reset(scenario)
@@ -756,7 +905,7 @@ class ExperimentOrchestrator:
                         )
                 env.reset(scenario.execution.get("initial_conditions"))
                 phase_a_duration_sec = round(
-                    max(0.0, time.time() - phase_a_started_monotonic),
+                    max(0.0, time.monotonic() - phase_a_started_monotonic),
                     3,
                 )
                 phase_boundary = {
@@ -780,7 +929,11 @@ class ExperimentOrchestrator:
                 self._run_live_loop(bundle, scenario, agents, condition, env)
             else:
                 agents = {
-                    role: self._create_agent(profile_id)
+                    role: self._create_condition_agent(
+                        role=role,
+                        profile_id=profile_id,
+                        effective_profiles=effective_profiles,
+                    )
                     for role, profile_id in condition.items()
                 }
                 for agent in agents.values():
@@ -879,7 +1032,12 @@ class ExperimentOrchestrator:
                 write_run_bundle(run_dir, resolved_bundle)
         return resolved_bundle
 
-    def _aggregate_attack_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
+    def _aggregate_attack_metrics(
+        self,
+        runs: list[dict[str, Any]],
+        *,
+        primary_timing_origin: str = "attack_start",
+    ) -> dict[str, Any]:
         attack_runs = [run for run in runs if run.get("suite") == "attack"]
         completed = [run for run in attack_runs if run.get("status") == "completed"]
         per_run_metrics = [
@@ -892,9 +1050,18 @@ class ExperimentOrchestrator:
                 "time_to_detection_sec": run.get("metrics", {}).get(
                     "time_to_detection_sec"
                 ),
+                "time_to_detection_from_attack_start_sec": run.get("metrics", {}).get(
+                    "time_to_detection_sec"
+                ),
+                "time_to_detection_from_wargame_t0_sec": run.get("metrics", {})
+                .get("phase_window", {})
+                .get("time_to_first_detection_sec"),
                 "time_to_recognition_sec": run.get("metrics", {}).get(
                     "time_to_recognition_sec"
                 ),
+                "time_to_recognition_from_wargame_t0_sec": run.get("metrics", {})
+                .get("phase_window", {})
+                .get("time_to_first_recognition_sec"),
                 "observer_time_to_detection_sec": run.get("metrics", {})
                 .get("observer_detection", {})
                 .get("time_to_detection_sec"),
@@ -910,6 +1077,9 @@ class ExperimentOrchestrator:
                 "time_to_mitigation_sec": run.get("metrics", {}).get(
                     "time_to_mitigation_sec"
                 ),
+                "time_to_mitigation_from_wargame_t0_sec": run.get("metrics", {}).get(
+                    "time_to_mitigation_from_wargame_t0_sec"
+                ),
                 "attacker_action_count": run.get("metrics", {}).get(
                     "attacker_action_count"
                 ),
@@ -922,6 +1092,12 @@ class ExperimentOrchestrator:
                 "time_to_physical_impact_sec": run.get("metrics", {})
                 .get("attacker", {})
                 .get("time_to_physical_impact_sec"),
+                "time_to_physical_impact_from_attack_start_sec": run.get("metrics", {})
+                .get("attacker", {})
+                .get("time_to_physical_impact_sec"),
+                "time_to_physical_impact_from_wargame_t0_sec": run.get("metrics", {})
+                .get("phase_window", {})
+                .get("time_to_first_safety_violation_sec"),
                 "attacker_execution_success_rate": run.get("metrics", {})
                 .get("attacker", {})
                 .get("execution_success_rate"),
@@ -986,6 +1162,12 @@ class ExperimentOrchestrator:
                 "time_to_first_defender_action_sec": run.get("metrics", {})
                 .get("defender_intervention", {})
                 .get("time_to_first_action_sec"),
+                "time_to_first_defender_action_from_attack_start_sec": run.get("metrics", {})
+                .get("defender_intervention", {})
+                .get("time_to_first_action_sec"),
+                "time_to_first_defender_action_from_wargame_t0_sec": run.get("metrics", {})
+                .get("phase_window", {})
+                .get("time_to_first_defender_action_sec"),
                 "mitigation_action_count": run.get("metrics", {})
                 .get("defender_intervention", {})
                 .get("mitigation_action_count"),
@@ -998,6 +1180,12 @@ class ExperimentOrchestrator:
                 "recovery_success_rate": run.get("metrics", {}).get(
                     "recovery_success_rate"
                 ),
+                "phase_a_duration_sec": run.get("metrics", {})
+                .get("phase_window", {})
+                .get("phase_a_duration_sec"),
+                "wargame_t0_utc": run.get("metrics", {})
+                .get("phase_window", {})
+                .get("wargame_t0_utc"),
             }
             for run in attack_runs
         ]
@@ -1072,7 +1260,29 @@ class ExperimentOrchestrator:
             if run.get("metrics", {}).get("attacker", {}).get("undetected_impact")
         ]
 
+        primary_origin = (
+            "wargame_t0"
+            if str(primary_timing_origin).strip().lower() == "wargame_t0"
+            else "attack_start"
+        )
+        primary_detection_metric = (
+            "time_to_detection_from_wargame_t0_sec"
+            if primary_origin == "wargame_t0"
+            else "time_to_detection_from_attack_start_sec"
+        )
+        primary_first_action_metric = (
+            "time_to_first_defender_action_from_wargame_t0_sec"
+            if primary_origin == "wargame_t0"
+            else "time_to_first_defender_action_from_attack_start_sec"
+        )
+        primary_impact_metric = (
+            "time_to_physical_impact_from_wargame_t0_sec"
+            if primary_origin == "wargame_t0"
+            else "time_to_physical_impact_from_attack_start_sec"
+        )
+
         return {
+            "primary_timing_origin": primary_origin,
             "attack_run_count": len(attack_runs),
             "completed_attack_run_count": len(completed),
             "failed_attack_run_count": len(attack_runs) - len(completed),
@@ -1085,8 +1295,17 @@ class ExperimentOrchestrator:
             "contained_before_safety_violation_run_count": len(timely_contained),
             "attacker_caused_safety_violation_run_count": len(attacker_safety_success),
             "undetected_impact_run_count": len(undetected_impact_runs),
-            "time_to_detection_sec_avg": average("time_to_detection_sec"),
+            "time_to_detection_sec_avg": average(primary_detection_metric),
+            "time_to_detection_from_attack_start_sec_avg": average(
+                "time_to_detection_from_attack_start_sec"
+            ),
+            "time_to_detection_from_wargame_t0_sec_avg": average(
+                "time_to_detection_from_wargame_t0_sec"
+            ),
             "time_to_recognition_sec_avg": average("time_to_recognition_sec"),
+            "time_to_recognition_from_wargame_t0_sec_avg": average(
+                "time_to_recognition_from_wargame_t0_sec"
+            ),
             "observer_time_to_detection_sec_avg": average(
                 "observer_time_to_detection_sec"
             ),
@@ -1100,12 +1319,21 @@ class ExperimentOrchestrator:
                 "defender_time_to_recognition_sec"
             ),
             "time_to_mitigation_sec_avg": average("time_to_mitigation_sec"),
+            "time_to_mitigation_from_wargame_t0_sec_avg": average(
+                "time_to_mitigation_from_wargame_t0_sec"
+            ),
             "attacker_action_count_avg": average("attacker_action_count"),
             "attacker_recon_action_count_avg": average(
                 "attacker_recon_action_count"
             ),
             "attacker_time_to_impact_sec_avg": average("attacker_time_to_impact_sec"),
-            "time_to_physical_impact_sec_avg": average("time_to_physical_impact_sec"),
+            "time_to_physical_impact_sec_avg": average(primary_impact_metric),
+            "time_to_physical_impact_from_attack_start_sec_avg": average(
+                "time_to_physical_impact_from_attack_start_sec"
+            ),
+            "time_to_physical_impact_from_wargame_t0_sec_avg": average(
+                "time_to_physical_impact_from_wargame_t0_sec"
+            ),
             "attacker_execution_success_rate_avg": average(
                 "attacker_execution_success_rate"
             ),
@@ -1128,7 +1356,13 @@ class ExperimentOrchestrator:
             ),
             "downtime_timestep_count_avg": average("downtime_timestep_count"),
             "time_to_first_defender_action_sec_avg": average(
-                "time_to_first_defender_action_sec"
+                primary_first_action_metric
+            ),
+            "time_to_first_defender_action_from_attack_start_sec_avg": average(
+                "time_to_first_defender_action_from_attack_start_sec"
+            ),
+            "time_to_first_defender_action_from_wargame_t0_sec_avg": average(
+                "time_to_first_defender_action_from_wargame_t0_sec"
             ),
             "mitigation_action_count_avg": average("mitigation_action_count"),
             "false_positive_rate_avg": average("false_positive_rate"),

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from ics_agent.environment import EnvironmentError, OpenPLCEnvironment, _SphereOpenPLCBackend
+from ics_agent.mitre import verify_optionb_staged_snapshot
 
 
 def test_local_backend_mode_controls_openplc_backend(monkeypatch) -> None:
@@ -193,3 +194,45 @@ def test_sphere_backend_start_cleans_partial_local_transport(monkeypatch) -> Non
         "defender_tunnel",
     ]
     assert backend.started is False
+
+
+def test_optionb_staged_snapshot_verifier_requires_access_engineering_and_wargame_t0() -> None:
+    snapshot = {
+        "backend": "sphere_openplc",
+        "experiment": "openplcwater.lgarcia",
+        "realization": "optionbsmoke.openplcwater.lgarcia",
+        "revision": "ac79757fe0d3f8e98bbfa43a303fee121b88be05",
+        "xdc": "optionb0.researcher",
+        "backend_config": {
+            "staged_hops": ["access", "engineering"],
+            "metric_boundary": {
+                "metric_clock_origin": "wargame_t0",
+            },
+        },
+    }
+
+    verified = verify_optionb_staged_snapshot(
+        snapshot,
+        expected_environment={
+            "experiment": "openplcwater.lgarcia",
+            "realization": "optionbsmoke",
+            "revision": "ac79757fe0d3f8e98bbfa43a303fee121b88be05",
+            "xdc": "optionb0",
+        },
+    )
+    assert verified["ok"] is True
+
+    invalid = verify_optionb_staged_snapshot(
+        {
+            **snapshot,
+            "backend_config": {
+                "staged_hops": ["engineering"],
+                "metric_boundary": {"metric_clock_origin": "attack_start"},
+            },
+        },
+        expected_environment={"realization": "optionbsmoke", "xdc": "optionb0"},
+    )
+
+    assert invalid["ok"] is False
+    assert any("access and engineering" in message for message in invalid["errors"])
+    assert any("metric_clock_origin=wargame_t0" in message for message in invalid["errors"])

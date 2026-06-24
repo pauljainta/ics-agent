@@ -11,6 +11,14 @@ from typing import Any
 from .action_space import action_key, build_candidate_actions, normalize_action
 from .base import RoleAgent
 from ..knowledge import load_manual_bundle
+from ..mitre import (
+    ATTACKER_PHASE_DESCRIPTIONS,
+    DEFENDER_PHASE_DESCRIPTIONS,
+    optionb_mitre_context,
+    optionb_mitre_enabled,
+    observed_attack_profile,
+    phase_metadata,
+)
 from ..paths import REPO_ROOT
 
 
@@ -186,6 +194,8 @@ class CachedQwenDecisionEngine:
             "incident": context.get("incident"),
             "structured_memory": context.get("structured_memory"),
             "structured_prior_knowledge": context.get("structured_prior_knowledge"),
+            "mitre_context": context.get("mitre_context"),
+            "staged_path": context.get("staged_path"),
             "decision_epoch": context.get("decision_epoch"),
             "role_goal": context.get("role_goal"),
             "role_constraints": context.get("role_constraints", []),
@@ -504,6 +514,9 @@ class AgenticRoleAgent(RoleAgent):
             "observer_prior_knowledge",
         }
 
+    def _optionb_mitre_enabled(self) -> bool:
+        return optionb_mitre_enabled(self.profile)
+
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
             return []
@@ -577,6 +590,9 @@ class AgenticRoleAgent(RoleAgent):
 
     def _step_attacker_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
+        transition = self._optionb_mitre_transition_decisions(agent_context)
+        if transition:
+            return transition
         if self._only_noop_candidates(agent_context):
             return []
         if not self._should_reason(agent_context, channel="action"):
@@ -595,6 +611,9 @@ class AgenticRoleAgent(RoleAgent):
 
     def _step_monitoring_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
+        transition = self._optionb_mitre_transition_decisions(agent_context)
+        if transition:
+            return transition
         if not self._should_monitor(agent_context):
             return []
         if not self._should_reason(agent_context, channel="monitor"):
@@ -637,6 +656,89 @@ class AgenticRoleAgent(RoleAgent):
                 ) from exc
             return []
         return self._payload_to_decisions(payload, agent_context)
+
+    def _optionb_mitre_transition_decisions(
+        self,
+        context: dict[str, Any],
+    ) -> list[Any]:
+        if not self._optionb_mitre_enabled():
+            return []
+        mitre_context = dict(context.get("mitre_context") or {})
+        next_phase = str(mitre_context.get("next_phase", ""))
+        emitted = self._state.setdefault("mitre_transition_notes", set())
+        if self.role == "attacker":
+            if next_phase not in {"staged_entry_context", "process_understanding"}:
+                return []
+            if next_phase in emitted:
+                return []
+            emitted.add(next_phase)
+            summary = (
+                "Establish staged Option B entry context before touching process-facing surfaces."
+                if next_phase == "staged_entry_context"
+                else self._optionb_mitre_process_understanding_summary(context)
+            )
+            return [
+                self.decision(
+                    decision_type="note",
+                    summary=summary,
+                    time_sec=float(context["time_sec"]),
+                    confidence=0.72,
+                    labels=["agentic", "attacker", "optionb-mitre"],
+                    metadata=self._optionb_mitre_metadata(
+                        context=context,
+                        action=None,
+                        decision_type="note",
+                        diagnosis=None,
+                        phase_hint=next_phase,
+                    ),
+                )
+            ]
+        if self.role in {"observer", "defender"}:
+            if next_phase != "access_presence_suspicion":
+                return []
+            if next_phase in emitted:
+                return []
+            if any(item.get("role") == "attacker" for item in context.get("recent_decisions", [])):
+                emitted.add(next_phase)
+                summary = (
+                    "Staged-path presence is suspicious; watch for discovery and qualification behavior."
+                )
+                return [
+                    self.decision(
+                        decision_type="note",
+                        summary=summary,
+                        time_sec=float(context["time_sec"]),
+                        confidence=0.6,
+                        labels=["agentic", self.role, "optionb-mitre"],
+                        metadata=self._optionb_mitre_metadata(
+                            context=context,
+                            action=None,
+                            decision_type="note",
+                            diagnosis=None,
+                            phase_hint="access_presence_suspicion",
+                        ),
+                    )
+                ]
+        return []
+
+    def _optionb_mitre_process_understanding_summary(
+        self,
+        context: dict[str, Any],
+    ) -> str:
+        memory = dict(context.get("structured_memory") or {})
+        surface = str(memory.get("best_known_attack_surface") or "unknown")
+        hypotheses = list(memory.get("candidate_leverage_hypotheses", []))
+        if surface and surface != "unknown":
+            return (
+                f"Discovery suggests `{surface}` is the most plausible staged process-facing leverage surface."
+            )
+        if hypotheses:
+            surface = str((hypotheses[0] or {}).get("surface") or "unknown")
+            if surface and surface != "unknown":
+                return (
+                    f"Reconnaissance narrows the likely leverage surface to `{surface}` before qualification."
+                )
+        return "Use reconnaissance findings to choose the most plausible staged process-facing surface."
 
     def _build_online_context(self, context: dict[str, Any]) -> dict[str, Any]:
         scenario = context["scenario"]
@@ -710,6 +812,12 @@ class AgenticRoleAgent(RoleAgent):
             incident=incident,
             structured_memory=structured_memory,
         )
+        mitre_context = self._optionb_mitre_context(
+            context=context,
+            telemetry_summary=telemetry_summary,
+            incident=incident,
+            structured_memory=structured_memory,
+        )
         candidate_actions = self._candidate_actions(
             context,
             visible_remaining_playbook,
@@ -717,6 +825,7 @@ class AgenticRoleAgent(RoleAgent):
             incident=incident,
             structured_memory=structured_memory,
             structured_prior_knowledge=structured_prior_knowledge,
+            mitre_context=mitre_context,
         )
         scenario_id = self._visible_scenario_id(scenario)
         process_id = scenario.execution.get("process_id")
@@ -750,6 +859,8 @@ class AgenticRoleAgent(RoleAgent):
             role_constraints.append(
                 "Use structured_prior_knowledge to connect plant semantics, safety thresholds, and mitigation doctrine to the current evidence."
             )
+        if mitre_context is not None:
+            role_constraints.extend(self._optionb_mitre_role_constraints(mitre_context))
         visible_relationship_notes = (
             [] if practical_black_box else telemetry_summary["relationship_notes"]
         )
@@ -778,6 +889,8 @@ class AgenticRoleAgent(RoleAgent):
             "incident": incident,
             "structured_memory": structured_memory,
             "structured_prior_knowledge": structured_prior_knowledge,
+            "mitre_context": mitre_context,
+            "staged_path": [] if mitre_context is None else mitre_context.get("staged_path", []),
             "decision_epoch": {
                 "observation_count": len(context.get("observations", [])),
                 "action_count": len(context.get("executed_actions", [])),
@@ -904,6 +1017,54 @@ class AgenticRoleAgent(RoleAgent):
             ],
         }
         return expected.get(self.role, [])
+
+    def _optionb_mitre_context(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        incident: dict[str, Any] | None,
+        structured_memory: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not self._optionb_mitre_enabled() or self.role not in {
+            "attacker",
+            "observer",
+            "defender",
+        }:
+            return None
+        return optionb_mitre_context(
+            role=self.role,
+            context=context,
+            structured_memory=structured_memory,
+            incident=incident,
+            risk_flags=list(telemetry_summary.get("risk_flags", [])),
+        )
+
+    def _optionb_mitre_role_constraints(
+        self,
+        mitre_context: dict[str, Any],
+    ) -> list[str]:
+        next_phase = str(mitre_context.get("next_phase", ""))
+        if self.role == "attacker":
+            guidance = ATTACKER_PHASE_DESCRIPTIONS.get(next_phase)
+            lines = [
+                "Follow the MITRE-informed staged chain: staged entry context, discovery, process understanding, control-path qualification, then manipulation and impact.",
+                "Treat the staged path as mandatory context: local orchestrator -> access -> engineering -> plant runtime.",
+                "Do not skip directly to plant manipulation before discovery and control-path qualification are complete.",
+            ]
+            if guidance:
+                lines.append(f"Current next attacker phase: {next_phase}. {guidance}")
+            return lines
+
+        guidance = DEFENDER_PHASE_DESCRIPTIONS.get(next_phase)
+        lines = [
+            "Frame monitoring around suspicion, discovery recognition, manipulation detection, and containment.",
+            "Treat the staged path as mandatory context shared by attacker and defender: local orchestrator -> access -> engineering -> plant runtime.",
+            "Prefer detection and response that lands before manipulation when the current evidence supports it.",
+        ]
+        if guidance:
+            lines.append(f"Current next defender phase: {next_phase}. {guidance}")
+        return lines
 
     @staticmethod
     def _practical_black_box_attacker_intent() -> str:
@@ -4215,6 +4376,7 @@ class AgenticRoleAgent(RoleAgent):
         incident: dict[str, Any] | None,
         structured_memory: dict[str, Any],
         structured_prior_knowledge: dict[str, Any] | None,
+        mitre_context: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
         if self.role == "operator":
             return self._strict_playbook_candidates(
@@ -4232,17 +4394,26 @@ class AgenticRoleAgent(RoleAgent):
             return [noop_candidate] if noop_candidate is not None else []
         if self.role == "attacker":
             if self._is_practical_black_box_attacker():
-                return self._practical_black_box_attacker_candidates(
+                candidates = self._practical_black_box_attacker_candidates(
                     context=context,
                     telemetry_summary=telemetry_summary,
                     structured_memory=structured_memory,
                 )
-            return self._adaptive_attacker_candidates(
-                context=context,
-                remaining_playbook=remaining_playbook,
-                telemetry_summary=telemetry_summary,
-                structured_memory=structured_memory,
-            )
+            else:
+                candidates = self._adaptive_attacker_candidates(
+                    context=context,
+                    remaining_playbook=remaining_playbook,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=structured_memory,
+                )
+            if mitre_context is not None:
+                return self._optionb_mitre_attacker_candidates(
+                    context=context,
+                    candidates=candidates,
+                    structured_memory=structured_memory,
+                    mitre_context=mitre_context,
+                )
+            return candidates
         candidates = build_candidate_actions(
             role=self.role,
             allowed_action_types=list(self.profile.get("allowed_action_types", [])),
@@ -4258,12 +4429,111 @@ class AgenticRoleAgent(RoleAgent):
             playbook_anticipation_sec=self.playbook_anticipation_sec,
         )
         if self.role == "defender" and structured_prior_knowledge is not None:
-            return self._rank_defender_candidates_with_prior_knowledge(
+            candidates = self._rank_defender_candidates_with_prior_knowledge(
                 candidates=candidates,
                 incident=incident,
                 structured_memory=structured_memory,
                 structured_prior_knowledge=structured_prior_knowledge,
             )
+        return candidates
+
+    def _optionb_mitre_attacker_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        structured_memory: dict[str, Any],
+        mitre_context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        next_phase = str(mitre_context.get("next_phase", ""))
+        if next_phase in {"staged_entry_context", "process_understanding"}:
+            noop_candidate = self._noop_candidate(
+                "Advance the current MITRE phase with a concise note instead of plant manipulation."
+            )
+            return [noop_candidate] if noop_candidate is not None else []
+        if next_phase == "discovery":
+            return self._optionb_mitre_recon_candidates(
+                context=context,
+                structured_memory=structured_memory,
+                mitre_context=mitre_context,
+                qualification=False,
+            )
+        if next_phase == "control_path_qualification":
+            return self._optionb_mitre_recon_candidates(
+                context=context,
+                structured_memory=structured_memory,
+                mitre_context=mitre_context,
+                qualification=True,
+            )
+        return candidates
+
+    def _optionb_mitre_recon_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        structured_memory: dict[str, Any],
+        mitre_context: dict[str, Any],
+        qualification: bool,
+    ) -> list[dict[str, Any]]:
+        del structured_memory
+        allowed = set(self.profile.get("allowed_action_types", []))
+        if "inspect_surface" not in allowed:
+            noop_candidate = self._noop_candidate(
+                "Hold because MITRE reconnaissance is required but inspect_surface is unavailable."
+            )
+            return [noop_candidate] if noop_candidate is not None else []
+
+        inspected_surfaces = {
+            str(item.get("surface"))
+            for item in (
+                (context.get("structured_memory") or {}).get("reconnaissance_findings", [])
+            )
+            if item.get("surface")
+        }
+        inspected_surfaces.update(
+            str((item.get("action") or {}).get("surface"))
+            for item in context.get("recent_actions", [])
+            if item.get("role") == "attacker"
+            and str((item.get("action") or {}).get("type")) == "inspect_surface"
+        )
+        candidate_surfaces = list(
+            mitre_context.get(
+                "qualification_surfaces" if qualification else "discovery_surfaces",
+                [],
+            )
+        )
+        ordered_surfaces: list[str] = []
+        for surface in candidate_surfaces:
+            surface_name = str(surface).strip()
+            if not surface_name:
+                continue
+            if qualification or surface_name not in inspected_surfaces:
+                ordered_surfaces.append(surface_name)
+        if not ordered_surfaces:
+            ordered_surfaces = [str(surface) for surface in candidate_surfaces if str(surface).strip()]
+
+        candidates: list[dict[str, Any]] = []
+        for surface_name in ordered_surfaces[:3]:
+            candidates.append(
+                {
+                    "id": action_key({"type": "inspect_surface", "surface": surface_name}),
+                    "summary": (
+                        f"Qualify `{surface_name}` as the likely plant-facing control surface."
+                        if qualification
+                        else f"Inspect `{surface_name}` to enumerate reachable staged-path process surfaces."
+                    ),
+                    "action": {"type": "inspect_surface", "surface": surface_name},
+                    "source": "optionb_mitre",
+                    "priority": 220 if qualification else 210,
+                    "category": "recon",
+                    "surface": surface_name,
+                }
+            )
+        noop_candidate = self._noop_candidate(
+            "Hold until the MITRE reconnaissance or qualification step is clearer."
+        )
+        if noop_candidate is not None:
+            candidates.append(noop_candidate)
         return candidates
 
     def _adaptive_attacker_candidates(
@@ -5584,6 +5854,105 @@ class AgenticRoleAgent(RoleAgent):
             for item in candidates
         )
 
+    def _optionb_mitre_phase_for_decision(
+        self,
+        *,
+        context: dict[str, Any],
+        action: dict[str, Any] | None,
+        decision_type: str,
+        diagnosis: str | None,
+        phase_hint: str | None = None,
+    ) -> str | None:
+        del diagnosis
+        if phase_hint:
+            return phase_hint
+        mitre_context = dict(context.get("mitre_context") or {})
+        next_phase = str(mitre_context.get("next_phase", "")).strip()
+        current_phase = str(mitre_context.get("current_phase", "")).strip()
+        action_type = "" if action is None else str(action.get("type", "")).strip()
+        if self.role == "attacker":
+            if action_type == "inspect_surface":
+                qualification_surfaces = {
+                    str(item) for item in mitre_context.get("qualification_surfaces", [])
+                }
+                if str(action.get("surface", "")) in qualification_surfaces:
+                    return "control_path_qualification"
+                return "discovery"
+            if action_type and action_type != "noop":
+                return "manipulation"
+            return next_phase or current_phase or "staged_entry_context"
+
+        if action_type and action_type != "noop":
+            return "containment_mitigation"
+        if decision_type == "alert":
+            if bool(mitre_context.get("manipulation_seen")):
+                return "manipulation_detection"
+            if any(
+                str((item.get("action") or {}).get("type")) == "inspect_surface"
+                for item in context.get("recent_actions", [])
+                if item.get("role") == "attacker"
+            ):
+                return "discovery_recognition"
+            return "access_presence_suspicion"
+        if bool(mitre_context.get("manipulation_seen")):
+            return "manipulation_detection"
+        if any(
+            str((item.get("action") or {}).get("type")) == "inspect_surface"
+            for item in context.get("recent_actions", [])
+            if item.get("role") == "attacker"
+        ):
+            return "discovery_recognition"
+        return next_phase or current_phase or "access_presence_suspicion"
+
+    def _optionb_mitre_metadata(
+        self,
+        *,
+        context: dict[str, Any],
+        action: dict[str, Any] | None,
+        decision_type: str,
+        diagnosis: str | None,
+        phase_hint: str | None = None,
+    ) -> dict[str, Any]:
+        if not self._optionb_mitre_enabled() or self.role not in {
+            "attacker",
+            "observer",
+            "defender",
+        }:
+            return {}
+        phase_family = "attacker" if self.role == "attacker" else "defender"
+        phase = self._optionb_mitre_phase_for_decision(
+            context=context,
+            action=action,
+            decision_type=decision_type,
+            diagnosis=diagnosis,
+            phase_hint=phase_hint,
+        )
+        if phase is None:
+            return {}
+        attack_profile = observed_attack_profile(
+            action=action,
+            structured_memory=context.get("structured_memory"),
+            incident=context.get("incident"),
+            risk_flags=context.get("risk_flags"),
+        )
+        metadata = phase_metadata(
+            phase_family=phase_family,
+            phase=phase,
+            policy_mode="agentic",
+            attack_profile=attack_profile,
+        )
+        mitre_context = dict(context.get("mitre_context") or {})
+        metadata["interaction_ready_clock"] = "wargame_t0"
+        if self.role == "attacker":
+            metadata["discovered_surface"] = mitre_context.get("discovered_surface")
+            metadata["qualification_surfaces"] = list(
+                mitre_context.get("qualification_surfaces", [])
+            )
+        else:
+            metadata["attacker_highest_phase"] = mitre_context.get("attacker_highest_phase")
+            metadata["attacker_next_phase"] = mitre_context.get("attacker_next_phase")
+        return metadata
+
     def _payload_to_decisions(
         self, payload: dict[str, Any], context: dict[str, Any]
     ) -> list[Any]:
@@ -5591,6 +5960,16 @@ class AgenticRoleAgent(RoleAgent):
         action = normalize_action(payload.get("action"))
         decision_type = str(payload.get("decision_type", "note"))
         now = float(context["time_sec"])
+        candidate_lookup = {
+            str(item.get("id")): item for item in context.get("candidate_actions", [])
+        }
+        candidate_id = payload.get("candidate_id")
+        if action is None and candidate_id is not None and decision_type == "action":
+            matched = candidate_lookup.get(str(candidate_id))
+            if matched is not None:
+                action = normalize_action(matched.get("action"))
+                if not summary:
+                    summary = str(matched.get("summary", "")).strip()
 
         if (
             action is not None
@@ -5661,6 +6040,12 @@ class AgenticRoleAgent(RoleAgent):
             metadata={
                 "backend": self.engine.last_mode,
                 "error": self.engine.last_error,
+                **self._optionb_mitre_metadata(
+                    context=context,
+                    action=action,
+                    decision_type=decision_type,
+                    diagnosis=payload.get("diagnosis"),
+                ),
             },
         )
         self._record_role_decision(
@@ -5754,6 +6139,13 @@ class AgenticRoleAgent(RoleAgent):
                     "incident": incident,
                     "candidate_priority": candidate.get("priority"),
                     "candidate_source": candidate.get("source"),
+                    **self._optionb_mitre_metadata(
+                        context=context,
+                        action=action,
+                        decision_type="action",
+                        diagnosis=incident.get("diagnosis"),
+                        phase_hint="containment_mitigation",
+                    ),
                 },
             )
         )
@@ -5896,6 +6288,10 @@ class AgenticRoleAgent(RoleAgent):
     def _should_monitor(self, context: dict[str, Any]) -> bool:
         if context.get("active_alarms") or context.get("risk_flags"):
             return True
+        if self._optionb_mitre_enabled() and any(
+            item.get("role") == "attacker" for item in context.get("recent_decisions", [])
+        ):
+            return True
         if self._recent_role_activity(
             context,
             roles={"attacker", "defender"},
@@ -5980,6 +6376,10 @@ class AgenticRoleAgent(RoleAgent):
             "active_alarms": context.get("active_alarms", []),
             "risk_flags": context.get("risk_flags", []),
             "incident": signature_incident,
+            "mitre_phase": {
+                "current": (context.get("mitre_context") or {}).get("current_phase"),
+                "next": (context.get("mitre_context") or {}).get("next_phase"),
+            },
             "relationship_notes": context.get("relationship_notes", [])[:8],
             "metrics": context.get("metrics"),
             "passed": context.get("passed"),

@@ -683,10 +683,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             mitigation_time,
             attack_start=attack_start,
         ),
+        "time_to_mitigation_from_wargame_t0_sec": None,
         "time_to_first_action_sec": _relative_time(
             first_defender_action_time,
             attack_start=attack_start,
         ),
+        "time_to_first_action_from_wargame_t0_sec": None,
         "action_count": len(defender_actions),
         "mitigation_action_count": len(mitigation_actions),
         "contained_before_safety_violation": contained_before_violation,
@@ -755,6 +757,17 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             attack_start=wargame_origin,
         ),
     }
+    if attacker_metrics is not None:
+        attacker_metrics["time_to_physical_impact_from_wargame_t0_sec"] = phase_window_metrics[
+            "time_to_first_safety_violation_sec"
+        ]
+    defender_intervention_metrics["time_to_mitigation_from_wargame_t0_sec"] = _relative_time(
+        mitigation_time,
+        attack_start=wargame_origin,
+    )
+    defender_intervention_metrics["time_to_first_action_from_wargame_t0_sec"] = (
+        phase_window_metrics["time_to_first_defender_action_sec"]
+    )
 
     attacker_phase_events = _mitre_phase_events(
         decisions,
@@ -923,12 +936,27 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             detection_time,
             attack_start=attack_start,
         ),
+        "time_to_detection_from_wargame_t0_sec": phase_window_metrics[
+            "time_to_first_detection_sec"
+        ],
         "time_to_recognition_sec": _relative_time(
             recognition_time,
             attack_start=attack_start,
         ),
+        "time_to_recognition_from_wargame_t0_sec": phase_window_metrics[
+            "time_to_first_recognition_sec"
+        ],
         "time_to_mitigation_sec": defender_intervention_metrics[
             "time_to_mitigation_sec"
+        ],
+        "time_to_mitigation_from_wargame_t0_sec": defender_intervention_metrics[
+            "time_to_mitigation_from_wargame_t0_sec"
+        ],
+        "time_to_first_defender_action_from_wargame_t0_sec": phase_window_metrics[
+            "time_to_first_defender_action_sec"
+        ],
+        "time_to_physical_impact_from_wargame_t0_sec": phase_window_metrics[
+            "time_to_first_safety_violation_sec"
         ],
         "true_positive_count": true_positive_count,
         "false_positive_count": false_positive_count,

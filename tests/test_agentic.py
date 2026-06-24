@@ -1267,6 +1267,139 @@ def test_black_box_attacker_context_hides_defender_action_details() -> None:
     }
 
 
+def test_optionb_mitre_black_box_attacker_context_exposes_phase_model_without_leakage() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "black_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "hmi_estop",
+            "noop",
+        ],
+        "behavior_model": {
+            "id": "optionb_mitre_staged",
+            "policy": "agentic",
+        },
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_black_box_attacker_optionb_mitre", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 0.0,
+            "observation": {
+                "STATE_NAME": "IDLE",
+                "RW_Tank_Level": 600,
+                "UF_UFFT_Tank_Level": 400,
+                "P2_Selected": 0,
+            },
+            "observations": [],
+            "executed_actions": [],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert context["scenario_id"] == "attack-live"
+    assert context["process_id"] is None
+    assert context["remaining_playbook"] == []
+    assert context["mitre_context"]["phase_model"] == "optionb_mitre_staged"
+    assert context["mitre_context"]["phase_family"] == "attacker"
+    assert context["mitre_context"]["next_phase"] == "staged_entry_context"
+    assert context["mitre_context"]["direct_plant_shortcuts_forbidden"] is True
+    assert context["staged_path"] == [
+        "local_orchestrator",
+        "access",
+        "engineering",
+        "plant_runtime",
+    ]
+    assert "target_tags" not in context["mitre_context"]
+
+
+def test_optionb_mitre_defender_context_exposes_phase_model_without_hidden_plan_leakage() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": ["hmi_stop", "hmi_estop", "select_process", "noop"],
+        "behavior_model": {
+            "id": "optionb_mitre_staged",
+            "policy": "agentic",
+        },
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender_optionb_mitre", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 6.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 620,
+                "UF_UFFT_Tank_Level": 430,
+                "P2_Selected": 0,
+            },
+            "observations": [{"STATE_NAME": "RUNNING", "RW_Tank_Level": 620}],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 5.0,
+                    "action": {"type": "inspect_surface", "surface": "process2_control_plane"},
+                }
+            ],
+            "decisions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 4.5,
+                    "decision_type": "note",
+                    "summary": "Staged entry context established.",
+                    "metadata": {
+                        "phase_model": "optionb_mitre_staged",
+                        "phase_family": "attacker",
+                        "mitre_phase": "staged_entry_context",
+                        "mitre_phase_order": 1,
+                    },
+                }
+            ],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert context["scenario_id"] != scenario.scenario_id
+    assert "hijack" not in context["intent"].lower()
+    assert context["mitre_context"]["phase_model"] == "optionb_mitre_staged"
+    assert context["mitre_context"]["phase_family"] == "defender"
+    assert context["mitre_context"]["next_phase"] in {
+        "discovery_recognition",
+        "manipulation_detection",
+    }
+    assert context["mitre_context"]["direct_plant_shortcuts_forbidden"] is True
+    assert context["mitre_context"]["attacker_highest_phase"] in {
+        "staged_entry_context",
+        "discovery",
+    }
+    assert "target_tags" not in context["mitre_context"]
+
+
 def test_black_box_attacker_offers_exploratory_candidates() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
     profile = {

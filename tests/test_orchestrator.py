@@ -1184,6 +1184,223 @@ def test_optionb_mitre_rule_based_defender_detects_before_manipulation(
     assert mitre_phase["first_defender_action_phase"] == "containment_mitigation"
 
 
+def test_optionb_mitre_agentic_pair_emits_phase_metrics_with_profile_overrides(
+    tmp_path, monkeypatch
+) -> None:
+    from ics_agent.agents.agentic import CachedQwenDecisionEngine
+
+    config_path = tmp_path / "mitre_agentic.yaml"
+    config = {
+        "experiment_name": "pytest_optionb_mitre_agentic_pair",
+        "scenario_selectors": ["attack/wt-attack-sensor-rw-refill-spoof"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "conditions": [
+            {
+                "name": "black_box_attacker__agentic_defender",
+                "profiles": {
+                    "attacker": "black_box_attacker",
+                    "defender": "agentic_defender",
+                    "observer": "agentic_observer",
+                    "planner": "scripted_planner",
+                    "operator": "scripted_operator",
+                    "offline_analysis": "scripted_offline_analyst",
+                },
+                "profile_overrides": {
+                    "attacker": {
+                        "behavior_model": {
+                            "id": "optionb_mitre_staged",
+                            "policy": "agentic",
+                        }
+                    },
+                    "defender": {
+                        "behavior_model": {
+                            "id": "optionb_mitre_staged",
+                            "policy": "agentic",
+                        }
+                    },
+                    "observer": {
+                        "behavior_model": {
+                            "id": "optionb_mitre_staged",
+                            "policy": "agentic",
+                        }
+                    },
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    def fake_decide(self, context):
+        role = context["role"]
+        if role == "attacker":
+            for item in context["candidate_actions"]:
+                action = item.get("action") or {}
+                if action.get("type") == "inspect_surface":
+                    return {
+                        "summary": "Inspect the staged control surface.",
+                        "candidate_id": item["id"],
+                        "decision_type": "action",
+                        "diagnosis": None,
+                    }
+            for item in context["candidate_actions"]:
+                action = item.get("action") or {}
+                if action.get("type") != "noop":
+                    return {
+                        "summary": "Manipulate the discovered surface.",
+                        "candidate_id": item["id"],
+                        "decision_type": "action",
+                        "diagnosis": "sensor_bias",
+                    }
+            return {
+                "summary": "Hold the current staged phase.",
+                "candidate_id": None,
+                "decision_type": "note",
+                "diagnosis": None,
+            }
+        if role == "observer":
+            if any(
+                (item.get("action") or {}).get("type") == "inspect_surface"
+                for item in context.get("recent_actions", [])
+                if item.get("role") == "attacker"
+            ):
+                return {
+                    "summary": "Observed staged discovery activity.",
+                    "candidate_id": None,
+                    "decision_type": "alert",
+                    "diagnosis": "staged_probe",
+                }
+            if context.get("active_alarms") or context.get("risk_flags"):
+                return {
+                    "summary": "Detected process-facing misuse.",
+                    "candidate_id": None,
+                    "decision_type": "alert",
+                    "diagnosis": "raw_water_low_or_spoof",
+                }
+            return {
+                "summary": "Monitor staged path activity.",
+                "candidate_id": None,
+                "decision_type": "note",
+                "diagnosis": None,
+            }
+        if role == "defender":
+            if context.get("recent_alerts"):
+                for item in context["candidate_actions"]:
+                    action = item.get("action") or {}
+                    if action.get("type") != "noop":
+                        return {
+                            "summary": "Contain the staged attack.",
+                            "candidate_id": item["id"],
+                            "decision_type": "action",
+                            "diagnosis": "raw_water_low_or_spoof",
+                        }
+            return {
+                "summary": "Monitor staged-path indicators.",
+                "candidate_id": None,
+                "decision_type": "note",
+                "diagnosis": "staged_probe",
+            }
+        return {
+            "summary": "Hold.",
+            "candidate_id": None,
+            "decision_type": "note",
+            "diagnosis": None,
+        }
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+    monkeypatch.setattr(CachedQwenDecisionEngine, "decide", fake_decide)
+
+    summary = ExperimentOrchestrator().run(config_path)
+    run = summary["conditions"][0]["runs"][0]
+
+    assert run["metrics"]["mitre_phase"]["phase_model"] == "optionb_mitre_staged"
+    assert run["metrics"]["attacker_recon_action_count"] >= 1
+    assert run["metrics"]["trajectory"]["attacker_sequence"][0].startswith(
+        "inspect_surface:"
+    )
+    assert run["metrics"]["phase_window"]["metric_clock_origin"] == "wargame_t0"
+    assert run["metrics"]["mitre_phase"]["highest_attacker_phase_reached"] in {
+        "manipulation",
+        "impact",
+    }
+
+
+def test_aggregate_attack_metrics_can_use_wargame_t0_as_primary_origin() -> None:
+    orchestrator = ExperimentOrchestrator()
+    runs = [
+        {
+            "condition_name": "black_box_attacker__agentic_defender",
+            "scenario": "attack/wt-attack-sensor-rw-refill-spoof",
+            "run_id": "attack-wt-attack-sensor-rw-refill-spoof-trial-001",
+            "suite": "attack",
+            "status": "completed",
+            "metrics": {
+                "time_to_detection_sec": 2.5,
+                "time_to_recognition_sec": 2.7,
+                "time_to_mitigation_sec": 3.0,
+                "time_to_detection_from_wargame_t0_sec": 6.5,
+                "time_to_first_defender_action_from_wargame_t0_sec": 7.2,
+                "time_to_physical_impact_from_wargame_t0_sec": 9.0,
+                "phase_window": {
+                    "time_to_first_detection_sec": 6.5,
+                    "time_to_first_recognition_sec": 6.7,
+                    "time_to_first_defender_action_sec": 7.2,
+                    "time_to_first_safety_violation_sec": 9.0,
+                    "phase_a_duration_sec": 12.0,
+                    "wargame_t0_utc": "2026-06-23T00:00:00Z",
+                },
+                "attacker": {
+                    "time_to_impact_sec": 4.0,
+                    "time_to_physical_impact_sec": 4.0,
+                    "execution_success_rate": 1.0,
+                    "scenario_expectation_passed": 1.0,
+                    "caused_safety_violation": 1.0,
+                    "undetected_impact": 0.0,
+                },
+                "observer_detection": {"time_to_detection_sec": 2.5, "detection_rate": 1.0},
+                "observer_recognition": {"time_to_recognition_sec": 2.7, "recognition_rate": 1.0},
+                "defender_detection": {"time_to_detection_sec": 2.8, "detection_rate": 1.0},
+                "defender_recognition": {"time_to_recognition_sec": 2.8, "recognition_rate": 1.0},
+                "defender_intervention": {
+                    "time_to_first_action_sec": 3.0,
+                    "mitigation_action_count": 1,
+                    "contained_before_safety_violation": False,
+                },
+                "operational_cost": {"intervention_action_count": 1},
+                "attacker_action_count": 3,
+                "attacker_recon_action_count": 1,
+                "true_positive_rate": 1.0,
+                "false_positive_rate": 0.0,
+                "true_positive_count": 1,
+                "false_positive_count": 0,
+                "blue_team_alert_count": 1,
+                "planner_alert_count": 0,
+                "decision_correctness": 1.0,
+                "defender_action_count": 1,
+                "defender_shutdown_action_count": 1,
+                "downtime_timestep_count": 0,
+                "safety_violation_count": 1,
+                "recovery_success_rate": 0.0,
+            },
+        }
+    ]
+
+    metrics = orchestrator._aggregate_attack_metrics(
+        runs,
+        primary_timing_origin="wargame_t0",
+    )
+
+    assert metrics["primary_timing_origin"] == "wargame_t0"
+    assert metrics["time_to_detection_sec_avg"] == 6.5
+    assert metrics["time_to_first_defender_action_sec_avg"] == 7.2
+    assert metrics["time_to_physical_impact_sec_avg"] == 9.0
+    assert metrics["time_to_detection_from_attack_start_sec_avg"] == 2.5
+
+
 def test_orchestrator_aggregates_trajectory_diversity_per_scenario() -> None:
     orchestrator = ExperimentOrchestrator()
     runs = [
