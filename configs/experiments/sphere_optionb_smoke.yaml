@@ -25,7 +25,7 @@ environment:
 conditions:
   - name: optionb_smoke_local_reasoning
     profiles:
-      attacker: black_box_attacker
+      attacker: gray_box_attacker
       defender: agentic_defender
       observer: silent_observer
       planner: scripted_planner

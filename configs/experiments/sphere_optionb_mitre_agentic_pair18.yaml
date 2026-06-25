@@ -1,5 +1,5 @@
-experiment_name: sphere_optionb_mitre_agentic_pair18
-experiment_id: sphere_optionb_mitre_agentic_pair18
+experiment_name: DefendervsBlackBoxAttacker
+experiment_id: DefendervsBlackBoxAttacker
 scenario_selectors:
   - attack/*
 repeats: 1
@@ -7,12 +7,12 @@ resume: true
 use_canonical_result_root: true
 reproducibility:
   seed: 20260623
-results_root: ../../../Artifact/Results/optionb_mitre_agentic_pair18
+results_root: ../../../Artifact/Results
 study_metadata:
-  family: optionb_mitre_agentic_pair18
+  family: defender_vs_black_box_attacker_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
-    - MITRE ATT&CK for ICS inspired staged-entry abstraction for the local black-box attacker versus agentic defender pair
+    - Strict black-box attacker versus the current LLM defender on the staged Option B testbed
     - Option B path only: local orchestrator -> access -> engineering -> plant runtime
     - Primary timing summaries use the interaction-ready wargame_t0 boundary and exclude setup or transfer latency
 environment:

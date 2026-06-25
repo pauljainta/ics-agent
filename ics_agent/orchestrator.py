@@ -67,8 +67,11 @@ class ExperimentOrchestrator:
         normalized = dict(profile)
         role = str(normalized.get("role", "")).strip().lower()
         knowledge_mode = str(normalized.get("knowledge_mode", "")).strip().lower()
+        if knowledge_mode == "practical_black_box":
+            knowledge_mode = "gray_box"
+            normalized["knowledge_mode"] = knowledge_mode
         if role == "attacker" and knowledge_mode in {
-            "practical_black_box",
+            "gray_box",
             "black_box",
         }:
             allowed = list(normalized.get("allowed_action_types", []))

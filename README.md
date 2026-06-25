@@ -60,7 +60,7 @@ Key implementation changes in this refresh:
 - the OpenPLC environment remains autonomous and external to the agents
 - attacker, observer, defender, and planner prompts now use concise live state
   plus structured memory instead of replaying long transcripts
-- the practical black-box attacker now has bounded `inspect_surface`
+- the current gray-box attacker now has bounded `inspect_surface`
   reconnaissance actions for tags, registers, I/O image, alarm bits,
   actuator-state bits, and Process 2 control-plane inspection
 - attacker memory tracks objective progress, tactic phase, leverage
@@ -99,9 +99,9 @@ Attack and repeated-run experiment note:
   `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/`
   instead of being overwritten
 
-## 2026-05-23 Practical Black-Box Attacker Refresh
+## 2026-05-23 Gray-Box Attacker Refresh
 
-The practical black-box attacker is now explicitly biased toward
+The current gray-box attacker is now explicitly biased toward
 `recon -> choose surface -> commit -> sustain/escalate -> reorient only on stall`
 instead of flat one-step probing.
 
@@ -111,7 +111,7 @@ Key behavior changes in this refresh:
   than a default loop, and repeated reads of the same surface are sharply
   down-ranked
 - blue-team semantic alert summaries and diagnoses are no longer exposed to
-  the practical black-box attacker; it now sees only plant-native signals plus
+  the current gray-box attacker; it now sees only plant-native signals plus
   coarse defender-intervention awareness
 - structured attacker memory now keeps discovered controls, reconnaissance
   findings, an observed effect map, candidate leverage hypotheses, explicit
@@ -128,7 +128,7 @@ Key behavior changes in this refresh:
 - attacker success metrics continue to treat actual safety-bound violation as
   the primary success signal while preserving action counts, recon counts,
   trajectories, and the older scenario-expectation signal separately
-- the practical black-box LLM context now sees plant-native telemetry,
+- the current gray-box LLM context now sees plant-native telemetry,
   attacker-side action outcomes, bounded recon readbacks, and only coarse
   defender-intervention awareness rather than concrete defender action details
 - pair folders now write dedicated aggregate summaries alongside the run
@@ -136,15 +136,16 @@ Key behavior changes in this refresh:
   `attack_metrics_summary.json`, `nominal_metrics_summary.json`, and
   `trajectory_metrics_summary.json`
 
-The current full `18 x 3` attack-pair rerun writes to:
+The current full `18 x 3` gray-box attack-pair rerun writes to the historical
+results root:
 
 - `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/20260523T173335-10d187ec/`
 
 Expected pair folders under that experiment root are:
 
-- `black_box_attacker__agentic_defender`
-- `black_box_attacker__rule_based_defender`
-- `black_box_attacker__scripted_defender`
+- `gray_box_attacker__agentic_defender`
+- `gray_box_attacker__rule_based_defender`
+- `gray_box_attacker__scripted_defender`
 
 Verified completed outcome for that rerun:
 
@@ -165,7 +166,7 @@ Verified completed outcome for that rerun:
   in `1/18` scenarios
 - across the full `54`-episode rerun, attacker-caused safety violation
   averaged `0.0556` per run and attacker recon usage averaged `0.0` actions
-  per run, showing a strongly exploit-first policy after the black-box
+  per run, showing a strongly exploit-first policy after the gray-box
   redesign
 
 Same-blue-team attacker comparison config:
@@ -178,8 +179,8 @@ Same-blue-team attacker comparison config:
 - fresh comparison results are written under
   `../Artifact/Results/qwen35_9b_formalized_agentic_pair/attacker_vs_agentic_defender/`
 - compare each fresh condition folder’s `condition_summary.json` and
-  `attack_metrics_summary.json` against the current black-box baseline at
-  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/black_box_attacker__agentic_defender/`
+  `attack_metrics_summary.json` against the current gray-box baseline at
+  `../Artifact/Results/qwen35_9b_formalized_agentic_pair/black_box_attack_pairs/gray_box_attacker__agentic_defender/`
 
 ## Current Performance Note
 

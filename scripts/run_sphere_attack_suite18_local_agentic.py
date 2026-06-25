@@ -547,7 +547,7 @@ def _validate_runtime_and_model() -> None:
     _run_logged([venv_python, "-m", "ics_agent.cli", "validate"], VALIDATE_LOG_PATH)
 
     orchestrator = ExperimentOrchestrator()
-    profile = dict(orchestrator.agent_profiles["black_box_attacker"])
+    profile = dict(orchestrator.agent_profiles["gray_box_attacker"])
     engine = CachedQwenDecisionEngine(profile, role="attacker")
     llm = engine._llm()
     payload = {

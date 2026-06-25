@@ -268,9 +268,9 @@ def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> 
             },
         },
         {
-            "name": "black_box_attacker__agentic_defender",
+            "name": "gray_box_attacker__agentic_defender",
             "profiles": {
-                "attacker": "black_box_attacker",
+                "attacker": "gray_box_attacker",
                 "defender": "agentic_defender",
                 "observer": "agentic_observer",
                 "planner": "scripted_planner",
@@ -284,10 +284,10 @@ def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> 
 
     assert "attacker" not in suite_decoding["rule_based_attacker__agentic_defender"]
     assert (
-        suite_decoding["black_box_attacker__agentic_defender"]["attacker"][
+        suite_decoding["gray_box_attacker__agentic_defender"]["attacker"][
             "profile_id"
         ]
-        == "black_box_attacker"
+        == "gray_box_attacker"
     )
 
     orchestrator._current_reproducibility = {
@@ -304,9 +304,26 @@ def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> 
     )
     assert "attacker" not in condition_reproducibility["decoding"]
     assert (
-        "black_box_attacker__agentic_defender"
+        "gray_box_attacker__agentic_defender"
         in condition_reproducibility["suite_decoding"]
     )
+
+
+def test_orchestrator_profiles_split_gray_box_and_black_box_attackers() -> None:
+    orchestrator = ExperimentOrchestrator()
+
+    assert "gray_box_attacker" in orchestrator.agent_profiles
+    assert "black_box_attacker" in orchestrator.agent_profiles
+
+    gray_box_profile = orchestrator.agent_profiles["gray_box_attacker"]
+    black_box_profile = orchestrator.agent_profiles["black_box_attacker"]
+
+    assert gray_box_profile["knowledge_mode"] == "gray_box"
+    assert black_box_profile["knowledge_mode"] == "black_box"
+    assert gray_box_profile["llm"]["prompt_file"] == "configs/prompts/gray_box_attacker.md"
+    assert black_box_profile["llm"]["prompt_file"] == "configs/prompts/black_box_attacker.md"
+    assert "inspect_surface" in gray_box_profile["allowed_action_types"]
+    assert "inspect_surface" in black_box_profile["allowed_action_types"]
 
 
 def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
@@ -316,7 +333,7 @@ def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
     env.reset()
     bundle = RunBundle(
         experiment_id="pytest",
-        condition_name="black_box_attacker__agentic_defender",
+        condition_name="gray_box_attacker__agentic_defender",
         run_id="trial-001",
         scenario=scenario,
         run_dir=tmp_path / "trial-001",
@@ -356,7 +373,7 @@ def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:
         },
         bundle=bundle,
         scenario=scenario,
-        condition={"attacker": "black_box_attacker"},
+        condition={"attacker": "gray_box_attacker"},
         env=env,
         elapsed=1.0,
     )
@@ -376,7 +393,7 @@ def test_execute_online_roles_can_dispatch_actions_via_remote_agent(tmp_path) ->
     env.reset()
     bundle = RunBundle(
         experiment_id="pytest",
-        condition_name="black_box_attacker__agentic_defender",
+        condition_name="gray_box_attacker__agentic_defender",
         run_id="trial-remote-001",
         scenario=scenario,
         run_dir=tmp_path / "trial-remote-001",
@@ -445,7 +462,7 @@ def test_execute_online_roles_can_dispatch_actions_via_remote_agent(tmp_path) ->
         },
         bundle=bundle,
         scenario=scenario,
-        condition={"attacker": "black_box_attacker"},
+        condition={"attacker": "gray_box_attacker"},
         env=env,
         elapsed=1.0,
     )
@@ -1198,9 +1215,9 @@ def test_optionb_mitre_agentic_pair_emits_phase_metrics_with_profile_overrides(
         "results_root": str(tmp_path / "Results"),
         "conditions": [
             {
-                "name": "black_box_attacker__agentic_defender",
+                "name": "gray_box_attacker__agentic_defender",
                 "profiles": {
-                    "attacker": "black_box_attacker",
+                    "attacker": "gray_box_attacker",
                     "defender": "agentic_defender",
                     "observer": "agentic_observer",
                     "planner": "scripted_planner",
@@ -1333,7 +1350,7 @@ def test_aggregate_attack_metrics_can_use_wargame_t0_as_primary_origin() -> None
     orchestrator = ExperimentOrchestrator()
     runs = [
         {
-            "condition_name": "black_box_attacker__agentic_defender",
+            "condition_name": "gray_box_attacker__agentic_defender",
             "scenario": "attack/wt-attack-sensor-rw-refill-spoof",
             "run_id": "attack-wt-attack-sensor-rw-refill-spoof-trial-001",
             "suite": "attack",

@@ -30,6 +30,9 @@ class CachedQwenDecisionEngine:
     def __init__(self, profile: dict[str, Any], role: str) -> None:
         llm_cfg = profile.get("llm", {})
         self.role = role
+        self.knowledge_mode = AgenticRoleAgent._normalized_knowledge_mode(
+            profile.get("knowledge_mode", "standard")
+        )
         self.backend = str(llm_cfg.get("backend", "qwen_langgraph"))
         self.model_id = str(llm_cfg.get("model_id", "Qwen/Qwen3.5-9B"))
         self.prompt_file = llm_cfg.get("prompt_file")
@@ -51,6 +54,13 @@ class CachedQwenDecisionEngine:
         self.last_mode = "uninitialized"
         self.last_error: str | None = None
         self.last_raw_output: str | None = None
+        self.black_box_candidate_map: dict[str, dict[str, Any]] = {}
+
+    def _is_black_box_attacker(self) -> bool:
+        return self.role == "attacker" and self.knowledge_mode == "black_box"
+
+    def _black_box_resolved_candidate(self, candidate_id: Any) -> dict[str, Any] | None:
+        return dict(self.black_box_candidate_map.get(str(candidate_id)) or {}) or None
 
     def _load_prompt(self) -> str:
         if not self.prompt_file:
@@ -383,23 +393,51 @@ class CachedQwenDecisionEngine:
         action = normalize_action(selected.get("action"))
         candidate_id = selected.get("candidate_id")
 
-        if candidate_id in candidate_lookup:
-            matched = candidate_lookup[str(candidate_id)]
-            action = matched["action"]
-            selected["candidate_id"] = matched["id"]
-            selected.setdefault("summary", matched["summary"])
-        elif action is not None and candidate_lookup:
-            key = action_key(action)
-            matched = next(
-                (item for item in candidate_lookup.values() if item["id"] == key), None
-            )
-            if matched is None:
-                raise RuntimeError(
-                    "model selected an action outside the candidate list"
+        if self._is_black_box_attacker():
+            matched = None
+            if candidate_id in candidate_lookup:
+                matched = candidate_lookup[str(candidate_id)]
+            elif action is not None and candidate_lookup:
+                key = action_key(action)
+                matched = next(
+                    (
+                        item
+                        for item in candidate_lookup.values()
+                        if action_key(item.get("action")) == key
+                    ),
+                    None,
                 )
-            action = matched["action"]
-            selected["candidate_id"] = matched["id"]
-            selected.setdefault("summary", matched["summary"])
+                if matched is None:
+                    raise RuntimeError(
+                        "model selected an opaque action outside the candidate list"
+                    )
+            if matched is not None:
+                resolved = self._black_box_resolved_candidate(matched["id"])
+                if resolved is None or normalize_action(resolved.get("action")) is None:
+                    raise RuntimeError(
+                        f"opaque candidate `{matched['id']}` could not be resolved"
+                    )
+                action = normalize_action(resolved.get("action"))
+                selected["candidate_id"] = matched["id"]
+                selected.setdefault("summary", matched["summary"])
+        else:
+            if candidate_id in candidate_lookup:
+                matched = candidate_lookup[str(candidate_id)]
+                action = matched["action"]
+                selected["candidate_id"] = matched["id"]
+                selected.setdefault("summary", matched["summary"])
+            elif action is not None and candidate_lookup:
+                key = action_key(action)
+                matched = next(
+                    (item for item in candidate_lookup.values() if item["id"] == key), None
+                )
+                if matched is None:
+                    raise RuntimeError(
+                        "model selected an action outside the candidate list"
+                    )
+                action = matched["action"]
+                selected["candidate_id"] = matched["id"]
+                selected.setdefault("summary", matched["summary"])
 
         selected["action"] = action
         selected.setdefault("summary", f"Agentic {self.role} assessment")
@@ -449,7 +487,9 @@ class AgenticRoleAgent(RoleAgent):
         profile = self._normalized_agentic_profile(profile)
         super().__init__(profile_name, profile)
         self.engine = CachedQwenDecisionEngine(profile, self.role)
-        self.knowledge_mode = str(profile.get("knowledge_mode", "standard")).strip().lower()
+        self.knowledge_mode = self._normalized_knowledge_mode(
+            profile.get("knowledge_mode", "standard")
+        )
         memory = profile.get("memory", {})
         self.observation_window = int(memory.get("observation_window", 8))
         self.decision_window = int(memory.get("decision_window", 8))
@@ -474,12 +514,22 @@ class AgenticRoleAgent(RoleAgent):
         )
 
     @staticmethod
+    def _normalized_knowledge_mode(value: Any) -> str:
+        normalized = str(value or "standard").strip().lower()
+        if normalized == "practical_black_box":
+            return "gray_box"
+        return normalized or "standard"
+
+    @staticmethod
     def _normalized_agentic_profile(profile: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(profile)
         role = str(normalized.get("role", "")).strip().lower()
-        knowledge_mode = str(normalized.get("knowledge_mode", "")).strip().lower()
+        knowledge_mode = AgenticRoleAgent._normalized_knowledge_mode(
+            normalized.get("knowledge_mode", "")
+        )
+        normalized["knowledge_mode"] = knowledge_mode
         if role == "attacker" and knowledge_mode in {
-            "practical_black_box",
+            "gray_box",
             "black_box",
         }:
             allowed = list(normalized.get("allowed_action_types", []))
@@ -501,11 +551,11 @@ class AgenticRoleAgent(RoleAgent):
             }
         )
 
-    def _is_practical_black_box_attacker(self) -> bool:
-        return self.role == "attacker" and self.knowledge_mode in {
-            "practical_black_box",
-            "black_box",
-        }
+    def _is_gray_box_attacker(self) -> bool:
+        return self.role == "attacker" and self.knowledge_mode == "gray_box"
+
+    def _is_black_box_attacker(self) -> bool:
+        return self.role == "attacker" and self.knowledge_mode == "black_box"
 
     def _uses_blue_team_prior_knowledge(self) -> bool:
         return self.role in {"observer", "defender"} and self.knowledge_mode in {
@@ -605,8 +655,8 @@ class AgenticRoleAgent(RoleAgent):
                     f"agentic attacker backend failure: {exc}"
                 ) from exc
             return []
-        if self._is_practical_black_box_attacker():
-            payload = self._enforce_practical_black_box_payload(payload, agent_context)
+        if self._is_gray_box_attacker():
+            payload = self._enforce_gray_box_payload(payload, agent_context)
         return self._payload_to_decisions(payload, agent_context)
 
     def _step_monitoring_role(self, context: dict[str, Any]) -> list[Any]:
@@ -726,6 +776,26 @@ class AgenticRoleAgent(RoleAgent):
         context: dict[str, Any],
     ) -> str:
         memory = dict(context.get("structured_memory") or {})
+        if self._is_black_box_attacker():
+            surface = str(
+                memory.get("committed_surface")
+                or memory.get("best_known_surface")
+                or "unknown"
+            )
+            ranked = list(memory.get("observed_effect_patterns", []))
+            if surface and surface != "unknown":
+                return (
+                    f"Discovery suggests `{surface}` is the most promising opaque leverage surface."
+                )
+            if ranked:
+                ranked_surface = str((ranked[0] or {}).get("surface") or "unknown")
+                if ranked_surface and ranked_surface != "unknown":
+                    return (
+                        f"Readback patterns narrow the likely leverage surface to `{ranked_surface}` before qualification."
+                    )
+            return (
+                "Use bounded readback patterns to choose the most promising opaque surface."
+            )
         surface = str(memory.get("best_known_attack_surface") or "unknown")
         hypotheses = list(memory.get("candidate_leverage_hypotheses", []))
         if surface and surface != "unknown":
@@ -743,16 +813,24 @@ class AgenticRoleAgent(RoleAgent):
     def _build_online_context(self, context: dict[str, Any]) -> dict[str, Any]:
         scenario = context["scenario"]
         now = float(context["time_sec"])
-        practical_black_box = self._is_practical_black_box_attacker()
+        gray_box = self._is_gray_box_attacker()
+        black_box = self._is_black_box_attacker()
         raw_recent_actions = context.get("executed_actions", [])[-self.action_window :]
         raw_recent_decisions = context.get("decisions", [])[-self.decision_window :]
         raw_recent_alerts = context.get("alerts", [])[-self.alert_window :]
+        observation = context["observation"]
         recent_observations = [
             self._compact_observation(item)
             for item in context.get("observations", [])[-self.observation_window :]
         ]
-        if practical_black_box:
-            recent_actions = self._practical_black_box_visible_recent_actions(
+        if gray_box:
+            recent_actions = self._gray_box_visible_recent_actions(
+                raw_recent_actions,
+                now=now,
+            )
+            memory_recent_actions = raw_recent_actions
+        elif black_box:
+            recent_actions = self._black_box_visible_recent_actions(
                 raw_recent_actions,
                 now=now,
             )
@@ -760,12 +838,21 @@ class AgenticRoleAgent(RoleAgent):
         else:
             recent_actions = self._visible_recent_actions(raw_recent_actions, now=now)
             memory_recent_actions = recent_actions
-        if practical_black_box:
-            recent_decisions = self._practical_black_box_visible_recent_decisions(
+        if gray_box:
+            recent_decisions = self._gray_box_visible_recent_decisions(
                 raw_recent_decisions,
                 now=now,
             )
-            recent_alerts = self._practical_black_box_visible_recent_alerts(
+            recent_alerts = self._gray_box_visible_recent_alerts(
+                raw_recent_alerts,
+                now=now,
+            )
+        elif black_box:
+            recent_decisions = self._black_box_visible_recent_decisions(
+                raw_recent_decisions,
+                now=now,
+            )
+            recent_alerts = self._black_box_visible_recent_alerts(
                 raw_recent_alerts,
                 now=now,
             )
@@ -775,22 +862,27 @@ class AgenticRoleAgent(RoleAgent):
                 now=now,
             )
             recent_alerts = self._visible_recent_alerts(raw_recent_alerts, now=now)
-        observation = context["observation"]
         compact_observation = self._compact_observation(observation)
         remaining_playbook = self._remaining_playbook(context)
-        visible_remaining_playbook = [] if practical_black_box else remaining_playbook
+        visible_remaining_playbook = [] if (gray_box or black_box) else remaining_playbook
         planned_relationship_notes = (
-            [] if practical_black_box else self._planned_relationship_notes(context)
+            [] if (gray_box or black_box) else self._planned_relationship_notes(context)
         )
         telemetry_summary = self._summarize_telemetry(
             observation=observation,
             recent_observations=context.get("observations", []),
             planned_relationship_notes=planned_relationship_notes,
         )
-        recent_action_effects = self._recent_action_effects(
-            observation=observation,
-            recent_actions=recent_actions,
-        )
+        if black_box:
+            recent_action_effects = self._black_box_recent_action_effects(
+                observation=observation,
+                recent_actions=raw_recent_actions,
+            )
+        else:
+            recent_action_effects = self._recent_action_effects(
+                observation=observation,
+                recent_actions=recent_actions,
+            )
         defender_reasoning = self._defender_reasoning_context(
             context=context,
             observation=observation,
@@ -798,56 +890,101 @@ class AgenticRoleAgent(RoleAgent):
             recent_actions=memory_recent_actions,
             recent_alerts=recent_alerts,
         )
-        incident = self._incident_context(
+        internal_incident = self._incident_context(
             context=context,
             telemetry_summary=telemetry_summary,
             defender_reasoning=defender_reasoning,
         )
-        structured_memory = self._role_memory_context(
-            context=context,
-            scenario=scenario,
-            observation=observation,
-            telemetry_summary=telemetry_summary,
-            remaining_playbook=visible_remaining_playbook,
-            recent_actions=memory_recent_actions,
-            recent_alerts=recent_alerts,
-            recent_action_effects=recent_action_effects,
-            incident=incident,
-            defender_reasoning=defender_reasoning,
-        )
-        structured_prior_knowledge = self._structured_prior_knowledge(
-            observation=observation,
-            telemetry_summary=telemetry_summary,
-            incident=incident,
-            structured_memory=structured_memory,
-        )
-        mitre_context = self._optionb_mitre_context(
-            context=context,
-            telemetry_summary=telemetry_summary,
-            incident=incident,
-            structured_memory=structured_memory,
-        )
-        candidate_actions = self._candidate_actions(
-            context,
-            visible_remaining_playbook,
-            telemetry_summary=telemetry_summary,
-            incident=incident,
-            structured_memory=structured_memory,
-            structured_prior_knowledge=structured_prior_knowledge,
-            mitre_context=mitre_context,
-            defender_reasoning=defender_reasoning,
-        )
+        if black_box:
+            internal_structured_memory = self._gray_box_attacker_memory(
+                context=context,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                recent_actions=memory_recent_actions,
+                recent_alerts=recent_alerts,
+                recent_action_effects=recent_action_effects,
+            )
+            structured_memory = self._black_box_visible_memory(
+                semantic_memory=internal_structured_memory,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+            )
+            structured_prior_knowledge = None
+            incident = None
+            internal_mitre_context = self._optionb_mitre_context(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                incident=internal_incident,
+                structured_memory=internal_structured_memory,
+            )
+            mitre_context = self._black_box_visible_mitre_context(
+                internal_mitre_context
+            )
+            candidate_actions = self._black_box_candidate_actions(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                structured_memory=internal_structured_memory,
+                mitre_context=internal_mitre_context,
+            )
+            compact_observation = self._black_box_visible_observation(observation)
+            recent_observations = [
+                self._black_box_visible_observation(item)
+                for item in context.get("observations", [])[-self.observation_window :]
+            ]
+        else:
+            structured_memory = self._role_memory_context(
+                context=context,
+                scenario=scenario,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                remaining_playbook=visible_remaining_playbook,
+                recent_actions=memory_recent_actions,
+                recent_alerts=recent_alerts,
+                recent_action_effects=recent_action_effects,
+                incident=internal_incident,
+                defender_reasoning=defender_reasoning,
+            )
+            structured_prior_knowledge = self._structured_prior_knowledge(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                incident=internal_incident,
+                structured_memory=structured_memory,
+            )
+            mitre_context = self._optionb_mitre_context(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                incident=internal_incident,
+                structured_memory=structured_memory,
+            )
+            candidate_actions = self._candidate_actions(
+                context,
+                visible_remaining_playbook,
+                telemetry_summary=telemetry_summary,
+                incident=internal_incident,
+                structured_memory=structured_memory,
+                structured_prior_knowledge=structured_prior_knowledge,
+                mitre_context=mitre_context,
+                defender_reasoning=defender_reasoning,
+            )
+            incident = internal_incident
         scenario_id = self._visible_scenario_id(scenario)
         process_id = scenario.execution.get("process_id")
         intent = self._live_intent(scenario)
         role_goal = self._live_role_goals(scenario)
         expected_outcomes = self._live_expected_outcomes(scenario)
         safety_bounds = scenario.metadata.get("safety_bounds", {})
-        if practical_black_box:
+        if gray_box:
             scenario_id = "attack-live"
             process_id = None
-            intent = self._practical_black_box_attacker_intent()
-            role_goal = self._practical_black_box_attacker_goals()
+            intent = self._gray_box_attacker_intent()
+            role_goal = self._gray_box_attacker_goals()
+            expected_outcomes = []
+            safety_bounds = {}
+        elif black_box:
+            scenario_id = "opaque-interface-live"
+            process_id = None
+            intent = self._black_box_attacker_intent()
+            role_goal = self._black_box_attacker_goals()
             expected_outcomes = []
             safety_bounds = {}
         role_constraints = [
@@ -858,12 +995,19 @@ class AgenticRoleAgent(RoleAgent):
             "Keep summaries concise and specific to the water-treatment environment.",
             "Escalate incidents from suspected to confirmed to containing when evidence persists or worsens.",
         ]
-        if practical_black_box:
+        if gray_box:
             role_constraints = [
                 "Use only live telemetry, recent action outcomes, bounded reconnaissance results, and coarse defender-intervention signals.",
                 "Treat recent blue-team alerts as attention markers only; they intentionally omit summary text and diagnoses.",
                 "Choose only from candidate_actions and prefer short exploit chains over repeated inspection.",
                 "Use structured_memory to decide when to commit, sustain, escalate, or reorient.",
+            ]
+        elif black_box:
+            role_constraints = [
+                "Treat the interface as opaque and bounded; do not infer hidden plant semantics from alias names.",
+                "Use only the exposed point aliases, coarse readbacks, recent effects, defender-pressure signals, and MITRE phase context.",
+                "Choose only from candidate_actions and prefer candidate_id over restating the action.",
+                "Infer leverage from repeated effect on opaque signals and controls, not from assumed process meaning.",
             ]
         elif defender_reasoning is not None:
             role_constraints.append(
@@ -876,9 +1020,22 @@ class AgenticRoleAgent(RoleAgent):
         if mitre_context is not None:
             role_constraints.extend(self._optionb_mitre_role_constraints(mitre_context))
         visible_relationship_notes = (
-            [] if practical_black_box else telemetry_summary["relationship_notes"]
+            []
+            if (gray_box or black_box)
+            else telemetry_summary["relationship_notes"]
         )
-        visible_risk_flags = [] if practical_black_box else telemetry_summary["risk_flags"]
+        if black_box:
+            visible_risk_flags = self._black_box_visible_risk_flags(telemetry_summary)
+            active_alarms = self._black_box_visible_active_alarms(observation)
+            active_states = self._black_box_visible_active_states(observation)
+            active_commands = self._black_box_visible_active_commands(observation)
+            short_horizon_trends = self._black_box_visible_trends(telemetry_summary)
+        else:
+            visible_risk_flags = [] if gray_box else telemetry_summary["risk_flags"]
+            active_alarms = telemetry_summary["active_alarms"]
+            active_states = telemetry_summary["active_states"]
+            active_commands = telemetry_summary["active_commands"]
+            short_horizon_trends = telemetry_summary["short_horizon_trends"]
         return {
             "role": self.role,
             "scenario_id": scenario_id,
@@ -894,10 +1051,10 @@ class AgenticRoleAgent(RoleAgent):
             "recent_decisions": recent_decisions,
             "recent_alerts": recent_alerts,
             "recent_action_effects": recent_action_effects,
-            "active_alarms": telemetry_summary["active_alarms"],
-            "active_states": telemetry_summary["active_states"],
-            "active_commands": telemetry_summary["active_commands"],
-            "short_horizon_trends": telemetry_summary["short_horizon_trends"],
+            "active_alarms": active_alarms,
+            "active_states": active_states,
+            "active_commands": active_commands,
+            "short_horizon_trends": short_horizon_trends,
             "relationship_notes": visible_relationship_notes,
             "risk_flags": visible_risk_flags,
             "incident": incident,
@@ -1090,20 +1247,657 @@ class AgenticRoleAgent(RoleAgent):
         return lines
 
     @staticmethod
-    def _practical_black_box_attacker_intent() -> str:
+    def _gray_box_attacker_intent() -> str:
         return (
             "Discover controllable surfaces and create disruptive physical effect "
             "while minimizing defender attention."
         )
 
     @staticmethod
-    def _practical_black_box_attacker_goals() -> list[str]:
+    def _gray_box_attacker_goals() -> list[str]:
         return [
             "Infer what each candidate action can influence from live plant response only.",
             "Use bounded reconnaissance reads to inspect tags, registers, alarms, and control-plane state without assuming hidden truth.",
             "Use early turns to probe controllability, then exploit the most effective discovered surface.",
             "Treat alarms, state transitions, and defender reaction as observable success proxies rather than hidden ground truth.",
         ]
+
+    @staticmethod
+    def _black_box_attacker_intent() -> str:
+        return (
+            "Operate through a bounded opaque industrial interface, discover leverage "
+            "through probing, and pursue impact without semantic shortcuts."
+        )
+
+    @staticmethod
+    def _black_box_attacker_goals() -> list[str]:
+        return [
+            "Discover which opaque surfaces, signals, and controls respond to bounded interaction.",
+            "Use MITRE-inspired discovery and qualification before committing to manipulation.",
+            "Infer leverage from repeated readback change, state shift, alarm pressure, and defender pressure only.",
+            "Choose only from the provided candidate ids instead of assuming hidden process meaning.",
+        ]
+
+    def _black_box_alias(self, namespace: str, semantic_key: Any, prefix: str) -> str:
+        alias_state = self._state.setdefault("_black_box_aliases", {})
+        mapping = alias_state.setdefault(namespace, {})
+        key = str(semantic_key or "unknown").strip() or "unknown"
+        if key not in mapping:
+            mapping[key] = f"{prefix}_{len(mapping) + 1:02d}"
+        return str(mapping[key])
+
+    @staticmethod
+    def _black_box_surface_key(surface: Any) -> str:
+        normalized = str(surface or "unknown").strip() or "unknown"
+        return {
+            "process2_manual_path": "process2_control_plane",
+            "sensor_manipulation": "registers",
+            "availability_disruption": "io_image",
+        }.get(normalized, normalized)
+
+    def _black_box_surface_alias(self, surface: Any) -> str:
+        return self._black_box_alias(
+            "surface",
+            self._black_box_surface_key(surface),
+            "surf",
+        )
+
+    def _black_box_signal_alias(self, field_name: Any) -> str:
+        return self._black_box_alias("signal", field_name, "sig")
+
+    def _black_box_flag_alias(self, field_name: Any) -> str:
+        return self._black_box_alias("flag", field_name, "flag")
+
+    def _black_box_alarm_alias(self, field_name: Any) -> str:
+        return self._black_box_alias("alarm", field_name, "alarm")
+
+    def _black_box_control_alias(self, action: dict[str, Any]) -> str:
+        return self._black_box_alias(
+            "control",
+            self._canonical_action_descriptor(action),
+            "ctrl",
+        )
+
+    @staticmethod
+    def _black_box_is_signal_field(field_name: str) -> bool:
+        return (
+            field_name.endswith("_Level")
+            or field_name.endswith("_Flow")
+            or "Speed" in field_name
+            or field_name.endswith("_Sts")
+            and not field_name.startswith("Alarm_")
+            and not field_name.startswith("P2_")
+        )
+
+    def _black_box_visible_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
+        signals: dict[str, Any] = {}
+        flags: dict[str, int] = {}
+        alarms: list[str] = []
+        for key, value in observation.items():
+            if key in {"timestamp_utc", "elapsed_sec", "sample_phase", "STATE_NAME"}:
+                continue
+            if key.startswith("Alarm_"):
+                if self._is_active_flag(value):
+                    alarms.append(self._black_box_alarm_alias(key))
+                continue
+            number = self._coerce_number(value)
+            if number is None:
+                continue
+            if self._black_box_is_signal_field(key) and not (
+                key.endswith("_Cmd") and number in {0.0, 1.0}
+            ):
+                signals[self._black_box_signal_alias(key)] = round(number, 3)
+                continue
+            if number in {0.0, 1.0}:
+                flags[self._black_box_flag_alias(key)] = int(number)
+            else:
+                signals[self._black_box_signal_alias(key)] = round(number, 3)
+
+        rendered: dict[str, Any] = {
+            "interface_state": str(observation.get("STATE_NAME", "unknown")).lower() or "unknown",
+        }
+        if "elapsed_sec" in observation:
+            rendered["elapsed_sec"] = observation.get("elapsed_sec")
+        if "sample_phase" in observation:
+            rendered["sample_phase"] = observation.get("sample_phase")
+        if signals:
+            rendered["signals"] = signals
+        if flags:
+            rendered["flags"] = flags
+        if alarms:
+            rendered["alarms"] = sorted(alarms)
+        return rendered
+
+    def _black_box_visible_active_alarms(self, observation: dict[str, Any]) -> list[str]:
+        return sorted(
+            self._black_box_alarm_alias(key)
+            for key, value in observation.items()
+            if key.startswith("Alarm_") and self._is_active_flag(value)
+        )
+
+    def _black_box_visible_active_states(self, observation: dict[str, Any]) -> list[str]:
+        state_name = str(observation.get("STATE_NAME", "")).strip().lower()
+        return [state_name] if state_name else []
+
+    def _black_box_visible_active_commands(self, observation: dict[str, Any]) -> list[str]:
+        commands: list[str] = []
+        for key, value in observation.items():
+            if not (
+                key.endswith("_Cmd")
+                or key in {"P2_Selected", "HMI_Start_Active", "HMI_Stop_Active"}
+            ):
+                continue
+            if self._is_active_flag(value):
+                commands.append(self._black_box_flag_alias(key))
+        return sorted(commands)
+
+    def _black_box_visible_trends(
+        self,
+        telemetry_summary: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        visible: dict[str, dict[str, Any]] = {}
+        for field_name, payload in (
+            telemetry_summary.get("short_horizon_trends", {}) or {}
+        ).items():
+            if not isinstance(payload, dict):
+                continue
+            direction = str(payload.get("direction", "")).strip().lower()
+            delta_window = self._coerce_number(payload.get("delta_window"))
+            if direction in {"", "steady"} and (
+                delta_window is None or abs(delta_window) < 1.0
+            ):
+                continue
+            item: dict[str, Any] = {}
+            if direction and direction != "steady":
+                item["direction"] = direction
+            if delta_window is not None and abs(delta_window) >= 1.0:
+                item["delta_window"] = round(delta_window, 3)
+            if item:
+                visible[self._black_box_signal_alias(field_name)] = item
+        return visible
+
+    def _black_box_visible_risk_flags(
+        self,
+        telemetry_summary: dict[str, Any],
+    ) -> list[str]:
+        risk_flags = set(str(item) for item in telemetry_summary.get("risk_flags", []))
+        relationship_notes = set(
+            str(item) for item in telemetry_summary.get("relationship_notes", [])
+        )
+        visible: list[str] = []
+        active_alarm_count = len(telemetry_summary.get("active_alarms", []))
+        if active_alarm_count >= 2:
+            visible.append("multi_alarm_pressure")
+        elif active_alarm_count == 1:
+            visible.append("single_alarm_pressure")
+        if (
+            "sensor_or_process_jump" in risk_flags
+            or any(note.startswith("abrupt_change:") for note in relationship_notes)
+        ):
+            visible.append("telemetry_shift")
+        if "command_status_divergence" in risk_flags:
+            visible.append("control_divergence")
+        if any(flag.endswith("_depleting") for flag in risk_flags):
+            visible.append("reservoir_drift")
+        if any(
+            token in risk_flags
+            for token in {"availability_state_change", "forced_shutdown_state"}
+        ):
+            visible.append("state_disruption")
+        if any(
+            token in risk_flags
+            for token in {
+                "process2_manual_path_active",
+                "unauthorized_manual_dosing_possible",
+                "process2_unplanned_activation",
+            }
+        ) or any(
+            token in relationship_notes
+            for token in {"process2_selected", "process2_manual_dosing_active"}
+        ):
+            visible.append("latched_aux_control")
+        return sorted(set(visible))
+
+    @staticmethod
+    def _black_box_control_setting(action: dict[str, Any]) -> str:
+        action_type = str(action.get("type", "")).strip()
+        if action_type == "select_process":
+            return "enable" if action.get("active", True) else "disable"
+        if action_type == "set_manual_valve":
+            return "open" if action.get("open", True) else "close"
+        if action_type == "hmi_start":
+            return "engage"
+        if action_type == "hmi_stop":
+            return "stop"
+        if action_type == "hmi_estop":
+            return "trip"
+        return "toggle"
+
+    def _black_box_visible_action(
+        self,
+        action: dict[str, Any] | str | None,
+        *,
+        observation: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        normalized = normalize_action(action)
+        if normalized is None:
+            return None
+        action_type = str(normalized.get("type", "")).strip()
+        if action_type == "inspect_surface":
+            return {
+                "type": "inspect_surface",
+                "target": self._black_box_surface_alias(normalized.get("surface")),
+            }
+        if action_type == "set_sensor":
+            field_name = str(normalized.get("name", "")).strip()
+            target_alias = self._black_box_signal_alias(field_name)
+            current_value = None
+            if observation is not None:
+                current_value = self._coerce_number(observation.get(field_name))
+            target_value = self._coerce_number(normalized.get("value"))
+            mode = "write"
+            if current_value is not None and target_value is not None:
+                mode = "raise" if target_value > current_value else "lower"
+            return {
+                "type": "write_signal",
+                "target": target_alias,
+                "mode": mode,
+                "bounded": True,
+            }
+        if action_type == "noop":
+            return {"type": "noop"}
+        return {
+            "type": "toggle_control",
+            "target": self._black_box_control_alias(normalized),
+            "setting": self._black_box_control_setting(normalized),
+        }
+
+    def _black_box_candidate_id(self, visible_action: dict[str, Any]) -> str:
+        action_type = str(visible_action.get("type", "action")).strip()
+        if action_type == "inspect_surface":
+            return f"bb_{action_type}_{visible_action.get('target')}"
+        if action_type == "write_signal":
+            return (
+                f"bb_{action_type}_{visible_action.get('target')}_"
+                f"{visible_action.get('mode', 'write')}"
+            )
+        if action_type == "toggle_control":
+            return (
+                f"bb_{action_type}_{visible_action.get('target')}_"
+                f"{visible_action.get('setting', 'toggle')}"
+            )
+        if action_type == "noop":
+            return "bb_noop"
+        return f"bb_{action_type}"
+
+    def _black_box_candidate_summary(
+        self,
+        *,
+        visible_action: dict[str, Any],
+        category: str | None,
+    ) -> str:
+        action_type = str(visible_action.get("type", "")).strip()
+        if action_type == "inspect_surface":
+            target = visible_action.get("target", "surf_00")
+            if category == "recon":
+                return f"Inspect `{target}` to expand the reachable interface map."
+            return f"Inspect `{target}` and check for useful short-horizon readback."
+        if action_type == "write_signal":
+            target = visible_action.get("target", "sig_00")
+            mode = visible_action.get("mode", "write")
+            return (
+                f"Write a bounded `{mode}` value to `{target}` and observe the next samples."
+            )
+        if action_type == "toggle_control":
+            target = visible_action.get("target", "ctrl_00")
+            setting = visible_action.get("setting", "toggle")
+            return f"Set `{target}` to `{setting}` and watch the coarse effect."
+        return "Hold and wait for a clearer bounded opportunity."
+
+    def _black_box_effect_label(self, effect: Any) -> str | None:
+        text = str(effect or "").strip().lower()
+        if not text:
+            return None
+        if "telemetry_shift_observed" in text or "jump" in text:
+            return "signal_shift_detected"
+        if "depleting" in text or "falling" in text:
+            return "reservoir_drift_detected"
+        if "persisted" in text or "valve" in text:
+            return "control_persistence_detected"
+        if "alarm" in text:
+            return "alarm_pressure_shift"
+        if "stop" in text or "running" in text or "state_now" in text:
+            return "state_transition_detected"
+        if "divergence" in text:
+            return "control_divergence_detected"
+        return "bounded_effect_observed"
+
+    def _black_box_recent_action_effects(
+        self,
+        *,
+        observation: dict[str, Any],
+        recent_actions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        effects: list[dict[str, Any]] = []
+        for item in recent_actions[-self.summary_window :]:
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            visible_action = self._black_box_visible_action(
+                action,
+                observation=observation,
+            )
+            if visible_action is None:
+                continue
+            effect = self._black_box_effect_label(
+                self._describe_action_effect(
+                    action,
+                    observation=observation,
+                    result=item.get("result"),
+                )
+            )
+            if effect is None:
+                effect = "bounded_effect_pending"
+            effects.append(
+                {
+                    "role": "attacker",
+                    "time_sec": item.get("time_sec"),
+                    "action_type": visible_action.get("type"),
+                    "effect": effect,
+                }
+            )
+        return effects[-max(1, min(self.summary_window, 4)) :]
+
+    def _black_box_visible_action_result(self, result: Any) -> dict[str, Any] | None:
+        if not isinstance(result, dict):
+            return None
+        if str(result.get("category", "")).strip().lower() != "reconnaissance":
+            return None
+        surface_alias = self._black_box_surface_alias(result.get("surface"))
+        findings: list[str] = []
+        groups = result.get("groups") if isinstance(result.get("groups"), dict) else {}
+        for payload in groups.values():
+            values = payload.get("values") if isinstance(payload, dict) else None
+            if not isinstance(values, dict):
+                continue
+            for field_name, value in values.items():
+                if field_name.startswith("Alarm_") and self._is_active_flag(value):
+                    findings.append(self._black_box_alarm_alias(field_name))
+                else:
+                    number = self._coerce_number(value)
+                    if number is None:
+                        continue
+                    if self._black_box_is_signal_field(str(field_name)):
+                        findings.append(
+                            f"{self._black_box_signal_alias(field_name)}={round(number, 3)}"
+                        )
+                    elif number in {0.0, 1.0} and int(number) == 1:
+                        findings.append(f"{self._black_box_flag_alias(field_name)}=1")
+                if len(findings) >= 4:
+                    break
+            if len(findings) >= 4:
+                break
+        if not findings:
+            findings = ["bounded_readback_captured"]
+        return {
+            "category": "reconnaissance",
+            "surface": surface_alias,
+            "summary": f"{surface_alias} readback: {'; '.join(findings)}",
+            "findings": findings[:4],
+        }
+
+    def _black_box_visible_recent_actions(
+        self,
+        recent_actions: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_actions:
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            visible_action = self._black_box_visible_action(action)
+            if visible_action is None:
+                continue
+            rendered: dict[str, Any] = {
+                "role": "attacker",
+                "action": visible_action,
+            }
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            result = self._black_box_visible_action_result(item.get("result"))
+            if result is not None:
+                rendered["result"] = result
+            visible.append(rendered)
+        return visible
+
+    def _black_box_visible_recent_decisions(
+        self,
+        recent_decisions: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_decisions:
+            if item.get("role") != "attacker":
+                continue
+            rendered: dict[str, Any] = {
+                "role": "attacker",
+                "decision_type": item.get("decision_type"),
+            }
+            action = self._black_box_visible_action(item.get("action"))
+            if action is not None:
+                rendered["action"] = action
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            visible.append(rendered)
+        return visible
+
+    def _black_box_visible_recent_alerts(
+        self,
+        recent_alerts: list[dict[str, Any]],
+        *,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        visible: list[dict[str, Any]] = []
+        for item in recent_alerts:
+            if item.get("role") not in {"observer", "defender"}:
+                continue
+            rendered: dict[str, Any] = {
+                "role": item.get("role"),
+                "signal": "attention_notice",
+            }
+            time_sec = self._coerce_number(item.get("time_sec"))
+            if time_sec is not None:
+                rendered["time_sec"] = round(time_sec, 3)
+                rendered["age_sec"] = round(max(0.0, now - time_sec), 3)
+            visible.append(rendered)
+        return visible
+
+    def _black_box_visible_memory(
+        self,
+        *,
+        semantic_memory: dict[str, Any],
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        commitment = dict(semantic_memory.get("exploit_commitment") or {})
+        committed_surface = commitment.get("surface") or semantic_memory.get(
+            "best_known_attack_surface"
+        )
+        observed_effect_map = []
+        for item in semantic_memory.get("observed_effect_map", [])[:3]:
+            surface_alias = self._black_box_surface_alias(item.get("surface"))
+            effect_label = self._black_box_effect_label(item.get("last_effect"))
+            observed_effect_map.append(
+                {
+                    "surface": surface_alias,
+                    "score": item.get("score"),
+                    "pattern": effect_label or "bounded_effect_observed",
+                }
+            )
+
+        reconnaissance_findings = []
+        for item in semantic_memory.get("reconnaissance_findings", [])[:4]:
+            surface_alias = self._black_box_surface_alias(item.get("surface"))
+            reconnaissance_findings.append(
+                {
+                    "surface": surface_alias,
+                    "findings": ["bounded_readback_captured"],
+                }
+            )
+
+        discovered_write_points = []
+        if "hmi_start" in self.profile.get("allowed_action_types", []):
+            discovered_write_points.append(self._black_box_control_alias({"type": "hmi_start"}))
+        if "select_process" in self.profile.get("allowed_action_types", []):
+            discovered_write_points.append(
+                self._black_box_control_alias(
+                    {"type": "select_process", "process_id": "WT-P2", "active": True}
+                )
+            )
+        if "set_sensor" in self.profile.get("allowed_action_types", []):
+            preferred_sensor = (
+                semantic_memory.get("simple_precondition_state", {}) or {}
+            ).get("preferred_sensor")
+            if preferred_sensor:
+                discovered_write_points.append(
+                    self._black_box_signal_alias(preferred_sensor)
+                )
+
+        stalled_surfaces = [
+            payload["surface"]
+            for payload in observed_effect_map
+            if float(payload.get("score", 0.0) or 0.0) < 1.0
+        ]
+
+        rendered = {
+            "current_phase": semantic_memory.get("current_phase"),
+            "best_known_surface": self._black_box_surface_alias(
+                semantic_memory.get("best_known_attack_surface") or committed_surface
+            ),
+            "committed_surface": self._black_box_surface_alias(committed_surface),
+            "recon_budget_remaining": semantic_memory.get("recon_budget_remaining"),
+            "defender_intervention_awareness": semantic_memory.get(
+                "defender_intervention_awareness"
+            ),
+            "detection_pressure": semantic_memory.get("detection_pressure"),
+            "discovered_read_surfaces": [
+                item["surface"] for item in reconnaissance_findings
+            ],
+            "discovered_write_points": discovered_write_points[:6],
+            "reconnaissance_findings": reconnaissance_findings,
+            "observed_effect_patterns": observed_effect_map,
+            "stalled_surfaces": stalled_surfaces,
+            "current_observation": self._black_box_visible_observation(observation),
+            "coarse_risk_signals": self._black_box_visible_risk_flags(telemetry_summary),
+        }
+        return {
+            key: value
+            for key, value in rendered.items()
+            if value not in (None, "", [], {})
+        }
+
+    def _black_box_visible_mitre_context(
+        self,
+        mitre_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if mitre_context is None:
+            return None
+        visible = dict(mitre_context)
+        if mitre_context.get("discovered_surface"):
+            visible["discovered_surface"] = self._black_box_surface_alias(
+                mitre_context.get("discovered_surface")
+            )
+        visible["discovery_surfaces"] = [
+            self._black_box_surface_alias(item)
+            for item in mitre_context.get("discovery_surfaces", [])
+        ]
+        visible["qualification_surfaces"] = [
+            self._black_box_surface_alias(item)
+            for item in mitre_context.get("qualification_surfaces", [])
+        ]
+        return visible
+
+    def _black_box_candidate_actions(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        mitre_context: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        real_candidates = self._gray_box_attacker_candidates(
+            context=context,
+            telemetry_summary=telemetry_summary,
+            structured_memory=structured_memory,
+        )
+        if mitre_context is not None:
+            real_candidates = self._optionb_mitre_attacker_candidates(
+                context=context,
+                candidates=real_candidates,
+                structured_memory=structured_memory,
+                mitre_context=mitre_context,
+            )
+
+        visible_candidates: list[dict[str, Any]] = []
+        candidate_map: dict[str, dict[str, Any]] = {}
+        for item in real_candidates:
+            real_action = normalize_action(item.get("action"))
+            if real_action is None:
+                continue
+            visible_action = self._black_box_visible_action(
+                real_action,
+                observation=context.get("observation", {}),
+            )
+            if visible_action is None:
+                continue
+            candidate_id = self._black_box_candidate_id(visible_action)
+            payload = {
+                "id": candidate_id,
+                "summary": self._black_box_candidate_summary(
+                    visible_action=visible_action,
+                    category=str(item.get("category") or ""),
+                ),
+                "action": visible_action,
+                "source": "black_box",
+                "priority": int(item.get("priority", 0)),
+            }
+            if item.get("category"):
+                payload["category"] = item.get("category")
+            if item.get("surface"):
+                payload["surface"] = self._black_box_surface_alias(item.get("surface"))
+            visible_candidates.append(payload)
+            candidate_map[candidate_id] = {
+                "action": real_action,
+                "summary": payload["summary"],
+                "visible_action": visible_action,
+            }
+
+        self._state["black_box_candidate_map"] = candidate_map
+        self.engine.black_box_candidate_map = dict(candidate_map)
+        return sorted(
+            visible_candidates,
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                str(item.get("id", "")),
+            ),
+            reverse=True,
+        )
+
+    def _black_box_resolved_candidate(self, candidate_id: Any) -> dict[str, Any] | None:
+        candidate_map = self._state.setdefault("black_box_candidate_map", {})
+        return dict(candidate_map.get(str(candidate_id)) or {}) or None
 
     def _recent_action_effects(
         self,
@@ -1226,8 +2020,8 @@ class AgenticRoleAgent(RoleAgent):
         recent_alerts: list[dict[str, Any]],
         recent_action_effects: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        if self._is_practical_black_box_attacker():
-            return self._practical_black_box_attacker_memory(
+        if self._is_gray_box_attacker():
+            return self._gray_box_attacker_memory(
                 context=context,
                 observation=observation,
                 telemetry_summary=telemetry_summary,
@@ -1318,7 +2112,7 @@ class AgenticRoleAgent(RoleAgent):
         )
         return state
 
-    def _practical_black_box_attacker_memory(
+    def _gray_box_attacker_memory(
         self,
         *,
         context: dict[str, Any],
@@ -1333,9 +2127,9 @@ class AgenticRoleAgent(RoleAgent):
         surface_state = state.setdefault(
             "_surface_state",
             {
-                "process2_manual_path": self._practical_black_box_surface_template(),
-                "sensor_manipulation": self._practical_black_box_surface_template(),
-                "availability_disruption": self._practical_black_box_surface_template(),
+                "process2_manual_path": self._gray_box_surface_template(),
+                "sensor_manipulation": self._gray_box_surface_template(),
+                "availability_disruption": self._gray_box_surface_template(),
             },
         )
         for surface in (
@@ -1345,9 +2139,9 @@ class AgenticRoleAgent(RoleAgent):
         ):
             entry = surface_state.setdefault(
                 surface,
-                self._practical_black_box_surface_template(),
+                self._gray_box_surface_template(),
             )
-            for key, value in self._practical_black_box_surface_template().items():
+            for key, value in self._gray_box_surface_template().items():
                 entry.setdefault(key, value if not isinstance(value, list) else list(value))
 
         discovered_controls = state.setdefault("_discovered_controls", {})
@@ -1371,7 +2165,7 @@ class AgenticRoleAgent(RoleAgent):
             recent_alerts=recent_alerts,
             recent_actions=recent_actions,
         )
-        previous_observation = self._practical_black_box_previous_observation(
+        previous_observation = self._gray_box_previous_observation(
             context=context,
             observation=observation,
         )
@@ -1384,7 +2178,7 @@ class AgenticRoleAgent(RoleAgent):
         recent_defender_action_count = sum(
             1 for item in recent_actions if item.get("role") == "defender"
         )
-        preconditions = self._practical_black_box_preconditions(
+        preconditions = self._gray_box_preconditions(
             observation=observation,
             telemetry_summary=telemetry_summary,
             defender_attention=defender_attention,
@@ -1433,13 +2227,13 @@ class AgenticRoleAgent(RoleAgent):
                 time_sec = self._coerce_number(item.get("time_sec"))
                 if time_sec is not None:
                     entry["last_time_sec"] = round(time_sec, 3)
-                for hinted_surface in self._practical_black_box_recon_surface_hints(
+                for hinted_surface in self._gray_box_recon_surface_hints(
                     surface=surface,
                     findings=findings,
                 ):
                     hinted_entry = surface_state.setdefault(
                         hinted_surface,
-                        self._practical_black_box_surface_template(),
+                        self._gray_box_surface_template(),
                     )
                     hinted_entry["recon_count"] = int(hinted_entry.get("recon_count", 0)) + 1
                     for token in findings[:4]:
@@ -1459,7 +2253,7 @@ class AgenticRoleAgent(RoleAgent):
                 continue
             entry = surface_state.setdefault(
                 surface,
-                self._practical_black_box_surface_template(),
+                self._gray_box_surface_template(),
             )
             action_time = self._coerce_number(item.get("time_sec"))
             event_time_sec = round(action_time if action_time is not None else now, 3)
@@ -1473,12 +2267,12 @@ class AgenticRoleAgent(RoleAgent):
                 field_name = str(action.get("name", "")).strip()
                 entry["preferred_target"] = field_name or None
                 entry["last_value"] = action.get("value")
-                entry["preferred_direction"] = self._practical_black_box_sensor_direction(
+                entry["preferred_direction"] = self._gray_box_sensor_direction(
                     field_name=field_name,
                     observation=observation,
                     telemetry_summary=telemetry_summary,
                 )
-                stage = self._practical_black_box_sensor_stage(
+                stage = self._gray_box_sensor_stage(
                     field_name=field_name,
                     action_value=action.get("value"),
                     observation=observation,
@@ -1486,14 +2280,14 @@ class AgenticRoleAgent(RoleAgent):
                 )
                 entry["escalation_stage"] = max(int(entry.get("escalation_stage", 0)), stage)
 
-            effect = self._practical_black_box_effect_for_action(
+            effect = self._gray_box_effect_for_action(
                 action=action,
                 observation=observation,
                 previous_observation=previous_observation,
                 telemetry_summary=telemetry_summary,
                 preconditions=preconditions,
             )
-            impact_score = self._practical_black_box_effect_impact_score(
+            impact_score = self._gray_box_effect_impact_score(
                 action=action,
                 effect=effect,
                 observation=observation,
@@ -1582,7 +2376,7 @@ class AgenticRoleAgent(RoleAgent):
         )
 
         for surface, payload in surface_state.items():
-            payload["score"] = self._practical_black_box_surface_score(
+            payload["score"] = self._gray_box_surface_score(
                 surface=surface,
                 payload=payload,
                 preconditions=preconditions,
@@ -1593,7 +2387,7 @@ class AgenticRoleAgent(RoleAgent):
         committed_surface = str(commitment.get("surface", "unknown"))
         if committed_surface not in surface_state:
             committed_surface = "unknown"
-        best_surface = self._practical_black_box_choose_surface(
+        best_surface = self._gray_box_choose_surface(
             surface_state=surface_state,
             committed_surface=committed_surface,
             recon_budget_remaining=recon_budget_remaining,
@@ -1645,7 +2439,7 @@ class AgenticRoleAgent(RoleAgent):
             commitment.update(
                 {
                     "surface": committed_surface,
-                    "template": self._practical_black_box_template_for_surface(
+                    "template": self._gray_box_template_for_surface(
                         committed_surface
                     ),
                     "remaining_steps": 4
@@ -1660,7 +2454,7 @@ class AgenticRoleAgent(RoleAgent):
             )
 
         if committed_surface == "process2_manual_path":
-            commitment["preferred_chemical"] = self._practical_black_box_preferred_chemical(
+            commitment["preferred_chemical"] = self._gray_box_preferred_chemical(
                 observation=observation,
                 preferred=str(commitment.get("preferred_chemical") or ""),
                 open_chemicals=preconditions["manual_open_chemicals"],
@@ -1673,7 +2467,7 @@ class AgenticRoleAgent(RoleAgent):
             )
             if target_field:
                 commitment["target_sensor"] = target_field
-                commitment["sensor_direction"] = self._practical_black_box_sensor_direction(
+                commitment["sensor_direction"] = self._gray_box_sensor_direction(
                     field_name=target_field,
                     observation=observation,
                     telemetry_summary=telemetry_summary,
@@ -1696,7 +2490,7 @@ class AgenticRoleAgent(RoleAgent):
                     int(commitment.get("remaining_steps", 0) or 0),
                 )
             commitment["stall_count"] = committed_stall
-            commitment["next_goal"] = self._practical_black_box_next_goal(
+            commitment["next_goal"] = self._gray_box_next_goal(
                 surface=committed_surface,
                 observation=observation,
                 preconditions=preconditions,
@@ -1824,7 +2618,7 @@ class AgenticRoleAgent(RoleAgent):
         state.update(
             {
                 "mission_objective": state.get("mission_objective")
-                or self._practical_black_box_attacker_intent(),
+                or self._gray_box_attacker_intent(),
                 "current_phase": current_phase,
                 "discovered_controls": visible_controls,
                 "observed_effect_map": observed_effect_map,
@@ -1867,7 +2661,7 @@ class AgenticRoleAgent(RoleAgent):
         return state
 
     @staticmethod
-    def _practical_black_box_surface_template() -> dict[str, Any]:
+    def _gray_box_surface_template() -> dict[str, Any]:
         return {
             "recon_count": 0,
             "recon_evidence": [],
@@ -1890,7 +2684,7 @@ class AgenticRoleAgent(RoleAgent):
             "score": 0.0,
         }
 
-    def _practical_black_box_preconditions(
+    def _gray_box_preconditions(
         self,
         *,
         observation: dict[str, Any],
@@ -1898,7 +2692,7 @@ class AgenticRoleAgent(RoleAgent):
         defender_attention: str,
     ) -> dict[str, Any]:
         state_name = str(observation.get("STATE_NAME", "")).upper() or "UNKNOWN"
-        open_chemicals = self._practical_black_box_open_chemicals(observation)
+        open_chemicals = self._gray_box_open_chemicals(observation)
         active_alarm_count = len(telemetry_summary["active_alarms"])
         alarm_pressure = "low"
         if active_alarm_count >= 2 or defender_attention == "high":
@@ -1969,7 +2763,7 @@ class AgenticRoleAgent(RoleAgent):
         }
 
     @staticmethod
-    def _practical_black_box_open_chemicals(observation: dict[str, Any]) -> list[str]:
+    def _gray_box_open_chemicals(observation: dict[str, Any]) -> list[str]:
         open_chemicals: list[str] = []
         for chemical in ("NaCl", "NaOCl", "HCl"):
             field = f"ChemTreat_{chemical}_Valve_Sts"
@@ -1977,7 +2771,7 @@ class AgenticRoleAgent(RoleAgent):
                 open_chemicals.append(chemical)
         return open_chemicals
 
-    def _practical_black_box_previous_observation(
+    def _gray_box_previous_observation(
         self,
         *,
         context: dict[str, Any],
@@ -2003,7 +2797,7 @@ class AgenticRoleAgent(RoleAgent):
             return dict(observations[-2])
         return dict(last_sample)
 
-    def _practical_black_box_recon_surface_hints(
+    def _gray_box_recon_surface_hints(
         self,
         *,
         surface: str,
@@ -2032,7 +2826,7 @@ class AgenticRoleAgent(RoleAgent):
             hints.append("availability_disruption")
         return sorted(set(hints))
 
-    def _practical_black_box_effect_for_action(
+    def _gray_box_effect_for_action(
         self,
         *,
         action: dict[str, Any],
@@ -2090,7 +2884,7 @@ class AgenticRoleAgent(RoleAgent):
                 and abs(current_value - previous_value) >= max(25.0, abs(previous_value) * 0.12)
             ):
                 tokens.append("telemetry_shift_observed")
-            direction = self._practical_black_box_sensor_direction(
+            direction = self._gray_box_sensor_direction(
                 field_name=field_name,
                 observation=observation,
                 telemetry_summary=telemetry_summary,
@@ -2127,7 +2921,7 @@ class AgenticRoleAgent(RoleAgent):
             return None
         return None
 
-    def _practical_black_box_effect_impact_score(
+    def _gray_box_effect_impact_score(
         self,
         *,
         action: dict[str, Any],
@@ -2141,7 +2935,7 @@ class AgenticRoleAgent(RoleAgent):
             return 0.0
         action_type = str(action.get("type", ""))
         effect_text = effect.lower()
-        alarm_delta = self._practical_black_box_alarm_delta(
+        alarm_delta = self._gray_box_alarm_delta(
             previous_observation=previous_observation,
             telemetry_summary=telemetry_summary,
         )
@@ -2165,7 +2959,7 @@ class AgenticRoleAgent(RoleAgent):
             field_name = str(action.get("name", "")).strip()
             current_value = self._coerce_number(observation.get(field_name))
             previous_value = self._coerce_number(previous_observation.get(field_name))
-            direction = self._practical_black_box_sensor_direction(
+            direction = self._gray_box_sensor_direction(
                 field_name=field_name,
                 observation=observation,
                 telemetry_summary=telemetry_summary,
@@ -2209,7 +3003,7 @@ class AgenticRoleAgent(RoleAgent):
             score += 0.4
         return round(score, 3)
 
-    def _practical_black_box_alarm_delta(
+    def _gray_box_alarm_delta(
         self,
         *,
         previous_observation: dict[str, Any],
@@ -2220,7 +3014,7 @@ class AgenticRoleAgent(RoleAgent):
         )
         return max(0, len(telemetry_summary["active_alarms"]) - previous_alarm_count)
 
-    def _practical_black_box_surface_score(
+    def _gray_box_surface_score(
         self,
         *,
         surface: str,
@@ -2276,7 +3070,7 @@ class AgenticRoleAgent(RoleAgent):
         return round(max(0.0, score), 3)
 
     @staticmethod
-    def _practical_black_box_choose_surface(
+    def _gray_box_choose_surface(
         *,
         surface_state: dict[str, dict[str, Any]],
         committed_surface: str,
@@ -2316,7 +3110,7 @@ class AgenticRoleAgent(RoleAgent):
         return best_surface
 
     @staticmethod
-    def _practical_black_box_template_for_surface(surface: str) -> str | None:
+    def _gray_box_template_for_surface(surface: str) -> str | None:
         mapping = {
             "process2_manual_path": "process2_manual_path_abuse",
             "sensor_manipulation": "telemetry_bias_escalation",
@@ -2324,7 +3118,7 @@ class AgenticRoleAgent(RoleAgent):
         }
         return mapping.get(surface)
 
-    def _practical_black_box_next_goal(
+    def _gray_box_next_goal(
         self,
         *,
         surface: str,
@@ -2338,7 +3132,7 @@ class AgenticRoleAgent(RoleAgent):
             if not preconditions["process2_enabled"]:
                 return "enable_process2_manual_path"
             if not preconditions["manual_path_active"]:
-                chemical = self._practical_black_box_preferred_chemical(
+                chemical = self._gray_box_preferred_chemical(
                     observation=observation,
                     preferred=str(surface_payload.get("preferred_target") or ""),
                     open_chemicals=preconditions["manual_open_chemicals"],
@@ -2361,7 +3155,7 @@ class AgenticRoleAgent(RoleAgent):
             return "stop_or_estop_the_running_plant"
         return "gather_more_evidence"
 
-    def _practical_black_box_preferred_chemical(
+    def _gray_box_preferred_chemical(
         self,
         *,
         observation: dict[str, Any],
@@ -2381,7 +3175,7 @@ class AgenticRoleAgent(RoleAgent):
         )
         return ranked[0] if ranked else "NaOCl"
 
-    def _practical_black_box_sensor_direction(
+    def _gray_box_sensor_direction(
         self,
         *,
         field_name: str,
@@ -2402,7 +3196,7 @@ class AgenticRoleAgent(RoleAgent):
             return "high"
         return "low"
 
-    def _practical_black_box_sensor_stage(
+    def _gray_box_sensor_stage(
         self,
         *,
         field_name: str,
@@ -5097,19 +5891,29 @@ class AgenticRoleAgent(RoleAgent):
             self.role == "attacker"
             and not remaining_playbook
             and not context["scenario"].metadata.get("attacker_actions")
-            and not self._is_practical_black_box_attacker()
+            and not self._is_gray_box_attacker()
+            and not self._is_black_box_attacker()
         ):
             noop_candidate = self._noop_candidate(
                 "No attacker objective is active in this scenario."
             )
             return [noop_candidate] if noop_candidate is not None else []
         if self.role == "attacker":
-            if self._is_practical_black_box_attacker():
-                candidates = self._practical_black_box_attacker_candidates(
+            if self._is_gray_box_attacker():
+                candidates = self._gray_box_attacker_candidates(
                     context=context,
                     telemetry_summary=telemetry_summary,
                     structured_memory=structured_memory,
                 )
+            elif self._is_black_box_attacker():
+                candidates = self._black_box_candidate_actions(
+                    context=context,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=structured_memory,
+                    mitre_context=mitre_context,
+                )
+                if mitre_context is not None:
+                    return candidates
             else:
                 candidates = self._adaptive_attacker_candidates(
                     context=context,
@@ -5395,7 +6199,7 @@ class AgenticRoleAgent(RoleAgent):
             reverse=True,
         )
 
-    def _practical_black_box_attacker_candidates(
+    def _gray_box_attacker_candidates(
         self,
         *,
         context: dict[str, Any],
@@ -5411,7 +6215,7 @@ class AgenticRoleAgent(RoleAgent):
         commitment = dict(memory_state.get("_exploit_commitment") or {})
         preconditions = dict(structured_memory.get("simple_precondition_state") or {})
         if not preconditions:
-            preconditions = self._practical_black_box_preconditions(
+            preconditions = self._gray_box_preconditions(
                 observation=observation,
                 telemetry_summary=telemetry_summary,
                 defender_attention=str(
@@ -5449,7 +6253,7 @@ class AgenticRoleAgent(RoleAgent):
         )
         open_chemicals = list(
             preconditions.get("manual_open_chemicals")
-            or self._practical_black_box_open_chemicals(observation)
+            or self._gray_box_open_chemicals(observation)
         )
         prior_actions = {
             action_key(action)
@@ -5481,7 +6285,7 @@ class AgenticRoleAgent(RoleAgent):
             "reconnaissance",
             "reorient",
         } or (recon_budget_remaining > 0 and not must_commit)
-        sensor_profiles = dict(self._practical_black_box_sensor_profiles(observation))
+        sensor_profiles = dict(self._gray_box_sensor_profiles(observation))
         availability_payload = surface_state.get("availability_disruption", {})
         availability_suppressed = (
             float(availability_payload.get("stalled_until_time_sec") or 0.0) > now
@@ -5562,7 +6366,7 @@ class AgenticRoleAgent(RoleAgent):
             if "hmi_start" in allowed and not plant_running and not availability_suppressed:
                 action = {"type": "hmi_start", "process_id": "WT-P1"}
                 add_candidate(
-                    self._practical_black_box_candidate_summary(
+                    self._gray_box_candidate_summary(
                         action=action,
                         best_surface=best_surface,
                         current_phase=current_phase,
@@ -5572,7 +6376,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal="make_plant_state_effectful",
                     ),
                     action,
-                    source="black_box",
+                    source="gray_box",
                     priority=exploit_priority(
                         surface="availability_disruption",
                         category="probe",
@@ -5589,7 +6393,7 @@ class AgenticRoleAgent(RoleAgent):
                     "active": True,
                 }
                 add_candidate(
-                    self._practical_black_box_candidate_summary(
+                    self._gray_box_candidate_summary(
                         action=action,
                         best_surface=best_surface,
                         current_phase=current_phase,
@@ -5599,7 +6403,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal="test_process2_manual_access",
                     ),
                     action,
-                    source="black_box",
+                    source="gray_box",
                     priority=exploit_priority(
                         surface="process2_manual_path",
                         category="probe",
@@ -5614,7 +6418,7 @@ class AgenticRoleAgent(RoleAgent):
                     preconditions.get("preferred_sensor")
                     or next(iter(sensor_profiles))
                 )
-                direction = self._practical_black_box_sensor_direction(
+                direction = self._gray_box_sensor_direction(
                     field_name=target_field,
                     observation=observation,
                     telemetry_summary=telemetry_summary,
@@ -5625,7 +6429,7 @@ class AgenticRoleAgent(RoleAgent):
                     "value": sensor_profiles[target_field][direction][0],
                 }
                 add_candidate(
-                    self._practical_black_box_candidate_summary(
+                    self._gray_box_candidate_summary(
                         action=action,
                         best_surface=best_surface,
                         current_phase=current_phase,
@@ -5635,7 +6439,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal="test_telemetry_control_response",
                     ),
                     action,
-                    source="black_box",
+                    source="gray_box",
                     priority=exploit_priority(
                         surface="sensor_manipulation",
                         category="probe",
@@ -5679,14 +6483,14 @@ class AgenticRoleAgent(RoleAgent):
                 and not must_commit
             ):
                 continue
-            chain_goal = self._practical_black_box_next_goal(
+            chain_goal = self._gray_box_next_goal(
                 surface=surface,
                 observation=observation,
                 preconditions=preconditions,
                 surface_payload=payload,
             )
             if surface == "process2_manual_path":
-                preferred_chemical = self._practical_black_box_preferred_chemical(
+                preferred_chemical = self._gray_box_preferred_chemical(
                     observation=observation,
                     preferred=str(
                         commitment.get("preferred_chemical")
@@ -5698,7 +6502,7 @@ class AgenticRoleAgent(RoleAgent):
                 if not plant_running and "hmi_start" in allowed:
                     action = {"type": "hmi_start", "process_id": "WT-P1"}
                     add_candidate(
-                        self._practical_black_box_candidate_summary(
+                        self._gray_box_candidate_summary(
                             action=action,
                             best_surface=surface,
                             current_phase=current_phase,
@@ -5708,7 +6512,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="black_box",
+                        source="gray_box",
                         priority=exploit_priority(
                             surface=surface,
                             category="support",
@@ -5727,7 +6531,7 @@ class AgenticRoleAgent(RoleAgent):
                     }
                     category = "exploit" if must_commit else "probe"
                     add_candidate(
-                        self._practical_black_box_candidate_summary(
+                        self._gray_box_candidate_summary(
                             action=action,
                             best_surface=surface,
                             current_phase=current_phase,
@@ -5737,7 +6541,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="black_box",
+                        source="gray_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=category,
@@ -5772,7 +6576,7 @@ class AgenticRoleAgent(RoleAgent):
                             "open": True,
                         }
                         add_candidate(
-                            self._practical_black_box_candidate_summary(
+                            self._gray_box_candidate_summary(
                                 action=action,
                                 best_surface=surface,
                                 current_phase=current_phase,
@@ -5782,7 +6586,7 @@ class AgenticRoleAgent(RoleAgent):
                                 chain_goal=chain_goal,
                             ),
                             action,
-                            source="black_box",
+                            source="gray_box",
                             priority=exploit_priority(
                                 surface=surface,
                                 category=category,
@@ -5808,7 +6612,7 @@ class AgenticRoleAgent(RoleAgent):
                     direction = str(
                         commitment.get("sensor_direction")
                         or payload.get("preferred_direction")
-                        or self._practical_black_box_sensor_direction(
+                        or self._gray_box_sensor_direction(
                             field_name=target_field,
                             observation=observation,
                             telemetry_summary=telemetry_summary,
@@ -5825,7 +6629,7 @@ class AgenticRoleAgent(RoleAgent):
                             "value": last_value,
                         }
                         add_candidate(
-                            self._practical_black_box_candidate_summary(
+                            self._gray_box_candidate_summary(
                                 action=action,
                                 best_surface=surface,
                                 current_phase=current_phase,
@@ -5835,7 +6639,7 @@ class AgenticRoleAgent(RoleAgent):
                                 chain_goal=chain_goal,
                             ),
                             action,
-                            source="black_box",
+                            source="gray_box",
                             priority=exploit_priority(
                                 surface=surface,
                                 category="sustain",
@@ -5856,7 +6660,7 @@ class AgenticRoleAgent(RoleAgent):
                     }
                     primary_category = "escalate" if attempted_stage > 0 else "exploit"
                     add_candidate(
-                        self._practical_black_box_candidate_summary(
+                        self._gray_box_candidate_summary(
                             action=primary_action,
                             best_surface=surface,
                             current_phase=current_phase,
@@ -5866,7 +6670,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         primary_action,
-                        source="black_box",
+                        source="gray_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=primary_category,
@@ -5884,7 +6688,7 @@ class AgenticRoleAgent(RoleAgent):
                             "value": stage_values[next_stage],
                         }
                         add_candidate(
-                            self._practical_black_box_candidate_summary(
+                            self._gray_box_candidate_summary(
                                 action=stronger_action,
                                 best_surface=surface,
                                 current_phase=current_phase,
@@ -5894,7 +6698,7 @@ class AgenticRoleAgent(RoleAgent):
                                 chain_goal=chain_goal,
                             ),
                             stronger_action,
-                            source="black_box",
+                            source="gray_box",
                             priority=exploit_priority(
                                 surface=surface,
                                 category="escalate",
@@ -5910,7 +6714,7 @@ class AgenticRoleAgent(RoleAgent):
                     action = {"type": "hmi_start", "process_id": "WT-P1"}
                     category = "support" if must_commit else "probe"
                     add_candidate(
-                        self._practical_black_box_candidate_summary(
+                        self._gray_box_candidate_summary(
                             action=action,
                             best_surface=surface,
                             current_phase=current_phase,
@@ -5920,7 +6724,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="black_box",
+                        source="gray_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=category,
@@ -5934,7 +6738,7 @@ class AgenticRoleAgent(RoleAgent):
                 if plant_running and "hmi_stop" in allowed:
                     action = {"type": "hmi_stop", "process_id": "WT-P1"}
                     add_candidate(
-                        self._practical_black_box_candidate_summary(
+                        self._gray_box_candidate_summary(
                             action=action,
                             best_surface=surface,
                             current_phase=current_phase,
@@ -5944,7 +6748,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="black_box",
+                        source="gray_box",
                         priority=exploit_priority(
                             surface=surface,
                             category="exploit",
@@ -5963,7 +6767,7 @@ class AgenticRoleAgent(RoleAgent):
                         else "exploit"
                     )
                     add_candidate(
-                        self._practical_black_box_candidate_summary(
+                        self._gray_box_candidate_summary(
                             action=action,
                             best_surface=surface,
                             current_phase=current_phase,
@@ -5973,7 +6777,7 @@ class AgenticRoleAgent(RoleAgent):
                             chain_goal=chain_goal,
                         ),
                         action,
-                        source="black_box",
+                        source="gray_box",
                         priority=exploit_priority(
                             surface=surface,
                             category=category,
@@ -5988,7 +6792,7 @@ class AgenticRoleAgent(RoleAgent):
         if "inspect_surface" in allowed and recon_allowed:
             focus_surface = committed_surface if committed_surface != "unknown" else best_surface
             for index, recon_surface in enumerate(
-                self._practical_black_box_recon_order(
+                self._gray_box_recon_order(
                     focus_surface=focus_surface,
                     detection_pressure=detection_pressure,
                 )
@@ -6021,7 +6825,7 @@ class AgenticRoleAgent(RoleAgent):
                 if priority < 58:
                     continue
                 add_candidate(
-                    self._practical_black_box_candidate_summary(
+                    self._gray_box_candidate_summary(
                         action=action,
                         best_surface=best_surface,
                         current_phase=current_phase,
@@ -6031,7 +6835,7 @@ class AgenticRoleAgent(RoleAgent):
                         chain_goal=f"refresh_{recon_surface}_evidence",
                     ),
                     action,
-                    source="black_box",
+                    source="gray_box",
                     priority=priority,
                     surface=focus_surface or "unknown",
                     category="recon",
@@ -6086,7 +6890,7 @@ class AgenticRoleAgent(RoleAgent):
         return "unknown"
 
     @staticmethod
-    def _practical_black_box_recon_actions() -> list[dict[str, Any]]:
+    def _gray_box_recon_actions() -> list[dict[str, Any]]:
         return [
             {"type": "inspect_surface", "surface": "tags"},
             {"type": "inspect_surface", "surface": "registers"},
@@ -6096,7 +6900,7 @@ class AgenticRoleAgent(RoleAgent):
             {"type": "inspect_surface", "surface": "actuator_state_bits"},
         ]
 
-    def _practical_black_box_sensor_profiles(
+    def _gray_box_sensor_profiles(
         self,
         observation: dict[str, Any],
     ) -> list[tuple[str, dict[str, list[int]]]]:
@@ -6151,7 +6955,7 @@ class AgenticRoleAgent(RoleAgent):
                 observed.append(chemical)
         return observed
 
-    def _practical_black_box_candidate_summary(
+    def _gray_box_candidate_summary(
         self,
         *,
         action: dict[str, Any],
@@ -6228,7 +7032,7 @@ class AgenticRoleAgent(RoleAgent):
         return "Hold only if another exploit step has no credible leverage."
 
     @staticmethod
-    def _practical_black_box_recon_order(
+    def _gray_box_recon_order(
         *,
         focus_surface: str,
         detection_pressure: str,
@@ -6274,7 +7078,7 @@ class AgenticRoleAgent(RoleAgent):
             order.insert(0, "alarm_bits")
         return order
 
-    def _enforce_practical_black_box_payload(
+    def _enforce_gray_box_payload(
         self,
         payload: dict[str, Any],
         context: dict[str, Any],
@@ -6689,11 +7493,20 @@ class AgenticRoleAgent(RoleAgent):
         }
         candidate_id = payload.get("candidate_id")
         if action is None and candidate_id is not None and decision_type == "action":
-            matched = candidate_lookup.get(str(candidate_id))
-            if matched is not None:
-                action = normalize_action(matched.get("action"))
-                if not summary:
-                    summary = str(matched.get("summary", "")).strip()
+            if self._is_black_box_attacker():
+                resolved = self._black_box_resolved_candidate(candidate_id)
+                if resolved is not None:
+                    action = normalize_action(resolved.get("action"))
+                    if not summary:
+                        summary = str(
+                            candidate_lookup.get(str(candidate_id), {}).get("summary", "")
+                        ).strip()
+            else:
+                matched = candidate_lookup.get(str(candidate_id))
+                if matched is not None:
+                    action = normalize_action(matched.get("action"))
+                    if not summary:
+                        summary = str(matched.get("summary", "")).strip()
 
         if (
             action is not None
@@ -7126,7 +7939,7 @@ class AgenticRoleAgent(RoleAgent):
         defender_action_count = sum(
             1 for item in context.get("recent_actions", []) if item.get("role") == "defender"
         )
-        if self._is_practical_black_box_attacker():
+        if self.role == "attacker" and self.knowledge_mode in {"gray_box", "black_box"}:
             defender_action_count = int(
                 defender_awareness.get("recent_defender_action_count", 0) or 0
             )
@@ -7319,7 +8132,7 @@ class AgenticRoleAgent(RoleAgent):
             visible.append(rendered)
         return visible
 
-    def _practical_black_box_visible_recent_actions(
+    def _gray_box_visible_recent_actions(
         self,
         recent_actions: list[dict[str, Any]],
         *,
@@ -7403,7 +8216,7 @@ class AgenticRoleAgent(RoleAgent):
             visible.append(rendered)
         return visible
 
-    def _practical_black_box_visible_recent_decisions(
+    def _gray_box_visible_recent_decisions(
         self,
         recent_decisions: list[dict[str, Any]],
         *,
@@ -7427,7 +8240,7 @@ class AgenticRoleAgent(RoleAgent):
             visible.append(rendered)
         return visible
 
-    def _practical_black_box_visible_recent_alerts(
+    def _gray_box_visible_recent_alerts(
         self,
         recent_alerts: list[dict[str, Any]],
         *,

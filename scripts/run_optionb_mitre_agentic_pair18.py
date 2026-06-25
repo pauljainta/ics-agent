@@ -25,22 +25,23 @@ SEED = 20260623
 CONFIG_PATH = (
     REPO_ROOT / "configs" / "experiments" / "sphere_optionb_mitre_agentic_pair18.yaml"
 )
-RESULTS_ROOT = WORKSPACE_ROOT / "Artifact" / "Results" / "optionb_mitre_agentic_pair18"
+RESULTS_ROOT = WORKSPACE_ROOT / "Artifact" / "Results" / "DefendervsBlackBoxAttacker"
 PROGRESS_ROOT = RESULTS_ROOT / "_progress"
 PHASE_STATUS_PATH = PROGRESS_ROOT / "phase_status.json"
 RUN_MANIFEST_PATH = PROGRESS_ROOT / "run_manifest.json"
 COMPLETED_RUNS_PATH = PROGRESS_ROOT / "completed_runs.json"
 RESUME_NOTES_PATH = PROGRESS_ROOT / "resume_notes.md"
 LAST_STEP_PATH = PROGRESS_ROOT / "last_successful_step.txt"
-COMPARISON_REPORT_PATH = PROGRESS_ROOT / "comparison_report.md"
+RESULTS_SUMMARY_PATH = RESULTS_ROOT / "results_summary.md"
 ENVIRONMENT_VALIDATION_PATH = PROGRESS_ROOT / "optionb_environment_validation.json"
 VALIDATE_LOG_PATH = PROGRESS_ROOT / "validate_runtime.log"
 PYTEST_LOG_PATH = PROGRESS_ROOT / "pytest_targeted.log"
 
 PHASE_ORDER = [
     "validated_optionb_environment",
+    "rename_consistency",
+    "black_box_implementation",
     "config_prepared",
-    "prompt_context_implementation",
     "validation_tests",
     "scenario_run",
     "aggregate_metrics",
@@ -529,10 +530,6 @@ def _aggregate_and_write(
     condition_summary["mitre_phase_metrics"] = orchestrator._aggregate_mitre_phase_metrics(
         runs
     )
-    condition_summary["trajectory_metrics"] = orchestrator._aggregate_trajectory_metrics(
-        runs,
-        condition=condition,
-    )
 
     mitre_summary = {
         "condition_name": condition_name,
@@ -568,7 +565,6 @@ def _aggregate_and_write(
         "nominal_metrics": condition_summary["nominal_metrics"],
         "attack_metrics": condition_summary["attack_metrics"],
         "mitre_phase_metrics": condition_summary["mitre_phase_metrics"],
-        "trajectory_metrics": condition_summary["trajectory_metrics"],
     }
 
     write_json(condition_root / "condition_summary.json", condition_summary)
@@ -576,14 +572,12 @@ def _aggregate_and_write(
     write_json(condition_root / "nominal_metrics_summary.json", condition_summary["nominal_metrics"])
     write_json(condition_root / "mitre_phase_metrics.json", condition_summary["mitre_phase_metrics"])
     write_json(condition_root / "mitre_phase_summary.json", mitre_summary)
-    write_json(condition_root / "trajectory_metrics_summary.json", condition_summary["trajectory_metrics"])
 
     write_json(experiment_root / "experiment_summary.json", suite_summary)
     write_json(experiment_root / "attack_metrics_summary.json", suite_summary["attack_metrics"])
     write_json(experiment_root / "nominal_metrics_summary.json", suite_summary["nominal_metrics"])
     write_json(experiment_root / "mitre_phase_metrics.json", suite_summary["mitre_phase_metrics"])
     write_json(experiment_root / "mitre_phase_summary.json", {"condition_summaries": [mitre_summary]})
-    write_json(experiment_root / "trajectory_metrics_summary.json", suite_summary["trajectory_metrics"])
     return suite_summary
 
 
@@ -592,7 +586,7 @@ def _load_baseline_reference() -> dict[str, Any]:
         (
             path
             for path in (WORKSPACE_ROOT / "Artifact" / "Results").rglob("attack_metrics_summary.json")
-            if EXPECTED_CONDITION_NAME in str(path.parent)
+            if "gray_box_attacker__agentic_defender" in str(path.parent)
             and "optionb_mitre_agentic_pair18" not in str(path)
             and "optionb_mitre_pairs18" not in str(path)
         ),
@@ -620,8 +614,8 @@ def _load_baseline_reference() -> dict[str, Any]:
             "attacker_recon_action_count_avg": 0.0,
         },
         "notes": [
-            "No prior non-MITRE black_box_attacker__agentic_defender artifact was present under Artifact/Results.",
-            "Baseline comparison therefore uses the README-documented 2026-05-23 local black-box agentic snapshot.",
+            "No prior non-MITRE gray_box_attacker__agentic_defender artifact was present under Artifact/Results.",
+            "Baseline comparison therefore uses the README-documented 2026-05-23 local gray-box agentic snapshot.",
             "That baseline was direct-access-semantic and exploit-first rather than staged-entry MITRE-informed.",
         ],
     }
@@ -644,7 +638,6 @@ def _write_final_report(
     condition_summary = suite_summary["conditions"][0]
     attack_metrics = dict(condition_summary.get("attack_metrics") or {})
     mitre_metrics = dict(condition_summary.get("mitre_phase_metrics") or {})
-    baseline = _load_baseline_reference()
     distribution = ", ".join(
         f"{phase}:{count}"
         for phase, count in (mitre_metrics.get("highest_attacker_phase_distribution") or {}).items()
@@ -652,7 +645,7 @@ def _write_final_report(
     ) or "none"
 
     lines = [
-        "# Option B MITRE-Informed Agentic Pair Study",
+        "# Defender vs Black-Box Attacker",
         "",
         f"- Generated UTC: `{utc_now()}`",
         f"- Experiment root: `{portable_path(experiment_root)}`",
@@ -664,16 +657,36 @@ def _write_final_report(
         f"- Episodes completed: `{attack_metrics.get('completed_attack_run_count', 0)}/{attack_metrics.get('attack_run_count', 0)}`",
         f"- Primary timing origin: `{attack_metrics.get('primary_timing_origin')}`",
         "",
-        "## Fresh Results",
+        "## Implementation Labels",
         "",
-        f"- Defender-detected scenarios: `{attack_metrics.get('defender_detected_attack_run_count', 0)}`",
-        f"- Defender-action scenarios: `{attack_metrics.get('defender_acted_attack_run_count', 0)}`",
-        f"- Contained-before-violation scenarios: `{attack_metrics.get('contained_before_safety_violation_run_count', 0)}`",
-        f"- Safety-violation rate: `{_fmt(attack_metrics.get('attacker_safety_success_rate'))}`",
-        f"- Avg time to detection from wargame_t0: `{_fmt(attack_metrics.get('time_to_detection_sec_avg'))}`",
-        f"- Avg time to first defender action from wargame_t0: `{_fmt(attack_metrics.get('time_to_first_defender_action_sec_avg'))}`",
-        f"- Avg time to physical impact from wargame_t0: `{_fmt(attack_metrics.get('time_to_physical_impact_sec_avg'))}`",
-        f"- Avg attacker action count: `{_fmt(attack_metrics.get('attacker_action_count_avg'))}`",
+        "- `gray_box_attacker`: the renamed prior attacker implementation with the old semantic interface and behavior preserved.",
+        "- `black_box_attacker`: the new stricter opaque attacker used for this staged Option B run.",
+        "",
+        "## Run Scope",
+        "",
+        "- Staged/new testbed path: local orchestrator -> access -> engineering -> plant runtime.",
+        "- Attacker/defender pair run in this pass: `black_box_attacker__agentic_defender`.",
+        "- Suite size: `18` attack scenarios.",
+        "- Trajectory diversity: not computed in this pass.",
+        "",
+        "## Saved Metrics",
+        "",
+        f"- Attack scenario count: `{attack_metrics.get('attack_run_count', 0)}`",
+        f"- Defender-detected scenario count: `{attack_metrics.get('defender_detected_attack_run_count', 0)}`",
+        f"- Defender-detected scenario rate: `{_fmt(attack_metrics.get('defender_detection_rate_avg'))}`",
+        f"- Defender-action scenario count: `{attack_metrics.get('defender_acted_attack_run_count', 0)}`",
+        f"- Defender-action scenario rate: `{_fmt(attack_metrics.get('defender_action_count_avg'))}` actions avg",
+        f"- Contained-before-violation scenario count: `{attack_metrics.get('contained_before_safety_violation_run_count', 0)}`",
+        f"- Attacker safety-success scenario count: `{attack_metrics.get('attacker_caused_safety_violation_run_count', 0)}`",
+        f"- Attacker safety-success scenario rate: `{_fmt(attack_metrics.get('attacker_safety_success_rate'))}`",
+        f"- Average safety-violation samples: `{_fmt(attack_metrics.get('safety_violation_count_avg'))}`",
+        f"- Average time to detection from wargame_t0: `{_fmt(attack_metrics.get('time_to_detection_sec_avg'))}`",
+        f"- Average time to first defender action from wargame_t0: `{_fmt(attack_metrics.get('time_to_first_defender_action_sec_avg'))}`",
+        f"- Average time to physical impact from wargame_t0: `{_fmt(attack_metrics.get('time_to_physical_impact_sec_avg'))}`",
+        f"- Average defender action count: `{_fmt(attack_metrics.get('defender_action_count_avg'))}`",
+        f"- Average shutdown / intervention count: `{_fmt(attack_metrics.get('defender_shutdown_action_count_avg'))}` / `{_fmt(attack_metrics.get('defender_intervention_action_count_avg'))}`",
+        f"- Average downtime metric: `{_fmt(attack_metrics.get('downtime_timestep_count_avg'))}`",
+        f"- False-positive nominal metric (if available): `{_fmt(attack_metrics.get('false_positive_rate_avg'))}`",
         "",
         "## MITRE-Phase Outcomes",
         "",
@@ -682,31 +695,8 @@ def _write_final_report(
         f"- First defender action before manipulation rate: `{_fmt(mitre_metrics.get('first_defender_action_before_manipulation_rate'))}`",
         f"- Manipulation to defender detection delay avg: `{_fmt(mitre_metrics.get('manipulation_to_defender_detection_delay_sec_avg'))}`",
         f"- Manipulation to first defender action delay avg: `{_fmt(mitre_metrics.get('manipulation_to_first_defender_action_delay_sec_avg'))}`",
-        "",
-        "## Baseline Comparison",
-        "",
-        f"- Baseline source: `{baseline.get('source_type')}` `{baseline.get('source_path')}`",
     ]
-    for note in baseline.get("notes", []):
-        lines.append(f"- {note}")
-
-    baseline_attack_metrics = dict(baseline.get("attack_metrics") or {})
-    if baseline_attack_metrics:
-        lines.extend(
-            [
-                f"- Baseline safety-violation rate: `{_fmt(baseline_attack_metrics.get('attacker_safety_success_rate'))}`",
-                f"- Baseline attacker recon action avg: `{_fmt(baseline_attack_metrics.get('attacker_recon_action_count_avg'))}`",
-            ]
-        )
-
-    lines.extend(
-        [
-            "- This MITRE-informed Option B pair is not an apples-to-apples replacement baseline for the older non-MITRE local pair because the attack semantics changed.",
-            "- Relative to the direct-access baseline, the new pair forces staged entry context, reconnaissance, process understanding, and control-path qualification before manipulation can occur.",
-            "- The resulting attacker trajectories are longer and phase-explicit, while the defender can now register suspicion and discovery-recognition earlier in the episode structure instead of only reacting at direct manipulation time.",
-        ]
-    )
-    _write_text(COMPARISON_REPORT_PATH, "\n".join(lines) + "\n")
+    _write_text(RESULTS_SUMMARY_PATH, "\n".join(lines) + "\n")
 
 
 def main() -> int:
@@ -786,20 +776,28 @@ def main() -> int:
             reproducibility=reproducibility,
         )
         _set_phase(
+            "rename_consistency",
+            "completed",
+            gray_box_profile="gray_box_attacker",
+            black_box_profile="black_box_attacker",
+            old_local_config="configs/experiments/sphere_attack_suite18_local_agentic.yaml",
+        )
+        _set_phase(
+            "black_box_implementation",
+            "completed",
+            prompt_files=[
+                "configs/prompts/black_box_attacker.md",
+                "configs/prompts/black_box_attacker_optionb_mitre.md",
+            ],
+            attacker_profile="black_box_attacker",
+            defender_profile="agentic_defender",
+        )
+        _set_phase(
             "config_prepared",
             "completed",
             condition_name=condition_name,
             config_path=portable_path(CONFIG_PATH),
             results_root=portable_path(experiment_root),
-        )
-        _set_phase(
-            "prompt_context_implementation",
-            "completed",
-            prompt_files=[
-                "configs/prompts/black_box_attacker_optionb_mitre.md",
-                "configs/prompts/defender_optionb_mitre.md",
-                "configs/prompts/observer_optionb_mitre.md",
-            ],
         )
 
         if _load_phase_status()["validation_tests"]["status"] != "completed":
@@ -960,7 +958,7 @@ def main() -> int:
         _set_phase(
             "final_report",
             "completed",
-            report_path=portable_path(COMPARISON_REPORT_PATH),
+            report_path=portable_path(RESULTS_SUMMARY_PATH),
         )
         _set_phase(
             "code_commit_push",
