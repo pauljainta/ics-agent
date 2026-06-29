@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ics_agent.action_semantics import containment_metadata
 from ics_agent.metrics import compute_metrics
 
 
@@ -494,3 +495,57 @@ def test_compute_metrics_reports_shutdown_and_downtime_operational_cost() -> Non
     assert metrics["operational_cost"]["intervention_action_count"] == 1
     assert metrics["operational_cost"]["shutdown_action_count"] == 1
     assert metrics["operational_cost"]["downtime_timestep_count"] == 2
+
+
+def test_compute_metrics_counts_symbolic_containment_and_cutoff() -> None:
+    bundle = {
+        "observations": [
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 1.0},
+            {"STATE_NAME": "RUNNING", "RW_Tank_Level": 600, "elapsed_sec": 2.0},
+        ],
+        "decisions": [],
+        "alerts": [],
+        "system_events": [
+            {
+                "event_type": "attacker_execution_cutoff_activated",
+                "time_sec": 1.2,
+            },
+            {
+                "event_type": "attacker_action_blocked",
+                "time_sec": 1.5,
+                "attempted_action_type": "set_sensor",
+            },
+        ],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 1.0, "action": {"type": "set_sensor"}},
+            {
+                "role": "defender",
+                "time_sec": 1.2,
+                "action": {"type": "block_sensor_write"},
+                "containment": containment_metadata({"type": "block_sensor_write"}),
+            },
+        ],
+        "passed": True,
+    }
+    scenario = {
+        "suite": "attack",
+        "metadata": {
+            "ground_truth": {
+                "incident_start_time_sec": 1.0,
+                "expected_defender_actions": ["hmi_stop"],
+                "mitigation_actions": ["hmi_stop"],
+            },
+            "safety_bounds": {"RW_Tank_Level": {"min": 0, "max": 1200}},
+        },
+    }
+
+    metrics = compute_metrics(bundle, scenario)
+
+    assert metrics["defender_intervention"]["mitigation_action_count"] == 1
+    assert metrics["defender_intervention"]["containment_action_count"] == 1
+    assert metrics["defender_intervention"]["symbolic_containment_action_count"] == 1
+    assert metrics["defender_symbolic_containment_action_count"] == 1
+    assert metrics["first_defender_action_is_symbolic_containment"] is True
+    assert metrics["runtime_containment"]["attacker_execution_cutoff_activated"] is True
+    assert metrics["runtime_containment"]["blocked_attacker_action_count"] == 1
+    assert metrics["runtime_containment"]["attacker_actions_stopped_after_containment"] is True

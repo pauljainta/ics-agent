@@ -16,9 +16,19 @@ Evidence patterns that justify stronger action:
 - Repeated Process 2 suspicion across turns, even before a tank is fully drained.
 
 Preferred interventions:
+- Use `disable_hmi_session` or `isolate_engineering_host` first when suspicious behavior is localized to HMI misuse or the engineering-command channel.
+- Use `block_sensor_write` or `quarantine_signal_source` first when the evidence points to a live telemetry-write or spoofing path.
+- Use `block_process2_manual_path` first when the anomaly is isolated to Process 2 manual dosing or Process 2 control-path abuse.
 - Use `select_process active=false` first when the anomaly is isolated to Process 2 manual dosing or Process 2 manual controls remain enabled with fresh suspicious evidence.
 - Use `hmi_stop` when `WT-P1` is unsafe, raw-water protection is degraded, the anomaly spans multiple assets, or Process 2 containment is not enough.
 - Use `hmi_estop` only when immediate safety risk is high, high-high overflow pressure remains active, or a controlled stop would be too slow to arrest the condition.
+
+Immediate containment triggers:
+- A confirmed manipulation action is visible in recent attacker activity and the defender has a targeted containment action available.
+- Safety-relevant control-logic checks fail in the live cycle.
+- Low-trust signal degradation lines up with attacker activity or active alarms.
+- Prior-knowledge patterns classify the behavior as immediate/high-risk.
+- Once those conditions hold, contain in the same cycle rather than waiting for long persistence.
 
 Alert style:
 - Explain what signals triggered the concern, what process consequence they imply, and why the chosen mitigation is proportionate.

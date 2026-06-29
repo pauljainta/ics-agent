@@ -29,6 +29,7 @@ def build_candidate_actions(
     active_alarms: list[str] | None = None,
     relationship_notes: list[str] | None = None,
     recent_alerts: list[dict[str, Any]] | None = None,
+    recent_actions: list[dict[str, Any]] | None = None,
     incident: dict[str, Any] | None = None,
     remaining_playbook: list[dict[str, Any]],
     now: float,
@@ -41,6 +42,7 @@ def build_candidate_actions(
     active_alarms = list(active_alarms or [])
     relationship_notes = list(relationship_notes or [])
     recent_alerts = list(recent_alerts or [])
+    recent_actions = list(recent_actions or [])
     incident = dict(incident or {})
     candidates: list[dict[str, Any]] = []
 
@@ -170,6 +172,7 @@ def build_candidate_actions(
             active_alarms=active_alarms,
             relationship_notes=relationship_notes,
             recent_alerts=recent_alerts,
+            recent_actions=recent_actions,
             incident=incident,
         )
 
@@ -208,6 +211,7 @@ def _add_defender_candidates(
     active_alarms: list[str],
     relationship_notes: list[str],
     recent_alerts: list[dict[str, Any]],
+    recent_actions: list[dict[str, Any]],
     incident: dict[str, Any],
 ) -> None:
     incident_type = str(incident.get("type", "none"))
@@ -216,6 +220,24 @@ def _add_defender_candidates(
     recent_observer_alert = any(item.get("role") == "observer" for item in recent_alerts)
     pump_running = _is_active_flag(observation.get("RW_Pump_Sts"))
     planned_refill_response = "planned_refill_response" in relationship_notes
+    recent_attacker_actions = [
+        normalize_action(item.get("action"))
+        for item in recent_actions
+        if item.get("role") == "attacker"
+    ]
+    recent_attacker_action_types = {
+        str(action.get("type", ""))
+        for action in recent_attacker_actions
+        if action is not None
+    }
+    recent_alert_diagnoses = {
+        str(item.get("diagnosis", "")).strip().lower()
+        for item in recent_alerts
+        if item.get("diagnosis")
+    }
+    recent_alert_text = " ".join(
+        str(item.get("summary", "")).strip().lower() for item in recent_alerts
+    )
 
     process2_selected = "process2_selected" in relationship_notes
     process2_manual_dosing = "process2_manual_dosing_active" in relationship_notes
@@ -223,6 +245,9 @@ def _add_defender_candidates(
     process2_containment_needed = (
         process2_manual_dosing
         or bool(process2_depleting)
+        or bool(
+            recent_attacker_action_types.intersection({"select_process", "set_manual_valve"})
+        )
         or (
             process2_selected
             and recent_observer_alert
@@ -249,8 +274,29 @@ def _add_defender_candidates(
         or "overflow_risk" in risk_flags
         or "raw_water_high_high_band" in risk_flags
     )
+    sensor_write_pressure = (
+        "set_sensor" in recent_attacker_action_types
+        or "sensor_spoof" in recent_alert_diagnoses
+        or "spoof" in recent_alert_text
+    )
+    hmi_surface_pressure = bool(
+        recent_attacker_action_types.intersection({"hmi_start", "hmi_stop", "hmi_estop"})
+    )
     command_divergence = "command_status_divergence" in risk_flags
     multi_asset_process2 = len(process2_depleting) >= 2
+
+    if process2_containment_needed:
+        summary = (
+            "Block the Process 2 manual path now to cut off the suspicious dosing "
+            "channel before escalating to a plant-wide stop."
+        )
+        add(
+            summary,
+            {"type": "block_process2_manual_path", "process_id": "WT-P2"},
+            source="action_space",
+            priority=99 if process2_manual_dosing or process2_depleting else 84,
+            guardrail_reason="process2_symbolic_containment",
+        )
 
     if allow_process_selection and process2_containment_needed:
         summary = (
@@ -264,6 +310,46 @@ def _add_defender_candidates(
             source="action_space",
             priority=95 if process2_manual_dosing or process2_depleting else 80,
             guardrail_reason="process2_containment",
+        )
+
+    if sensor_write_pressure and incident_type in {
+        "telemetry_anomaly",
+        "raw_water_low_protection",
+        "raw_water_overflow",
+    }:
+        add(
+            "Block further sensor writes immediately to cut off the attacker write path "
+            "before the spoof escalates into a plant-wide condition.",
+            {"type": "block_sensor_write"},
+            source="action_space",
+            priority=102 if not active_alarms else 96,
+            guardrail_reason="sensor_write_containment",
+        )
+        add(
+            "Quarantine the suspicious signal source to isolate the compromised "
+            "telemetry channel while preserving other plant functions.",
+            {"type": "quarantine_signal_source"},
+            source="action_space",
+            priority=92 if not active_alarms else 88,
+            guardrail_reason="signal_source_quarantine",
+        )
+
+    if hmi_surface_pressure and incident_type != "none":
+        add(
+            "Disable the suspicious HMI session first to cut off the current command "
+            "channel before escalating to plant-wide shutdown.",
+            {"type": "disable_hmi_session"},
+            source="action_space",
+            priority=100 if incident_severity >= 2 else 82,
+            guardrail_reason="hmi_session_containment",
+        )
+        add(
+            "Isolate the engineering host if the HMI misuse is broader than a single "
+            "session or the attacker channel must be cut off completely.",
+            {"type": "isolate_engineering_host"},
+            source="action_space",
+            priority=90 if incident_severity >= 3 else 74,
+            guardrail_reason="engineering_host_isolation",
         )
 
     if raw_water_low:

@@ -8,6 +8,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+from ..action_semantics import is_process2_deselect_action
 from .action_space import action_key, build_candidate_actions, normalize_action
 from .base import RoleAgent
 from ..knowledge import load_manual_bundle
@@ -949,6 +950,8 @@ class AgenticRoleAgent(RoleAgent):
                 telemetry_summary=telemetry_summary,
                 incident=internal_incident,
                 structured_memory=structured_memory,
+                recent_actions=memory_recent_actions,
+                recent_alerts=recent_alerts,
             )
             mitre_context = self._optionb_mitre_context(
                 context=context,
@@ -1162,7 +1165,7 @@ class AgenticRoleAgent(RoleAgent):
             "defender": [
                 f"Use current {process_id} telemetry, alarms, and action history to justify any intervention.",
                 "Track incident state across turns and escalate from suspected to confirmed to containing.",
-                "Prefer Process 2 deselection or a controlled stop before estop when both are viable.",
+                "Prefer targeted channel containment before plant-wide shutdown when the suspicious surface is localized.",
             ],
             "observer": [
                 f"Describe anomalies in {process_id} using grounded plant evidence.",
@@ -1184,7 +1187,7 @@ class AgenticRoleAgent(RoleAgent):
             "attacker": scenario.metadata.get("expected_outcomes", []),
             "defender": [
                 f"{process_id} remains in a safe operating envelope or is safely shut down.",
-                "Unsafe manual dosing or raw-water anomalies are contained quickly once evidence persists or worsens.",
+                "Unsafe manual dosing, suspicious HMI use, or telemetry-write abuse are contained in the same cycle once the evidence supports it.",
             ],
             "observer": [
                 "Alerts and diagnoses stay tied to current telemetry and recent actions.",
@@ -3731,6 +3734,8 @@ class AgenticRoleAgent(RoleAgent):
         telemetry_summary: dict[str, Any],
         incident: dict[str, Any] | None,
         structured_memory: dict[str, Any],
+        recent_actions: list[dict[str, Any]] | None = None,
+        recent_alerts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         if not self._uses_blue_team_prior_knowledge():
             return None
@@ -3757,6 +3762,8 @@ class AgenticRoleAgent(RoleAgent):
                 structured_memory.get("prior_mitigations_attempted", [])
             ),
             containment_effective=structured_memory.get("containment_effective"),
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
         )
         doctrine = self._prior_knowledge_doctrine(
             matched_patterns=matched_patterns,
@@ -3847,8 +3854,14 @@ class AgenticRoleAgent(RoleAgent):
         incident: dict[str, Any] | None,
         prior_mitigations: list[str] | None = None,
         containment_effective: bool | None = None,
+        recent_actions: list[dict[str, Any]] | None = None,
+        recent_alerts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         incident_type = str((incident or {}).get("type", "none"))
+        attack_activity = self._recent_attack_activity(
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
+        )
         matched_patterns = self._matched_blue_team_patterns(
             observation=observation,
             telemetry_summary=telemetry_summary,
@@ -3865,7 +3878,7 @@ class AgenticRoleAgent(RoleAgent):
             matched_patterns[0] if matched_patterns else None,
         )
         if selected_pattern is not None:
-            return {
+            assessment = {
                 "attack_surface": str(
                     selected_pattern.get("attack_surface", "unknown")
                 ),
@@ -3883,44 +3896,117 @@ class AgenticRoleAgent(RoleAgent):
                     "surface_rationale", selected_pattern.get("why_it_matters")
                 ),
             }
+        else:
+            assessment = {
+                "attack_surface": "unknown",
+                "containment_scope": "monitor_only",
+                "preferred_action": None,
+                "fallback_action": None,
+                "confidence": 0.0,
+                "evidence": [],
+                "why_it_matters": self._incident_consequence(incident or {}),
+                "surface_rationale": None,
+            }
+            if incident_type == "process2_manual_dosing":
+                preferred_action = self._allowed_preferred_action(
+                    "block_process2_manual_path"
+                ) or "select_process"
+                assessment.update(
+                    {
+                        "attack_surface": "process2_manual_path",
+                        "containment_scope": "targeted_isolation",
+                        "preferred_action": preferred_action,
+                        "confidence": 0.4,
+                    }
+                )
+            elif incident_type in {"raw_water_low_protection", "raw_water_overflow"}:
+                assessment.update(
+                    {
+                        "attack_surface": "raw_water_process_path",
+                        "containment_scope": "broader_containment",
+                        "preferred_action": "hmi_stop",
+                        "confidence": 0.4,
+                    }
+                )
+            elif incident_type == "telemetry_anomaly":
+                assessment.update(
+                    {
+                        "attack_surface": "telemetry_integrity",
+                        "containment_scope": "monitor_only",
+                        "confidence": 0.35,
+                    }
+                )
 
-        fallback = {
-            "attack_surface": "unknown",
-            "containment_scope": "monitor_only",
-            "preferred_action": None,
-            "fallback_action": None,
-            "confidence": 0.0,
-            "evidence": [],
-            "why_it_matters": self._incident_consequence(incident or {}),
-            "surface_rationale": None,
-        }
-        if incident_type == "process2_manual_dosing":
-            fallback.update(
-                {
-                    "attack_surface": "process2_manual_path",
-                    "containment_scope": "targeted_isolation",
-                    "preferred_action": "select_process",
-                    "confidence": 0.4,
-                }
+        if attack_activity.get("sensor_write_active"):
+            preferred_action = self._allowed_preferred_action(
+                "block_sensor_write",
+                "quarantine_signal_source",
             )
-        elif incident_type in {"raw_water_low_protection", "raw_water_overflow"}:
-            fallback.update(
-                {
-                    "attack_surface": "raw_water_process_path",
-                    "containment_scope": "broader_containment",
-                    "preferred_action": "hmi_stop",
-                    "confidence": 0.4,
-                }
+            if preferred_action and (
+                incident_type == "telemetry_anomaly"
+                or (
+                    incident_type == "raw_water_low_protection"
+                )
+                or (
+                    incident_type == "raw_water_overflow"
+                    and int((incident or {}).get("severity", 0) or 0) < 4
+                )
+            ):
+                assessment.update(
+                    {
+                        "attack_surface": "sensor_write_path",
+                        "containment_scope": "targeted_isolation",
+                        "preferred_action": preferred_action,
+                        "fallback_action": assessment.get("preferred_action")
+                        if assessment.get("preferred_action") != preferred_action
+                        else assessment.get("fallback_action"),
+                        "surface_rationale": (
+                            "Visible attacker activity points to a live sensor-write path, so cutting off further writes is the least disruptive containment."
+                        ),
+                    }
+                )
+        elif attack_activity.get("process2_active"):
+            preferred_action = self._allowed_preferred_action(
+                "block_process2_manual_path"
             )
-        elif incident_type == "telemetry_anomaly":
-            fallback.update(
-                {
-                    "attack_surface": "telemetry_integrity",
-                    "containment_scope": "monitor_only",
-                    "confidence": 0.35,
-                }
+            if (
+                preferred_action
+                and incident_type == "process2_manual_dosing"
+                and str(assessment.get("preferred_action")) not in {"hmi_stop", "hmi_estop"}
+            ):
+                assessment.update(
+                    {
+                        "attack_surface": "process2_manual_path",
+                        "containment_scope": "targeted_isolation",
+                        "preferred_action": preferred_action,
+                        "fallback_action": assessment.get("preferred_action")
+                        if assessment.get("preferred_action") != preferred_action
+                        else assessment.get("fallback_action"),
+                        "surface_rationale": (
+                            "Recent attacker activity is localized to the Process 2 manual path, so blocking that path is the first containment step."
+                        ),
+                    }
+                )
+        elif attack_activity.get("hmi_misuse_active"):
+            preferred_action = self._allowed_preferred_action(
+                "disable_hmi_session",
+                "isolate_engineering_host",
             )
-        return fallback
+            if preferred_action and incident_type != "none":
+                assessment.update(
+                    {
+                        "attack_surface": "hmi_session",
+                        "containment_scope": "targeted_isolation",
+                        "preferred_action": preferred_action,
+                        "fallback_action": assessment.get("preferred_action")
+                        if assessment.get("preferred_action") != preferred_action
+                        else assessment.get("fallback_action"),
+                        "surface_rationale": (
+                            "The suspicious activity is centered on an HMI command channel, so session isolation is more appropriate than immediate plant-wide shutdown."
+                        ),
+                    }
+                )
+        return assessment
 
     def _prior_knowledge_guidance_active(
         self,
@@ -4461,6 +4547,7 @@ class AgenticRoleAgent(RoleAgent):
             or (incident or {}).get("attack_surface")
             or "unknown"
         )
+        recommended_action = str((incident or {}).get("recommended_action") or "")
         failed_checks = {
             str(item.get("id"))
             for item in control_logic_checks.get("checks", [])
@@ -4504,11 +4591,21 @@ class AgenticRoleAgent(RoleAgent):
                 continue
             score = int(item.get("priority", 0) or 0)
             action_type = str(action.get("type", ""))
+            if recommended_action and action_type == recommended_action:
+                score += 28
             if control_logic_checks.get("immediate_attention_required") and action_type in {
                 "hmi_stop",
                 "hmi_estop",
             }:
                 score += 24
+            if control_logic_checks.get("immediate_attention_required") and action_type in {
+                "block_sensor_write",
+                "quarantine_signal_source",
+                "block_process2_manual_path",
+                "disable_hmi_session",
+                "isolate_engineering_host",
+            }:
+                score += 22
             if low_trust_signal_count >= 2 and action_type in {"hmi_stop", "hmi_estop"}:
                 score += 12
             if action_type == "noop":
@@ -4517,6 +4614,8 @@ class AgenticRoleAgent(RoleAgent):
                     score -= 10
 
             if suspicious_surface == "process2_manual_path":
+                if action_type == "block_process2_manual_path":
+                    score += 22
                 if action_type == "select_process" and not action.get("active", True):
                     score += 18
                 if "dosing_persists_after_process2_deselect" in failed_checks:
@@ -4528,6 +4627,8 @@ class AgenticRoleAgent(RoleAgent):
                     score += 24
 
             if suspicious_surface in {"raw_water_control_path", "RW_Tank_Level"}:
+                if action_type in {"block_sensor_write", "quarantine_signal_source"}:
+                    score += 18
                 if action_type == "hmi_stop":
                     score += 18
                 if (
@@ -4540,13 +4641,30 @@ class AgenticRoleAgent(RoleAgent):
                     and action_type == "hmi_stop"
                 ):
                     score += 18
+            if suspicious_surface in {"sensor_write_path", "telemetry_integrity"}:
+                if action_type in {"block_sensor_write", "quarantine_signal_source"}:
+                    score += 24
+                if action_type == "hmi_stop":
+                    score += 8
+            if suspicious_surface == "hmi_session":
+                if action_type in {"disable_hmi_session", "isolate_engineering_host"}:
+                    score += 24
+                if action_type in {"hmi_stop", "hmi_estop"}:
+                    score += 6
 
             if estimated_state.get("raw_water_state") in {
                 "low_and_not_recovering",
                 "high_high_and_rising",
             } and action_type in {"hmi_stop", "hmi_estop"}:
                 score += 12
+            if estimated_state.get("raw_water_state") in {
+                "low_and_not_recovering",
+                "high_high_and_rising",
+            } and action_type in {"block_sensor_write", "quarantine_signal_source"}:
+                score += 8
             if estimated_state.get("process2_state") == "manual_dosing_active":
+                if action_type == "block_process2_manual_path":
+                    score += 14
                 if action_type == "select_process" and not action.get("active", True):
                     score += 12
             if estimated_state.get("process2_state") == "manual_dosing_persists_after_isolation":
@@ -4576,6 +4694,69 @@ class AgenticRoleAgent(RoleAgent):
             "prompt": 2,
             "immediate": 3,
         }.get(str(value), 0)
+
+    def _allowed_preferred_action(self, *action_types: str) -> str | None:
+        allowed = {
+            str(item) for item in self.profile.get("allowed_action_types", [])
+        }
+        for current_type in action_types:
+            if current_type in allowed:
+                return current_type
+        return None
+
+    def _recent_attack_activity(
+        self,
+        *,
+        recent_actions: list[dict[str, Any]] | None,
+        recent_alerts: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        recent_actions = list(recent_actions or [])
+        recent_alerts = list(recent_alerts or [])
+        attacker_actions = [
+            normalize_action(item.get("action"))
+            for item in recent_actions
+            if item.get("role") == "attacker"
+        ]
+        attacker_action_types = {
+            str(action.get("type", ""))
+            for action in attacker_actions
+            if action is not None
+        }
+        alert_diagnoses = {
+            str(item.get("diagnosis", "")).strip().lower()
+            for item in recent_alerts
+            if item.get("diagnosis")
+        }
+        alert_text = " ".join(
+            str(item.get("summary", "")).strip().lower() for item in recent_alerts
+        )
+        sensor_write_active = (
+            "set_sensor" in attacker_action_types
+            or "sensor_spoof" in alert_diagnoses
+            or "spoof" in alert_text
+        )
+        process2_active = bool(
+            attacker_action_types.intersection({"select_process", "set_manual_valve"})
+        ) or "unauthorized_chemical_dosing" in alert_diagnoses
+        hmi_misuse_active = bool(
+            attacker_action_types.intersection({"hmi_start", "hmi_stop", "hmi_estop"})
+        ) or ("hmi" in alert_text and "unauthorized" in alert_text)
+        suspicious_surface = "unknown"
+        if sensor_write_active:
+            suspicious_surface = "sensor_write_path"
+        elif process2_active:
+            suspicious_surface = "process2_manual_path"
+        elif hmi_misuse_active:
+            suspicious_surface = "hmi_session"
+        return {
+            "sensor_write_active": sensor_write_active,
+            "process2_active": process2_active,
+            "hmi_misuse_active": hmi_misuse_active,
+            "suspicious_surface": suspicious_surface,
+            "recent_attacker_action_count": len(
+                [action for action in attacker_actions if action is not None]
+            ),
+        }
 
     def _canonical_action_descriptor(
         self,
@@ -5321,6 +5502,18 @@ class AgenticRoleAgent(RoleAgent):
             defender_action_count=defender_action_count,
             prior_mitigations=prior_mitigations,
             defender_reasoning=defender_reasoning,
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
+        )
+        immediate_containment_required = self._immediate_containment_required(
+            incident_type=incident_type,
+            severity=severity,
+            observation=context.get("observation", {}),
+            telemetry_summary=telemetry_summary,
+            defender_reasoning=defender_reasoning,
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
+            recommended_action=recommended_action,
         )
         containment_effective = self._containment_effective(
             incident={"type": incident_type},
@@ -5338,6 +5531,8 @@ class AgenticRoleAgent(RoleAgent):
             },
             prior_mitigations=prior_mitigations,
             containment_effective=containment_effective,
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
         )
         evidence_tokens = self._incident_evidence_tokens(
             incident_type=incident_type,
@@ -5362,6 +5557,8 @@ class AgenticRoleAgent(RoleAgent):
         status = "suspected"
         if defender_action_count:
             status = "containing"
+        elif immediate_containment_required:
+            status = "confirmed"
         elif (
             severity >= 3
             or observer_alert_count > 0
@@ -5388,6 +5585,7 @@ class AgenticRoleAgent(RoleAgent):
                 "containment_scope": surface_assessment.get(
                     "containment_scope", "monitor_only"
                 ),
+                "immediate_containment_required": immediate_containment_required,
                 "post_detection_guidance_active": self._prior_knowledge_guidance_active(
                     incident={"type": incident_type, "status": status},
                     structured_memory={"lifecycle_state": status},
@@ -5444,6 +5642,8 @@ class AgenticRoleAgent(RoleAgent):
         diagnosis_set = set(diagnoses)
         planned_nominal_process2 = "planned_process2_operation" in relationship_notes
         planned_nominal_refill = "planned_refill_response" in relationship_notes
+        if "sensor_spoof" in diagnosis_set:
+            return "telemetry_anomaly"
         if (
             not planned_nominal_process2
             and (
@@ -5536,6 +5736,8 @@ class AgenticRoleAgent(RoleAgent):
         defender_action_count: int = 0,
         prior_mitigations: list[str] | None = None,
         defender_reasoning: dict[str, Any] | None = None,
+        recent_actions: list[dict[str, Any]] | None = None,
+        recent_alerts: list[dict[str, Any]] | None = None,
     ) -> str | None:
         control_logic_checks = dict(
             (defender_reasoning or {}).get("control_logic_checks") or {}
@@ -5545,6 +5747,10 @@ class AgenticRoleAgent(RoleAgent):
             for item in control_logic_checks.get("checks", [])
             if item.get("status") == "failed"
         }
+        attack_activity = self._recent_attack_activity(
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
+        )
         if self._uses_blue_team_prior_knowledge() and incident_type != "none":
             containment_effective = self._containment_effective(
                 incident={"type": incident_type},
@@ -5563,6 +5769,8 @@ class AgenticRoleAgent(RoleAgent):
                 },
                 prior_mitigations=list(prior_mitigations or []),
                 containment_effective=containment_effective,
+                recent_actions=recent_actions,
+                recent_alerts=recent_alerts,
             )
             preferred_action = str(surface_assessment.get("preferred_action") or "")
             if preferred_action:
@@ -5573,6 +5781,13 @@ class AgenticRoleAgent(RoleAgent):
                 "manual_dosing_requires_process2_selection",
             }.intersection(failed_checks):
                 return "hmi_stop"
+            targeted_action = self._allowed_preferred_action(
+                "block_process2_manual_path"
+            )
+            if targeted_action and (
+                attack_activity.get("process2_active") or severity >= 3
+            ):
+                return targeted_action
             if severity >= 3:
                 return "select_process"
             return None
@@ -5581,14 +5796,123 @@ class AgenticRoleAgent(RoleAgent):
                 return "hmi_estop" if severity >= 4 else "hmi_stop"
             if severity >= 4:
                 return "hmi_estop"
+            targeted_action = self._allowed_preferred_action(
+                "block_sensor_write",
+                "quarantine_signal_source",
+            )
+            if targeted_action and attack_activity.get("sensor_write_active"):
+                return targeted_action
             return "hmi_stop"
         if incident_type == "raw_water_low_protection":
+            targeted_action = self._allowed_preferred_action(
+                "block_sensor_write",
+                "quarantine_signal_source",
+            )
+            if targeted_action and attack_activity.get("sensor_write_active"):
+                return targeted_action
             if "raw_water_low_should_recover_or_shutdown" in failed_checks:
                 return "hmi_stop"
             return "hmi_stop"
-        if incident_type == "telemetry_anomaly" and telemetry_summary["active_alarms"]:
-            return "hmi_stop"
+        if incident_type == "telemetry_anomaly":
+            if attack_activity.get("sensor_write_active"):
+                targeted_action = self._allowed_preferred_action(
+                    "block_sensor_write",
+                    "quarantine_signal_source",
+                )
+                if targeted_action:
+                    return targeted_action
+            if attack_activity.get("process2_active"):
+                targeted_action = self._allowed_preferred_action(
+                    "block_process2_manual_path"
+                )
+                if targeted_action:
+                    return targeted_action
+            if attack_activity.get("hmi_misuse_active"):
+                targeted_action = self._allowed_preferred_action(
+                    "disable_hmi_session",
+                    "isolate_engineering_host",
+                )
+                if targeted_action:
+                    return targeted_action
+            if telemetry_summary["active_alarms"]:
+                return "hmi_stop"
         return None
+
+    def _immediate_containment_required(
+        self,
+        *,
+        incident_type: str,
+        severity: int,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        defender_reasoning: dict[str, Any] | None,
+        recent_actions: list[dict[str, Any]] | None,
+        recent_alerts: list[dict[str, Any]] | None,
+        recommended_action: str | None,
+    ) -> bool:
+        if incident_type == "none" or not str(recommended_action or "").strip():
+            return False
+
+        trust_assessment = dict((defender_reasoning or {}).get("trust_assessment") or {})
+        control_logic_checks = dict(
+            (defender_reasoning or {}).get("control_logic_checks") or {}
+        )
+        failed_checks = {
+            str(item.get("id"))
+            for item in control_logic_checks.get("checks", [])
+            if item.get("status") == "failed"
+        }
+        attack_activity = self._recent_attack_activity(
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
+        )
+        low_trust_signal_count = int(trust_assessment.get("low_trust_signal_count", 0) or 0)
+        active_alarms = set(telemetry_summary.get("active_alarms", []))
+
+        if control_logic_checks.get("immediate_attention_required"):
+            return True
+        if failed_checks.intersection(
+            {
+                "manual_dosing_requires_process2_selection",
+                "dosing_persists_after_process2_deselect",
+                "raw_water_low_should_recover_or_shutdown",
+                "high_high_raw_water_should_not_keep_rising",
+                "stop_should_halt_pump_and_drive_shutdown",
+            }
+        ):
+            return True
+        if attack_activity.get("recent_attacker_action_count", 0) > 0 and (
+            low_trust_signal_count >= 1 or bool(active_alarms) or severity >= 3
+        ):
+            return True
+        if attack_activity.get("sensor_write_active") and incident_type in {
+            "telemetry_anomaly",
+            "raw_water_low_protection",
+            "raw_water_overflow",
+        }:
+            return True
+        if attack_activity.get("process2_active") and incident_type == "process2_manual_dosing":
+            return True
+        if attack_activity.get("hmi_misuse_active") and incident_type != "none":
+            return True
+
+        if self._uses_blue_team_prior_knowledge():
+            matched_patterns = self._matched_blue_team_patterns(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                incident={
+                    "type": incident_type,
+                    "severity": severity,
+                },
+            )
+            if matched_patterns:
+                top_pattern = matched_patterns[0]
+                if (
+                    str(top_pattern.get("urgency", "")).strip().lower() == "immediate"
+                    or int(top_pattern.get("severity", 0) or 0) >= 3
+                ):
+                    return True
+        return False
 
     def _incident_evidence_tokens(
         self,
@@ -5634,9 +5958,20 @@ class AgenticRoleAgent(RoleAgent):
             return False
         action_type = str(normalized.get("type"))
         if incident_type == "process2_manual_dosing":
-            return action_type == "select_process" and not normalized.get("active", True)
+            return (
+                action_type == "block_process2_manual_path"
+                or is_process2_deselect_action(normalized)
+                or action_type in {"hmi_stop", "hmi_estop", "isolate_engineering_host"}
+            )
         if incident_type in {"raw_water_overflow", "raw_water_low_protection", "telemetry_anomaly"}:
-            return action_type in {"hmi_stop", "hmi_estop"}
+            return action_type in {
+                "hmi_stop",
+                "hmi_estop",
+                "block_sensor_write",
+                "quarantine_signal_source",
+                "disable_hmi_session",
+                "isolate_engineering_host",
+            }
         return False
 
     def _active_flags(self, observation: dict[str, Any], *, prefix: str) -> list[str]:
@@ -5938,6 +6273,7 @@ class AgenticRoleAgent(RoleAgent):
             active_alarms=telemetry_summary["active_alarms"],
             relationship_notes=telemetry_summary["relationship_notes"],
             recent_alerts=context.get("alerts", [])[-self.alert_window :],
+            recent_actions=context.get("executed_actions", [])[-self.action_window :],
             incident=incident,
             remaining_playbook=remaining_playbook,
             now=float(context["time_sec"]),
@@ -6154,6 +6490,7 @@ class AgenticRoleAgent(RoleAgent):
             active_alarms=telemetry_summary["active_alarms"],
             relationship_notes=telemetry_summary["relationship_notes"],
             recent_alerts=context.get("alerts", [])[-self.alert_window :],
+            recent_actions=context.get("executed_actions", [])[-self.action_window :],
             incident=None,
             remaining_playbook=remaining_playbook,
             now=now,
@@ -7712,6 +8049,8 @@ class AgenticRoleAgent(RoleAgent):
             )
         ):
             return False
+        if incident.get("immediate_containment_required"):
+            return True
         if control_logic_checks.get("immediate_attention_required"):
             return True
         if structured_memory.get("escalation_required"):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .action_semantics import action_matches_expected, is_containment_action, is_shutdown_action
 from .mitre import (
     ATTACKER_PHASE_ORDER,
     ATTACKER_PHASES,
@@ -12,7 +13,6 @@ from .mitre import (
 
 
 BLUE_TEAM_ALERT_ROLES = {"observer", "defender"}
-SHUTDOWN_ACTION_TYPES = {"hmi_stop", "hmi_estop"}
 
 
 def _as_number(value: Any) -> Any:
@@ -41,6 +41,10 @@ def _relative_time(event_time: float | None, *, attack_start: float | None) -> f
 
 def _action_type(item: dict[str, Any]) -> str:
     return str((item.get("action") or {}).get("type", ""))
+
+
+def _event_type(item: dict[str, Any]) -> str:
+    return str(item.get("event_type", ""))
 
 
 def _decision_recognition_candidates(
@@ -368,6 +372,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     decisions = bundle.get("decisions", [])
     actions = bundle.get("executed_actions", [])
     alerts = bundle.get("alerts", [])
+    system_events = bundle.get("system_events", [])
     blue_team_alerts = [
         item for item in alerts if item.get("role") in BLUE_TEAM_ALERT_ROLES
     ]
@@ -459,7 +464,27 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     defender_shutdown_actions = [
         item
         for item in defender_intervention_actions
-        if _action_type(item) in SHUTDOWN_ACTION_TYPES
+        if is_shutdown_action(item.get("action"))
+    ]
+    defender_containment_actions = [
+        item
+        for item in defender_intervention_actions
+        if is_containment_action(item.get("action"))
+    ]
+    defender_symbolic_containment_actions = [
+        item
+        for item in defender_containment_actions
+        if bool((item.get("containment") or {}).get("is_symbolic"))
+        or (
+            _action_type(item)
+            in {
+                "block_sensor_write",
+                "quarantine_signal_source",
+                "disable_hmi_session",
+                "isolate_engineering_host",
+                "block_process2_manual_path",
+            }
+        )
     ]
     attacker_recon_actions = [
         item
@@ -474,10 +499,15 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     mitigation_actions = [
         item
         for item in defender_intervention_actions
-        if _action_type(item) in mitigation_targets
+        if is_containment_action(item.get("action"))
+        or action_matches_expected(item.get("action"), mitigation_targets)
     ]
     mitigation_time = _first_time(
         mitigation_actions,
+        lambda _item: True,
+    )
+    first_containment_time = _first_time(
+        defender_containment_actions,
         lambda _item: True,
     )
     first_defender_action_time = _first_time(
@@ -539,7 +569,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         matched = sum(
             1
             for item in defender_actions
-            if str(item.get("action", {}).get("type")) in expected_defender_actions
+            if action_matches_expected(item.get("action"), expected_defender_actions)
         )
         decision_correctness = matched / len(defender_actions)
     elif expected_defender_actions:
@@ -578,6 +608,25 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             first_safety_violation_time is None
             or mitigation_time < float(first_safety_violation_time)
         )
+    )
+    containment_events = [
+        item
+        for item in system_events
+        if _event_type(item) == "attacker_execution_cutoff_activated"
+    ]
+    blocked_attacker_events = [
+        item
+        for item in system_events
+        if _event_type(item) == "attacker_action_blocked"
+    ]
+    first_containment_event_time = _first_time(
+        containment_events,
+        lambda _item: True,
+    )
+    attacker_executed_after_containment = any(
+        float(item.get("time_sec", 0.0)) > float(first_containment_event_time)
+        for item in attacker_actions
+        if first_containment_event_time is not None
     )
     trajectory = _trajectory_sequences(actions)
     attacker_metrics = (
@@ -683,7 +732,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             mitigation_time,
             attack_start=attack_start,
         ),
+        "time_to_containment_sec": _relative_time(
+            first_containment_time,
+            attack_start=attack_start,
+        ),
         "time_to_mitigation_from_wargame_t0_sec": None,
+        "time_to_containment_from_wargame_t0_sec": None,
         "time_to_first_action_sec": _relative_time(
             first_defender_action_time,
             attack_start=attack_start,
@@ -691,6 +745,8 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "time_to_first_action_from_wargame_t0_sec": None,
         "action_count": len(defender_actions),
         "mitigation_action_count": len(mitigation_actions),
+        "containment_action_count": len(defender_containment_actions),
+        "symbolic_containment_action_count": len(defender_symbolic_containment_actions),
         "contained_before_safety_violation": contained_before_violation,
         "decision_correctness": round(decision_correctness, 4),
     }
@@ -698,6 +754,8 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender_action_count": len(defender_actions),
         "intervention_action_count": len(defender_intervention_actions),
         "shutdown_action_count": len(defender_shutdown_actions),
+        "containment_action_count": len(defender_containment_actions),
+        "symbolic_containment_action_count": len(defender_symbolic_containment_actions),
         "downtime_timestep_count": downtime_timestep_count,
     }
     system_metrics = {
@@ -752,6 +810,10 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             first_defender_action_time,
             attack_start=wargame_origin,
         ),
+        "time_to_first_containment_sec": _relative_time(
+            first_containment_time,
+            attack_start=wargame_origin,
+        ),
         "time_to_first_safety_violation_sec": _relative_time(
             first_safety_violation_time,
             attack_start=wargame_origin,
@@ -763,6 +825,10 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         ]
     defender_intervention_metrics["time_to_mitigation_from_wargame_t0_sec"] = _relative_time(
         mitigation_time,
+        attack_start=wargame_origin,
+    )
+    defender_intervention_metrics["time_to_containment_from_wargame_t0_sec"] = _relative_time(
+        first_containment_time,
         attack_start=wargame_origin,
     )
     defender_intervention_metrics["time_to_first_action_from_wargame_t0_sec"] = (
@@ -826,6 +892,10 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         defender_actions,
         attack_start=attack_start,
     )
+    first_containment_action_item = _first_candidate(
+        defender_containment_actions,
+        attack_start=attack_start,
+    )
     highest_attacker_phase, highest_attacker_phase_order = _highest_attacker_phase(
         attacker_phase_events,
         first_safety_violation_time=first_safety_violation_time,
@@ -843,6 +913,16 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     first_defender_action_phase = (
         _phase_name(first_defender_action_item)
         if first_defender_action_item is not None
+        else None
+    )
+    first_containment_action_type = (
+        _action_type(first_containment_action_item)
+        if first_containment_action_item is not None
+        else None
+    )
+    first_containment_is_symbolic = (
+        bool((first_containment_action_item or {}).get("containment", {}).get("is_symbolic"))
+        if first_containment_action_item is not None
         else None
     )
     first_blue_team_detection_order = (
@@ -922,6 +1002,57 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender_phase_event_count": len(defender_phase_events),
         "observer_phase_event_count": len(observer_phase_events),
     }
+    first_defender_action_type = (
+        _action_type(first_defender_action_item)
+        if first_defender_action_item is not None
+        else None
+    )
+    first_defender_action_is_symbolic_containment = (
+        None
+        if first_defender_action_item is None
+        else bool((first_defender_action_item.get("containment") or {}).get("is_symbolic"))
+        if is_containment_action(first_defender_action_item.get("action"))
+        else False
+    )
+    runtime_containment_metrics = {
+        "containment_action_count": len(defender_containment_actions),
+        "symbolic_containment_action_count": len(defender_symbolic_containment_actions),
+        "first_containment_action_type": first_containment_action_type,
+        "first_containment_action_is_symbolic": first_containment_is_symbolic,
+        "first_containment_time_sec": _relative_time(
+            first_containment_time,
+            attack_start=attack_start,
+        ),
+        "first_containment_time_from_wargame_t0_sec": _relative_time(
+            first_containment_time,
+            attack_start=wargame_origin,
+        ),
+        "attacker_execution_cutoff_activated": bool(containment_events),
+        "attacker_execution_cutoff_activation_time_sec": _relative_time(
+            first_containment_event_time,
+            attack_start=attack_start,
+        ),
+        "attacker_execution_cutoff_activation_from_wargame_t0_sec": _relative_time(
+            first_containment_event_time,
+            attack_start=wargame_origin,
+        ),
+        "blocked_attacker_action_count": len(blocked_attacker_events),
+        "blocked_attacker_action_types": [
+            str(item.get("attempted_action_type", ""))
+            for item in blocked_attacker_events
+        ],
+        "attacker_actions_stopped_after_containment": (
+            False
+            if first_containment_event_time is None
+            else not attacker_executed_after_containment
+        ),
+        "containment_before_safety_violation": contained_before_violation,
+        "containment_after_safety_violation": (
+            False
+            if first_containment_time is None or first_safety_violation_time is None
+            else float(first_containment_time) >= float(first_safety_violation_time)
+        ),
+    }
 
     return {
         "suite_type": (
@@ -951,6 +1082,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         ],
         "time_to_mitigation_from_wargame_t0_sec": defender_intervention_metrics[
             "time_to_mitigation_from_wargame_t0_sec"
+        ],
+        "time_to_containment_sec": defender_intervention_metrics[
+            "time_to_containment_sec"
+        ],
+        "time_to_containment_from_wargame_t0_sec": defender_intervention_metrics[
+            "time_to_containment_from_wargame_t0_sec"
         ],
         "time_to_first_defender_action_from_wargame_t0_sec": phase_window_metrics[
             "time_to_first_defender_action_sec"
@@ -991,6 +1128,14 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         ),
         "defender_action_count": len(defender_actions),
         "defender_shutdown_action_count": len(defender_shutdown_actions),
+        "defender_containment_action_count": len(defender_containment_actions),
+        "defender_symbolic_containment_action_count": len(
+            defender_symbolic_containment_actions
+        ),
+        "first_defender_action_type": first_defender_action_type,
+        "first_defender_action_is_symbolic_containment": (
+            first_defender_action_is_symbolic_containment
+        ),
         "downtime_timestep_count": downtime_timestep_count,
         "attacker": attacker_metrics,
         "nominal": nominal_metrics,
@@ -1004,6 +1149,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender": defender_role_metrics,
         "system": system_metrics,
         "trajectory": trajectory,
+        "runtime_containment": runtime_containment_metrics,
         "phase_window": phase_window_metrics,
         "mitre_phase": mitre_phase_metrics,
     }

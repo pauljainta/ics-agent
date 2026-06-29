@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from ics_agent.agents.action_space import action_key
+from ics_agent.agents.action_space import action_key, build_candidate_actions
 from ics_agent.agents.agentic import AgenticRoleAgent, CachedQwenDecisionEngine
 from ics_agent.scenarios import ScenarioCatalog
 
@@ -3355,3 +3355,190 @@ def test_finalize_payload_drops_sentence_like_diagnosis() -> None:
     )
 
     assert payload["diagnosis"] is None
+
+
+def test_defender_guardrail_issues_immediate_symbolic_containment(monkeypatch) -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-low-block")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": [
+            "hmi_stop",
+            "hmi_estop",
+            "select_process",
+            "block_sensor_write",
+            "quarantine_signal_source",
+            "disable_hmi_session",
+            "isolate_engineering_host",
+            "block_process2_manual_path",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda _context: {
+            "summary": "Monitor and verify.",
+            "candidate_id": action_key({"type": "noop"}),
+            "decision_type": "note",
+            "diagnosis": "raw_water_low_or_spoof",
+        },
+    )
+
+    decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 1.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 390,
+                "UF_UFFT_Tank_Level": 400,
+                "RW_Pump_Sts": 1,
+                "Alarm_RW_Tank_LL": 1,
+                "Alarm_RW_Tank_HH": 0,
+                "P2_Selected": 0,
+            },
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "RW_Tank_Level": 600,
+                    "UF_UFFT_Tank_Level": 400,
+                    "elapsed_sec": 0.5,
+                }
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 1.0,
+                    "action": {
+                        "type": "set_sensor",
+                        "name": "RW_Tank_Level",
+                        "value": 390,
+                    },
+                }
+            ],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    action_decision = next(item for item in decisions if item.action is not None)
+
+    assert len(decisions) == 2
+    assert action_decision.action == {"type": "block_sensor_write"}
+    assert action_decision.metadata["guardrail"] == "last_mile_containment"
+
+
+def test_defender_retains_monitoring_only_on_weak_process2_evidence(monkeypatch) -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-select-chatter")
+    profile = {
+        "role": "defender",
+        "family": "agentic",
+        "allowed_action_types": [
+            "hmi_stop",
+            "hmi_estop",
+            "select_process",
+            "block_process2_manual_path",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_agentic_defender", profile)
+    agent.reset(scenario)
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda _context: {
+            "summary": "Monitor and hold.",
+            "candidate_id": action_key({"type": "noop"}),
+            "decision_type": "note",
+            "diagnosis": None,
+        },
+    )
+
+    decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 1.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "RW_Tank_Level": 600,
+                "UF_UFFT_Tank_Level": 400,
+                "RW_Pump_Sts": 1,
+                "Alarm_RW_Tank_LL": 0,
+                "Alarm_RW_Tank_HH": 0,
+                "P2_Selected": 1,
+            },
+            "observations": [],
+            "executed_actions": [],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].action is None
+    assert decisions[0].decision_type == "note"
+
+
+def test_action_space_exposes_surface_specific_symbolic_containment() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-low-block")
+    candidates = build_candidate_actions(
+        role="defender",
+        allowed_action_types=[
+            "hmi_stop",
+            "hmi_estop",
+            "select_process",
+            "block_sensor_write",
+            "quarantine_signal_source",
+            "disable_hmi_session",
+            "isolate_engineering_host",
+            "block_process2_manual_path",
+            "noop",
+        ],
+        scenario=scenario,
+        observation={
+            "STATE_NAME": "RUNNING",
+            "RW_Tank_Level": 390,
+            "UF_UFFT_Tank_Level": 400,
+            "RW_Pump_Sts": 1,
+            "Alarm_RW_Tank_LL": 1,
+            "Alarm_RW_Tank_HH": 0,
+            "P2_Selected": 0,
+        },
+        risk_flags=["raw_water_low_band"],
+        active_alarms=["Alarm_RW_Tank_LL"],
+        relationship_notes=[],
+        recent_alerts=[],
+        recent_actions=[
+            {
+                "role": "attacker",
+                "time_sec": 1.0,
+                "action": {"type": "set_sensor", "name": "RW_Tank_Level", "value": 390},
+            }
+        ],
+        incident={
+            "type": "raw_water_low_protection",
+            "status": "confirmed",
+            "severity": 3,
+        },
+        remaining_playbook=[],
+        now=1.0,
+        playbook_anticipation_sec=1.0,
+    )
+
+    action_types = {item["action"]["type"] for item in candidates}
+
+    assert "block_sensor_write" in action_types
+    assert "quarantine_signal_source" in action_types

@@ -1542,3 +1542,123 @@ def test_orchestrator_trajectory_metrics_can_include_baseline_roots(
     assert trajectory["repeated_scenario_count"] == 1
     assert trajectory["per_scenario"][0]["run_count"] == 2
     assert trajectory["baseline_roots"] == [str(baseline_root)]
+
+
+def test_orchestrator_blocks_later_attacker_actions_after_symbolic_containment(
+    tmp_path, monkeypatch
+) -> None:
+    class CutoffFakeAgent:
+        mode = "online"
+
+        def __init__(self, role: str) -> None:
+            self.role = role
+            self.action_count = 0
+
+        def reset(self, _scenario) -> None:
+            self.action_count = 0
+
+        def step(self, context):
+            now = float(context["time_sec"])
+            if self.role == "attacker":
+                if self.action_count >= 2:
+                    return []
+                self.action_count += 1
+                return [
+                    RoleDecision(
+                        role="attacker",
+                        agent_name="cutoff_attacker",
+                        decision_type="action",
+                        summary="Write the sensor.",
+                        time_sec=now,
+                        timestamp_utc="2026-06-29T00:00:00Z",
+                        action={
+                            "type": "set_sensor",
+                            "name": "RW_Tank_Level",
+                            "value": 390,
+                        },
+                        labels=["attacker"],
+                    )
+                ]
+            if self.role == "defender" and now == 0.0:
+                return [
+                    RoleDecision(
+                        role="defender",
+                        agent_name="cutoff_defender",
+                        decision_type="action",
+                        summary="Cut off the sensor write path.",
+                        time_sec=now,
+                        timestamp_utc="2026-06-29T00:00:00Z",
+                        action={"type": "block_sensor_write"},
+                        diagnosis="raw_water_low_or_spoof",
+                        labels=["defender"],
+                    )
+                ]
+            return []
+
+        def finalize(self, _context):
+            return []
+
+    config_path = tmp_path / "cutoff.yaml"
+    config = {
+        "experiment_name": "pytest_cutoff",
+        "scenario_selectors": ["attack/wt-attack-sensor-rw-low-block"],
+        "repeats": 1,
+        "resume": False,
+        "results_root": str(tmp_path / "Results"),
+        "conditions": [
+            {
+                "name": "agentic_agents",
+                "profiles": {
+                    "attacker": "black_box_attacker",
+                    "defender": "agentic_defender",
+                    "observer": "agentic_observer",
+                    "planner": "scripted_planner",
+                    "operator": "scripted_operator",
+                    "offline_analysis": "scripted_offline_analyst",
+                },
+                "profile_overrides": {
+                    "defender": {
+                        "allowed_action_types": [
+                            "hmi_stop",
+                            "hmi_estop",
+                            "select_process",
+                            "block_sensor_write",
+                            "noop",
+                        ]
+                    }
+                },
+            }
+        ],
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    clock = FakeClock()
+    monkeypatch.setattr("ics_agent.orchestrator.OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr("ics_agent.orchestrator.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("ics_agent.orchestrator.time.sleep", clock.sleep)
+
+    orchestrator = ExperimentOrchestrator()
+    monkeypatch.setattr(
+        orchestrator,
+        "_create_agent",
+        lambda profile_id, profile=None: CutoffFakeAgent(
+            (profile or orchestrator.agent_profiles[profile_id])["role"]
+        ),
+    )
+
+    summary = orchestrator.run(config_path)
+    assert summary["status"] == "completed"
+
+    action_files = list((tmp_path / "Results").rglob("actions.json"))
+    actions = json.loads(action_files[0].read_text())
+    system_event_files = list((tmp_path / "Results").rglob("system_events.json"))
+    system_events = json.loads(system_event_files[0].read_text())
+    metrics_files = list((tmp_path / "Results").rglob("metrics.json"))
+    metrics = json.loads(metrics_files[0].read_text())
+
+    attacker_actions = [item for item in actions if item["role"] == "attacker"]
+
+    assert len(attacker_actions) == 1
+    assert any(item["event_type"] == "attacker_action_blocked" for item in system_events)
+    assert metrics["runtime_containment"]["attacker_execution_cutoff_activated"] is True
+    assert metrics["runtime_containment"]["blocked_attacker_action_count"] >= 1
