@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Run the current staged Option B smoke validation path.
+
+This is a runtime/connectivity smoke check, not a full 18-scenario study.
+"""
 from __future__ import annotations
 
 import json
@@ -22,7 +26,9 @@ from ics_agent.types import RunBundle
 from ics_agent.utils import utc_now
 
 
-CONFIG_PATH = REPO_ROOT / "configs" / "experiments" / "sphere_optionb_smoke.yaml"
+CONFIG_PATH = (
+    REPO_ROOT / "configs" / "experiments" / "sphere_optionb_staged_smoke.yaml"
+)
 PROGRESS_ROOT = (
     WORKSPACE_ROOT / "Artifact" / "Results" / "New" / "_progress_optionb"
 )
@@ -112,9 +118,9 @@ def _reasoning_pass(
     condition_spec = list(config.get("conditions", []))[0]
     condition = dict(condition_spec.get("profiles") or {})
     bundle = RunBundle(
-        experiment_id="sphere_optionb_smoke",
+        experiment_id="sphere_optionb_staged_smoke",
         condition_name=str(condition_spec.get("name") or "optionb_smoke"),
-        run_id="sphere_optionb_smoke",
+        run_id="sphere_optionb_staged_smoke",
         scenario=scenario,
         run_dir=PROGRESS_ROOT,
         config_snapshot={},

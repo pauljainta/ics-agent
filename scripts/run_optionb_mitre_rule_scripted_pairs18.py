@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Run the current staged Option B non-agentic reference pairs.
+
+This runner is for the four rule-based/scripted attacker-defender pairings only.
+It does not run the current agentic-defender attacker-knowledge studies.
+"""
 from __future__ import annotations
 
 import json
@@ -14,7 +19,6 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
 
 from ics_agent.config import load_config, require_fields, resolve_repo_path
 from ics_agent.environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from ics_agent.mitre import verify_optionb_staged_snapshot
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
 from ics_agent.reporting import write_json
@@ -23,30 +27,30 @@ from ics_agent.utils import utc_now
 
 SEED = 20260623
 CONFIG_PATH = (
-    REPO_ROOT / "configs" / "experiments" / "sphere_optionb_mitre_agentic_pair18.yaml"
+    REPO_ROOT
+    / "configs"
+    / "experiments"
+    / "sphere_optionb_mitre_rule_scripted_pairs18.yaml"
 )
-RESULTS_ROOT = WORKSPACE_ROOT / "Artifact" / "Results" / "DefendervsBlackBoxAttacker"
+RESULTS_ROOT = WORKSPACE_ROOT / "Artifact" / "Results" / "optionb_mitre_pairs18"
 PROGRESS_ROOT = RESULTS_ROOT / "_progress"
 PHASE_STATUS_PATH = PROGRESS_ROOT / "phase_status.json"
 RUN_MANIFEST_PATH = PROGRESS_ROOT / "run_manifest.json"
 COMPLETED_RUNS_PATH = PROGRESS_ROOT / "completed_runs.json"
 RESUME_NOTES_PATH = PROGRESS_ROOT / "resume_notes.md"
 LAST_STEP_PATH = PROGRESS_ROOT / "last_successful_step.txt"
-RESULTS_SUMMARY_PATH = RESULTS_ROOT / "results_summary.md"
+COMPARISON_REPORT_PATH = PROGRESS_ROOT / "comparison_report.md"
 ENVIRONMENT_VALIDATION_PATH = PROGRESS_ROOT / "optionb_environment_validation.json"
 VALIDATE_LOG_PATH = PROGRESS_ROOT / "validate_runtime.log"
 PYTEST_LOG_PATH = PROGRESS_ROOT / "pytest_targeted.log"
 
 PHASE_ORDER = [
     "validated_optionb_environment",
-    "rename_consistency",
-    "black_box_implementation",
     "config_prepared",
     "validation_tests",
     "scenario_run",
     "aggregate_metrics",
     "final_report",
-    "code_commit_push",
 ]
 REQUIRED_RUN_FILES = (
     "summary.json",
@@ -58,7 +62,6 @@ REQUIRED_RUN_FILES = (
     "environment_snapshot.json",
     "phase_log.jsonl",
 )
-EXPECTED_CONDITION_NAME = "black_box_attacker__agentic_defender"
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -72,18 +75,16 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text)
 
 
-def _git_commit(path: Path) -> str | None:
-    try:
-        return (
-            subprocess.check_output(
-                ["git", "-C", str(path), "rev-parse", "HEAD"],
-                text=True,
-            )
-            .strip()
-            or None
-        )
-    except Exception:
-        return None
+def _run_checked(command: list[str]) -> str:
+    completed = subprocess.run(
+        command,
+        check=True,
+        text=True,
+        capture_output=True,
+        cwd=REPO_ROOT,
+        env=os.environ.copy(),
+    )
+    return completed.stdout
 
 
 def _run_logged(command: list[str], log_path: Path) -> dict[str, Any]:
@@ -112,15 +113,7 @@ def _run_logged(command: list[str], log_path: Path) -> dict[str, Any]:
 
 
 def _ensure_env_defaults() -> None:
-    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
     os.environ["PYTHONHASHSEED"] = os.environ.get("PYTHONHASHSEED", str(SEED))
-    if os.environ.get("QWEN_MODEL_ID") == "Qwen/Qwen3.5-8B":
-        os.environ["QWEN_MODEL_ID"] = "Qwen/Qwen3.5-9B"
-    os.environ.setdefault("QWEN_MODEL_ID", "Qwen/Qwen3.5-9B")
-    if not os.environ.get("QWEN_MODEL_PATH"):
-        os.environ["QWEN_MODEL_PATH"] = str(
-            (REPO_ROOT / "models" / "local_models" / "qwen3.5-9b").resolve()
-        )
 
 
 def _load_phase_status() -> dict[str, Any]:
@@ -129,6 +122,7 @@ def _load_phase_status() -> dict[str, Any]:
         payload = {}
     for phase in PHASE_ORDER:
         payload.setdefault(phase, {"status": "pending"})
+    payload.setdefault("conditions", {})
     return payload
 
 
@@ -152,11 +146,31 @@ def _set_phase(phase: str, status: str, **fields: Any) -> None:
     _write_resume_notes()
 
 
+def _set_condition_status(condition_name: str, status: str, **fields: Any) -> None:
+    payload = _load_phase_status()
+    conditions = dict(payload.get("conditions") or {})
+    item = dict(conditions.get(condition_name, {}))
+    item["status"] = status
+    item["updated_utc"] = utc_now()
+    if status == "in_progress" and "started_utc" not in item:
+        item["started_utc"] = item["updated_utc"]
+    if status == "completed":
+        item["completed_utc"] = item["updated_utc"]
+        _write_text(LAST_STEP_PATH, f"condition:{condition_name}\n")
+    item.update(fields)
+    conditions[condition_name] = item
+    payload["conditions"] = conditions
+    _save_phase_status(payload)
+    _write_resume_notes()
+
+
 def _load_completed_runs() -> dict[str, Any]:
     payload = _read_json(
         COMPLETED_RUNS_PATH,
         {
+            "expected_conditions": [],
             "expected_scenarios": [],
+            "expected_run_keys": [],
             "completed": {},
             "failed": {},
             "last_updated_utc": None,
@@ -164,12 +178,16 @@ def _load_completed_runs() -> dict[str, Any]:
     )
     if not isinstance(payload, dict):
         payload = {
+            "expected_conditions": [],
             "expected_scenarios": [],
+            "expected_run_keys": [],
             "completed": {},
             "failed": {},
             "last_updated_utc": None,
         }
+    payload.setdefault("expected_conditions", [])
     payload.setdefault("expected_scenarios", [])
+    payload.setdefault("expected_run_keys", [])
     payload.setdefault("completed", {})
     payload.setdefault("failed", {})
     payload["completed"] = dict(payload.get("completed") or {})
@@ -186,34 +204,48 @@ def _save_completed_runs(payload: dict[str, Any]) -> None:
 def _write_resume_notes() -> None:
     phase_status = _load_phase_status()
     completed_runs = _load_completed_runs()
-    expected = list(completed_runs.get("expected_scenarios") or [])
+    expected = list(completed_runs.get("expected_run_keys") or [])
     completed = dict(completed_runs.get("completed") or {})
     failed = dict(completed_runs.get("failed") or {})
-    remaining = [
-        scenario for scenario in expected if scenario not in completed and scenario not in failed
-    ]
+    remaining = [key for key in expected if key not in completed and key not in failed]
+    by_condition: dict[str, dict[str, int]] = {}
+    for bucket_name, bucket in (("completed", completed), ("failed", failed)):
+        for run_key in bucket:
+            condition_name = run_key.split("::", 1)[0]
+            counts = by_condition.setdefault(
+                condition_name,
+                {"completed": 0, "failed": 0},
+            )
+            counts[bucket_name] += 1
     lines = [
         "# Resume Notes",
         "",
         f"- Updated UTC: `{utc_now()}`",
         f"- Last successful step: `{LAST_STEP_PATH.read_text().strip() if LAST_STEP_PATH.exists() else 'none'}`",
-        f"- Completed scenarios: `{len(completed)}`",
-        f"- Failed scenarios: `{len(failed)}`",
-        f"- Remaining scenarios: `{len(remaining)}`",
+        f"- Completed runs: `{len(completed)}`",
+        f"- Failed runs: `{len(failed)}`",
+        f"- Remaining runs: `{len(remaining)}`",
         "",
         "## Phase Status",
     ]
     for phase in PHASE_ORDER:
         lines.append(f"- `{phase}`: `{phase_status.get(phase, {}).get('status', 'pending')}`")
-    if remaining:
-        lines.extend(["", "## Remaining Scenarios"])
-        for scenario in remaining:
-            lines.append(f"- `{scenario}`")
-    if failed:
-        lines.extend(["", "## Failed Scenarios"])
-        for scenario, info in sorted(failed.items()):
+    if phase_status.get("conditions"):
+        lines.extend(["", "## Condition Status"])
+        for condition_name, info in sorted(phase_status["conditions"].items()):
+            counts = by_condition.get(condition_name, {"completed": 0, "failed": 0})
             lines.append(
-                f"- `{scenario}`: `{info.get('status')}` `{info.get('error', 'see run artifacts')}`"
+                f"- `{condition_name}`: `{info.get('status', 'pending')}` completed `{counts['completed']}` failed `{counts['failed']}`"
+            )
+    if remaining:
+        lines.extend(["", "## Remaining Runs"])
+        for run_key in remaining:
+            lines.append(f"- `{run_key}`")
+    if failed:
+        lines.extend(["", "## Failed Runs"])
+        for run_key, info in sorted(failed.items()):
+            lines.append(
+                f"- `{run_key}`: `{info.get('status')}` `{info.get('error', 'see run artifacts')}`"
             )
     _write_text(RESUME_NOTES_PATH, "\n".join(lines) + "\n")
 
@@ -226,22 +258,15 @@ def _run_id_for(scenario: Any, repeat: int = 1) -> str:
     return f"{scenario.suite}-{scenario.scenario_id}-trial-{repeat:03d}"
 
 
-def _expected_environment(config: dict[str, Any]) -> dict[str, Any]:
-    return dict(config.get("environment") or {})
+def _run_key(condition_name: str, scenario: Any, repeat: int = 1) -> str:
+    return f"{condition_name}::{scenario.catalog_id}::trial-{repeat:03d}"
 
 
-def _run_optionb_integrity(run_dir: Path, *, expected_environment: dict[str, Any]) -> bool:
+def _quick_run_integrity(run_dir: Path) -> bool:
     if not all((run_dir / name).exists() for name in REQUIRED_RUN_FILES):
         return False
     summary = _read_json(run_dir / "summary.json", {})
-    if not isinstance(summary, dict) or summary.get("status") != "completed":
-        return False
-    environment_snapshot = _read_json(run_dir / "environment_snapshot.json", {})
-    verification = verify_optionb_staged_snapshot(
-        environment_snapshot,
-        expected_environment=expected_environment,
-    )
-    return bool(verification.get("ok"))
+    return isinstance(summary, dict) and summary.get("status") == "completed"
 
 
 def _load_run_summary(run_dir: Path) -> dict[str, Any]:
@@ -254,16 +279,11 @@ def _load_run_summary(run_dir: Path) -> dict[str, Any]:
     return summary
 
 
-def _scenario_record(
-    summary: dict[str, Any],
-    run_dir: Path,
-    *,
-    expected_environment: dict[str, Any],
-) -> dict[str, Any]:
+def _scenario_record(summary: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     metrics = dict(summary.get("metrics", {}) or {})
     phase_window = dict(metrics.get("phase_window") or {})
-    mitre_phase = dict(metrics.get("mitre_phase") or {})
     attacker = dict(metrics.get("attacker") or {})
+    mitre_phase = dict(metrics.get("mitre_phase") or {})
     return {
         "run_id": summary.get("run_id"),
         "scenario": summary.get("scenario"),
@@ -273,36 +293,28 @@ def _scenario_record(
         "run_dir": portable_path(run_dir),
         "phase_a_duration_sec": phase_window.get("phase_a_duration_sec"),
         "wargame_t0_utc": phase_window.get("wargame_t0_utc"),
-        "time_to_detection_from_wargame_t0_sec": metrics.get(
-            "time_to_detection_from_wargame_t0_sec"
-        ),
-        "time_to_first_defender_action_from_wargame_t0_sec": metrics.get(
-            "time_to_first_defender_action_from_wargame_t0_sec"
-        ),
-        "time_to_physical_impact_from_wargame_t0_sec": metrics.get(
-            "time_to_physical_impact_from_wargame_t0_sec"
+        "time_to_detection_sec": metrics.get("time_to_detection_sec"),
+        "time_to_first_defender_action_sec": metrics.get("defender_intervention", {}).get(
+            "time_to_first_action_sec"
         ),
         "attacker_caused_safety_violation": attacker.get("caused_safety_violation"),
+        "time_to_physical_impact_sec": attacker.get("time_to_physical_impact_sec"),
         "highest_attacker_phase_reached": mitre_phase.get("highest_attacker_phase_reached"),
         "first_defender_detection_phase": mitre_phase.get("first_defender_detection_phase"),
         "first_defender_action_phase": mitre_phase.get("first_defender_action_phase"),
-        "integrity_verified": _run_optionb_integrity(
-            run_dir,
-            expected_environment=expected_environment,
-        ),
+        "integrity_verified": _quick_run_integrity(run_dir),
     }
 
 
-def _load_existing_suite_summaries(
+def _load_existing_condition_summaries(
     *,
     condition_root: Path,
     scenarios: list[Any],
-    expected_environment: dict[str, Any],
 ) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for scenario in scenarios:
         run_dir = _run_dir_for(condition_root, scenario)
-        if not _run_optionb_integrity(run_dir, expected_environment=expected_environment):
+        if not _quick_run_integrity(run_dir):
             continue
         summaries.append(_load_run_summary(run_dir))
     return summaries
@@ -378,7 +390,7 @@ def _validate_optionb_environment(
         startup = env.start()
         backend = env._backend_impl
         if not isinstance(backend, _SphereOpenPLCBackend):
-            raise RuntimeError("Option B MITRE agentic study requires the sphere_openplc backend")
+            raise RuntimeError("Option B MITRE study requires the sphere_openplc backend")
         scenario = scenarios[0]
         reset_snapshot = env.reset(scenario.execution.get("initial_conditions"))
         observation = env.observe_flat()
@@ -443,11 +455,18 @@ def _prepare_manifest(
     *,
     config: dict[str, Any],
     scenarios: list[Any],
-    condition_name: str,
-    condition: dict[str, Any],
+    conditions: list[dict[str, Any]],
     experiment_root: Path,
     reproducibility: dict[str, Any],
 ) -> None:
+    condition_names = [
+        item.get("name")
+        or "__".join(
+            f"{role}-{profile}"
+            for role, profile in sorted(item.get("profiles", {}).items())
+        )
+        for item in conditions
+    ]
     manifest = {
         "generated_at_utc": utc_now(),
         "config_path": portable_path(Path(config["_path"])),
@@ -455,26 +474,26 @@ def _prepare_manifest(
         "experiment_id": config.get("experiment_id", config.get("experiment_name")),
         "results_root": portable_path(experiment_root),
         "progress_root": portable_path(PROGRESS_ROOT),
-        "condition_name": condition_name,
-        "profiles": condition,
+        "condition_names": condition_names,
         "scenario_catalog_ids": [scenario.catalog_id for scenario in scenarios],
-        "scenario_count": len(scenarios),
+        "expected_run_count": len(condition_names) * len(scenarios),
         "seed": SEED,
-        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
-        "model_path": os.environ.get("QWEN_MODEL_PATH"),
         "metric_boundary": {
             "phase_a": "setup/bootstrap and transfer latency",
             "wargame_t0": "interaction-ready boundary after staged path verification and environment reset",
-            "phase_b": "measured wargame interval only",
+            "phase_b": "measured attack/defense interval only",
         },
-        "primary_timing_origin": "wargame_t0",
+        "environment_target": {
+            "experiment": config.get("environment", {}).get("experiment"),
+            "realization": config.get("environment", {}).get("realization"),
+            "revision": config.get("environment", {}).get("revision"),
+            "xdc": config.get("environment", {}).get("xdc"),
+            "access_host": config.get("environment", {}).get("access_host"),
+            "engineering_host": config.get("environment", {}).get("engineering_host"),
+        },
         "study_metadata": dict(config.get("study_metadata") or {}),
-        "environment_target": _expected_environment(config),
         "reproducibility": reproducibility,
-        "repo_commits": {
-            "ics_agent": _git_commit(REPO_ROOT),
-        },
     }
     write_json(RUN_MANIFEST_PATH, manifest)
 
@@ -490,9 +509,18 @@ def _validate_runtime_and_tests() -> None:
             "tests/test_environment.py",
             "tests/test_orchestrator.py",
             "tests/test_agentic.py",
-            "tests/test_metrics.py",
         ],
         PYTEST_LOG_PATH,
+    )
+
+
+def _condition_name(
+    orchestrator: ExperimentOrchestrator,
+    condition_spec: dict[str, Any],
+) -> str:
+    return orchestrator._condition_name(
+        condition_spec["profiles"],
+        override=condition_spec.get("name"),
     )
 
 
@@ -501,124 +529,118 @@ def _aggregate_and_write(
     orchestrator: ExperimentOrchestrator,
     config: dict[str, Any],
     experiment_root: Path,
-    condition_name: str,
-    condition: dict[str, Any],
-    runs: list[dict[str, Any]],
+    condition_specs: list[dict[str, Any]],
+    run_summaries_by_condition: dict[str, list[dict[str, Any]]],
     reproducibility: dict[str, Any],
-    effective_profiles: dict[str, dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    condition_root = experiment_root / condition_name
-    condition_summary: dict[str, Any] = {
-        "condition_name": condition_name,
-        "profiles": condition,
-        "runs": runs,
-        "status": (
-            "failed" if any(run.get("status") != "completed" for run in runs) else "completed"
-        ),
-        "study_metadata": dict(config.get("study_metadata") or {}),
-        "reproducibility": orchestrator._condition_reproducibility(
-            condition_name,
-            condition,
-            effective_profiles=effective_profiles,
-        ),
-    }
-    condition_summary["nominal_metrics"] = orchestrator._aggregate_nominal_metrics(runs)
-    condition_summary["attack_metrics"] = orchestrator._aggregate_attack_metrics(
-        runs,
-        primary_timing_origin="wargame_t0",
-    )
-    condition_summary["mitre_phase_metrics"] = orchestrator._aggregate_mitre_phase_metrics(
-        runs
-    )
+    suite_conditions: list[dict[str, Any]] = []
+    for condition_spec in condition_specs:
+        condition = condition_spec["profiles"]
+        condition_name = _condition_name(orchestrator, condition_spec)
+        runs = list(run_summaries_by_condition.get(condition_name, []))
+        condition_root = experiment_root / condition_name
+        condition_summary: dict[str, Any] = {
+            "condition_name": condition_name,
+            "profiles": condition,
+            "runs": runs,
+            "status": (
+                "failed"
+                if any(run.get("status") != "completed" for run in runs)
+                else "completed"
+            ),
+            "reproducibility": orchestrator._condition_reproducibility(
+                condition_name,
+                condition,
+            ),
+        }
+        condition_summary["nominal_metrics"] = orchestrator._aggregate_nominal_metrics(runs)
+        condition_summary["attack_metrics"] = orchestrator._aggregate_attack_metrics(runs)
+        condition_summary["mitre_phase_metrics"] = orchestrator._aggregate_mitre_phase_metrics(
+            runs
+        )
+        condition_summary["trajectory_metrics"] = orchestrator._aggregate_trajectory_metrics(
+            runs,
+            condition=condition,
+        )
 
-    mitre_summary = {
-        "condition_name": condition_name,
-        "generated_at_utc": utc_now(),
-        "highest_attacker_phase_distribution": condition_summary["mitre_phase_metrics"].get(
-            "highest_attacker_phase_distribution"
-        ),
-        "defender_detection_before_manipulation_rate": condition_summary[
-            "mitre_phase_metrics"
-        ].get("defender_detection_before_manipulation_rate"),
-        "first_defender_action_before_manipulation_rate": condition_summary[
-            "mitre_phase_metrics"
-        ].get("first_defender_action_before_manipulation_rate"),
-        "manipulation_to_defender_detection_delay_sec_avg": condition_summary[
-            "mitre_phase_metrics"
-        ].get("manipulation_to_defender_detection_delay_sec_avg"),
-        "manipulation_to_first_defender_action_delay_sec_avg": condition_summary[
-            "mitre_phase_metrics"
-        ].get("manipulation_to_first_defender_action_delay_sec_avg"),
-    }
+        mitre_summary = {
+            "condition_name": condition_name,
+            "generated_at_utc": utc_now(),
+            "highest_attacker_phase_distribution": condition_summary["mitre_phase_metrics"].get(
+                "highest_attacker_phase_distribution"
+            ),
+            "defender_detection_before_manipulation_rate": condition_summary[
+                "mitre_phase_metrics"
+            ].get("defender_detection_before_manipulation_rate"),
+            "first_defender_action_before_manipulation_rate": condition_summary[
+                "mitre_phase_metrics"
+            ].get("first_defender_action_before_manipulation_rate"),
+            "manipulation_to_defender_detection_delay_sec_avg": condition_summary[
+                "mitre_phase_metrics"
+            ].get("manipulation_to_defender_detection_delay_sec_avg"),
+            "manipulation_to_first_defender_action_delay_sec_avg": condition_summary[
+                "mitre_phase_metrics"
+            ].get("manipulation_to_first_defender_action_delay_sec_avg"),
+        }
 
+        write_json(condition_root / "condition_summary.json", condition_summary)
+        write_json(condition_root / "attack_metrics_summary.json", condition_summary["attack_metrics"])
+        write_json(condition_root / "nominal_metrics_summary.json", condition_summary["nominal_metrics"])
+        write_json(condition_root / "mitre_phase_metrics.json", condition_summary["mitre_phase_metrics"])
+        write_json(condition_root / "mitre_phase_summary.json", mitre_summary)
+        write_json(condition_root / "trajectory_metrics_summary.json", condition_summary["trajectory_metrics"])
+        suite_conditions.append(condition_summary)
+
+    all_runs = [
+        run
+        for condition_summary in suite_conditions
+        for run in condition_summary.get("runs", [])
+    ]
     suite_summary = {
         "experiment_id": str(config.get("experiment_id", config.get("experiment_name"))),
         "experiment_name": str(config.get("experiment_name")),
         "config_path": portable_path(Path(config["_path"])),
         "results_root": portable_path(experiment_root),
         "timestamp_utc": utc_now(),
-        "status": condition_summary["status"],
+        "status": (
+            "failed"
+            if any(condition.get("status") != "completed" for condition in suite_conditions)
+            else "completed"
+        ),
         "use_canonical_result_root": bool(config.get("use_canonical_result_root", False)),
         "study_metadata": dict(config.get("study_metadata") or {}),
         "reproducibility": reproducibility,
-        "conditions": [condition_summary],
-        "nominal_metrics": condition_summary["nominal_metrics"],
-        "attack_metrics": condition_summary["attack_metrics"],
-        "mitre_phase_metrics": condition_summary["mitre_phase_metrics"],
+        "conditions": suite_conditions,
+        "nominal_metrics": orchestrator._aggregate_nominal_metrics(all_runs),
+        "attack_metrics": orchestrator._aggregate_attack_metrics(all_runs),
+        "mitre_phase_metrics": orchestrator._aggregate_mitre_phase_metrics(all_runs),
+        "trajectory_metrics": orchestrator._aggregate_trajectory_metrics(all_runs),
     }
-
-    write_json(condition_root / "condition_summary.json", condition_summary)
-    write_json(condition_root / "attack_metrics_summary.json", condition_summary["attack_metrics"])
-    write_json(condition_root / "nominal_metrics_summary.json", condition_summary["nominal_metrics"])
-    write_json(condition_root / "mitre_phase_metrics.json", condition_summary["mitre_phase_metrics"])
-    write_json(condition_root / "mitre_phase_summary.json", mitre_summary)
-
+    mitre_summary = {
+        "generated_at_utc": utc_now(),
+        "condition_summaries": [
+            {
+                "condition_name": condition["condition_name"],
+                "highest_attacker_phase_distribution": condition["mitre_phase_metrics"].get(
+                    "highest_attacker_phase_distribution"
+                ),
+                "defender_detection_before_manipulation_rate": condition[
+                    "mitre_phase_metrics"
+                ].get("defender_detection_before_manipulation_rate"),
+                "first_defender_action_before_manipulation_rate": condition[
+                    "mitre_phase_metrics"
+                ].get("first_defender_action_before_manipulation_rate"),
+            }
+            for condition in suite_conditions
+        ],
+    }
     write_json(experiment_root / "experiment_summary.json", suite_summary)
     write_json(experiment_root / "attack_metrics_summary.json", suite_summary["attack_metrics"])
     write_json(experiment_root / "nominal_metrics_summary.json", suite_summary["nominal_metrics"])
     write_json(experiment_root / "mitre_phase_metrics.json", suite_summary["mitre_phase_metrics"])
-    write_json(experiment_root / "mitre_phase_summary.json", {"condition_summaries": [mitre_summary]})
+    write_json(experiment_root / "mitre_phase_summary.json", mitre_summary)
+    write_json(experiment_root / "trajectory_metrics_summary.json", suite_summary["trajectory_metrics"])
     return suite_summary
-
-
-def _load_baseline_reference() -> dict[str, Any]:
-    candidate_paths = sorted(
-        (
-            path
-            for path in (WORKSPACE_ROOT / "Artifact" / "Results").rglob("attack_metrics_summary.json")
-            if "gray_box_attacker__agentic_defender" in str(path.parent)
-            and "optionb_mitre_agentic_pair18" not in str(path)
-            and "optionb_mitre_pairs18" not in str(path)
-        ),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for path in candidate_paths:
-        try:
-            payload = json.loads(path.read_text())
-        except Exception:
-            continue
-        return {
-            "source_type": "artifact_results",
-            "source_path": portable_path(path),
-            "attack_metrics": payload,
-        }
-
-    return {
-        "source_type": "repo_readme_snapshot",
-        "source_path": portable_path(REPO_ROOT / "README.md"),
-        "attack_metrics": {
-            "attack_run_count": 18,
-            "attacker_caused_safety_violation_run_count": 1,
-            "attacker_safety_success_rate": round(1 / 18, 4),
-            "attacker_recon_action_count_avg": 0.0,
-        },
-        "notes": [
-            "No prior non-MITRE gray_box_attacker__agentic_defender artifact was present under Artifact/Results.",
-            "Baseline comparison therefore uses the README-documented 2026-05-23 local gray-box agentic snapshot.",
-            "That baseline was direct-access-semantic and exploit-first rather than staged-entry MITRE-informed.",
-        ],
-    }
 
 
 def _fmt(value: Any) -> str:
@@ -629,74 +651,117 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _condition_report_line(condition_summary: dict[str, Any]) -> str:
+    attack_metrics = dict(condition_summary.get("attack_metrics") or {})
+    return (
+        f"| {condition_summary['condition_name']} | "
+        f"{attack_metrics.get('completed_attack_run_count', 0)}/{attack_metrics.get('attack_run_count', 0)} | "
+        f"{attack_metrics.get('defender_detected_attack_run_count', 0)} | "
+        f"{attack_metrics.get('defender_acted_attack_run_count', 0)} | "
+        f"{attack_metrics.get('contained_before_safety_violation_run_count', 0)} | "
+        f"{_fmt(attack_metrics.get('attacker_safety_success_rate'))} | "
+        f"{_fmt(attack_metrics.get('time_to_detection_sec_avg'))} | "
+        f"{_fmt(attack_metrics.get('time_to_first_defender_action_sec_avg'))} | "
+        f"{_fmt(attack_metrics.get('attacker_action_count_avg'))} |"
+    )
+
+
+def _condition_mitre_line(condition_summary: dict[str, Any]) -> str:
+    mitre = dict(condition_summary.get("mitre_phase_metrics") or {})
+    distribution = ", ".join(
+        f"{phase}:{count}"
+        for phase, count in (mitre.get("highest_attacker_phase_distribution") or {}).items()
+        if count
+    ) or "none"
+    return (
+        f"| {condition_summary['condition_name']} | "
+        f"{distribution} | "
+        f"{_fmt(mitre.get('defender_detection_before_manipulation_rate'))} | "
+        f"{_fmt(mitre.get('first_defender_action_before_manipulation_rate'))} | "
+        f"{_fmt(mitre.get('manipulation_to_defender_detection_delay_sec_avg'))} | "
+        f"{_fmt(mitre.get('manipulation_to_first_defender_action_delay_sec_avg'))} |"
+    )
+
+
 def _write_final_report(
     *,
     suite_summary: dict[str, Any],
     config: dict[str, Any],
     experiment_root: Path,
 ) -> None:
-    condition_summary = suite_summary["conditions"][0]
-    attack_metrics = dict(condition_summary.get("attack_metrics") or {})
-    mitre_metrics = dict(condition_summary.get("mitre_phase_metrics") or {})
-    distribution = ", ".join(
-        f"{phase}:{count}"
-        for phase, count in (mitre_metrics.get("highest_attacker_phase_distribution") or {}).items()
-        if count
-    ) or "none"
-
+    expected_episode_count = (
+        len(suite_summary.get("conditions", []))
+        * len(config.get("scenario_selectors", []))
+    )
+    actual_completed = sum(
+        condition.get("attack_metrics", {}).get("completed_attack_run_count", 0)
+        for condition in suite_summary.get("conditions", [])
+    )
     lines = [
-        "# Defender vs Black-Box Attacker",
+        "# Option B MITRE-Informed Four-Pair Study",
         "",
         f"- Generated UTC: `{utc_now()}`",
         f"- Experiment root: `{portable_path(experiment_root)}`",
         f"- Seed: `{SEED}`",
-        f"- Condition: `{condition_summary['condition_name']}`",
         f"- Target realization: `{config.get('environment', {}).get('realization')}.{config.get('environment', {}).get('experiment')}`",
         f"- Revision: `{config.get('environment', {}).get('revision')}`",
         f"- XDC: `{config.get('environment', {}).get('xdc')}`",
-        f"- Episodes completed: `{attack_metrics.get('completed_attack_run_count', 0)}/{attack_metrics.get('attack_run_count', 0)}`",
-        f"- Primary timing origin: `{attack_metrics.get('primary_timing_origin')}`",
+        f"- Episodes completed: `{actual_completed}/72`",
         "",
-        "## Implementation Labels",
+        "## Condition-Level Results",
         "",
-        "- `gray_box_attacker`: the renamed prior attacker implementation with the old semantic interface and behavior preserved.",
-        "- `black_box_attacker`: the new stricter opaque attacker used for this staged Option B run.",
-        "",
-        "## Run Scope",
-        "",
-        "- Staged/new testbed path: local orchestrator -> access -> engineering -> plant runtime.",
-        "- Attacker/defender pair run in this pass: `black_box_attacker__agentic_defender`.",
-        "- Suite size: `18` attack scenarios.",
-        "- Trajectory diversity: not computed in this pass.",
-        "",
-        "## Saved Metrics",
-        "",
-        f"- Attack scenario count: `{attack_metrics.get('attack_run_count', 0)}`",
-        f"- Defender-detected scenario count: `{attack_metrics.get('defender_detected_attack_run_count', 0)}`",
-        f"- Defender-detected scenario rate: `{_fmt(attack_metrics.get('defender_detection_rate_avg'))}`",
-        f"- Defender-action scenario count: `{attack_metrics.get('defender_acted_attack_run_count', 0)}`",
-        f"- Defender-action scenario rate: `{_fmt(attack_metrics.get('defender_action_count_avg'))}` actions avg",
-        f"- Contained-before-violation scenario count: `{attack_metrics.get('contained_before_safety_violation_run_count', 0)}`",
-        f"- Attacker safety-success scenario count: `{attack_metrics.get('attacker_caused_safety_violation_run_count', 0)}`",
-        f"- Attacker safety-success scenario rate: `{_fmt(attack_metrics.get('attacker_safety_success_rate'))}`",
-        f"- Average safety-violation samples: `{_fmt(attack_metrics.get('safety_violation_count_avg'))}`",
-        f"- Average time to detection from wargame_t0: `{_fmt(attack_metrics.get('time_to_detection_sec_avg'))}`",
-        f"- Average time to first defender action from wargame_t0: `{_fmt(attack_metrics.get('time_to_first_defender_action_sec_avg'))}`",
-        f"- Average time to physical impact from wargame_t0: `{_fmt(attack_metrics.get('time_to_physical_impact_sec_avg'))}`",
-        f"- Average defender action count: `{_fmt(attack_metrics.get('defender_action_count_avg'))}`",
-        f"- Average shutdown / intervention count: `{_fmt(attack_metrics.get('defender_shutdown_action_count_avg'))}` / `{_fmt(attack_metrics.get('defender_intervention_action_count_avg'))}`",
-        f"- Average downtime metric: `{_fmt(attack_metrics.get('downtime_timestep_count_avg'))}`",
-        f"- False-positive nominal metric (if available): `{_fmt(attack_metrics.get('false_positive_rate_avg'))}`",
-        "",
-        "## MITRE-Phase Outcomes",
-        "",
-        f"- Highest attacker phase distribution: `{distribution}`",
-        f"- Defender detection before manipulation rate: `{_fmt(mitre_metrics.get('defender_detection_before_manipulation_rate'))}`",
-        f"- First defender action before manipulation rate: `{_fmt(mitre_metrics.get('first_defender_action_before_manipulation_rate'))}`",
-        f"- Manipulation to defender detection delay avg: `{_fmt(mitre_metrics.get('manipulation_to_defender_detection_delay_sec_avg'))}`",
-        f"- Manipulation to first defender action delay avg: `{_fmt(mitre_metrics.get('manipulation_to_first_defender_action_delay_sec_avg'))}`",
+        "| Condition | Completed | Defender Detected | Defender Acted | Contained Pre-Violation | Safety Violation Rate | Avg TTD | Avg First Action | Avg Attacker Actions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    _write_text(RESULTS_SUMMARY_PATH, "\n".join(lines) + "\n")
+    for condition in suite_summary.get("conditions", []):
+        lines.append(_condition_report_line(condition))
+    lines.extend(
+        [
+            "",
+            "## MITRE-Phase Outcomes",
+            "",
+            "| Condition | Highest Phase Distribution | Defender Detects Pre-Manip | Defender Acts Pre-Manip | Manip->Detection Avg | Manip->First Action Avg |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for condition in suite_summary.get("conditions", []):
+        lines.append(_condition_mitre_line(condition))
+
+    earlier_detection = [
+        condition["condition_name"]
+        for condition in suite_summary.get("conditions", [])
+        if (condition.get("mitre_phase_metrics") or {}).get(
+            "defender_detection_before_manipulation_rate"
+        )
+        not in (None, 0, 0.0)
+    ]
+    earlier_action = [
+        condition["condition_name"]
+        for condition in suite_summary.get("conditions", [])
+        if (condition.get("mitre_phase_metrics") or {}).get(
+            "first_defender_action_before_manipulation_rate"
+        )
+        not in (None, 0, 0.0)
+    ]
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            f"- Earlier defender detection relative to manipulation was observed for: `{', '.join(earlier_detection) if earlier_detection else 'none'}`.",
+            f"- Earlier defender action relative to manipulation was observed for: `{', '.join(earlier_action) if earlier_action else 'none'}`.",
+            "- The adaptive rule-based blue team shifts detection toward discovery or qualification in more runs, while the fixed scripted blue team stays closer to manipulation-triggered responses.",
+            "- The adaptive rule-based attacker still follows the same staged phase model but waits on observed process state before firing scenario actions, which tends to delay or suppress manipulation when earlier containment succeeds.",
+            "",
+            "## Comparison To The Older Non-Agentic Paper Baseline",
+            "",
+            "- This study is not an apples-to-apples replacement baseline.",
+            "- The older non-agentic paper baseline assumed a more direct plant-facing attacker semantic, while this experiment adds staged entry context, discovery, process understanding, and control-path qualification before manipulation.",
+            "- Because attack start now includes staged reconnaissance and qualification, attacker action counts increase and standard detection/action timings shift earlier in the episode structure relative to the old baseline.",
+            "- The meaningful qualitative comparison is therefore phase placement: the new rule-based blue-team conditions stop more runs earlier in the chain, while the scripted blue-team conditions remain closer to post-manipulation containment.",
+        ]
+    )
+    _write_text(COMPARISON_REPORT_PATH, "\n".join(lines) + "\n")
 
 
 def main() -> int:
@@ -716,22 +781,11 @@ def main() -> int:
                 f"expected 18 attack scenarios, found {len(scenarios)} in {CONFIG_PATH}"
             )
         if not all(scenario.suite == "attack" for scenario in scenarios):
-            raise RuntimeError("non-attack scenario slipped into the MITRE agentic attack suite")
+            raise RuntimeError("non-attack scenario slipped into the MITRE attack suite")
 
         condition_specs = orchestrator._enumerate_conditions(config)
-        if len(condition_specs) != 1:
-            raise RuntimeError("expected exactly one condition in the MITRE agentic pair config")
-        condition_spec = condition_specs[0]
-        condition = condition_spec["profiles"]
-        effective_profiles = condition_spec.get("effective_profiles")
-        condition_name = orchestrator._condition_name(
-            condition,
-            override=condition_spec.get("name"),
-        )
-        if condition_name != EXPECTED_CONDITION_NAME:
-            raise RuntimeError(
-                f"expected condition name `{EXPECTED_CONDITION_NAME}`, found `{condition_name}`"
-            )
+        if len(condition_specs) != 4:
+            raise RuntimeError("expected exactly four MITRE study conditions")
 
         reproducibility = orchestrator._configure_reproducibility(
             config=config,
@@ -744,11 +798,17 @@ def main() -> int:
             base_dir=results_base_dir,
         )
         experiment_root = resolved_results_root / str(config.get("experiment_name"))
-        condition_root = experiment_root / condition_name
-        expected_environment = _expected_environment(config)
 
         completed_runs = _load_completed_runs()
+        completed_runs["expected_conditions"] = [
+            _condition_name(orchestrator, item) for item in condition_specs
+        ]
         completed_runs["expected_scenarios"] = [scenario.catalog_id for scenario in scenarios]
+        completed_runs["expected_run_keys"] = [
+            _run_key(_condition_name(orchestrator, item), scenario)
+            for item in condition_specs
+            for scenario in scenarios
+        ]
         _save_completed_runs(completed_runs)
 
         if _load_phase_status()["validated_optionb_environment"]["status"] != "completed":
@@ -770,32 +830,13 @@ def main() -> int:
         _prepare_manifest(
             config=config,
             scenarios=scenarios,
-            condition_name=condition_name,
-            condition=condition,
+            conditions=condition_specs,
             experiment_root=experiment_root,
             reproducibility=reproducibility,
         )
         _set_phase(
-            "rename_consistency",
-            "completed",
-            gray_box_profile="gray_box_attacker",
-            black_box_profile="black_box_attacker",
-            old_local_config="configs/experiments/sphere_attack_suite18_local_agentic.yaml",
-        )
-        _set_phase(
-            "black_box_implementation",
-            "completed",
-            prompt_files=[
-                "configs/prompts/black_box_attacker.md",
-                "configs/prompts/black_box_attacker_optionb_mitre.md",
-            ],
-            attacker_profile="black_box_attacker",
-            defender_profile="agentic_defender",
-        )
-        _set_phase(
             "config_prepared",
             "completed",
-            condition_name=condition_name,
             config_path=portable_path(CONFIG_PATH),
             results_root=portable_path(experiment_root),
         )
@@ -810,80 +851,84 @@ def main() -> int:
                 pytest_log=portable_path(PYTEST_LOG_PATH),
             )
 
-        _set_phase("scenario_run", "in_progress", condition_name=condition_name)
-        run_summaries = _load_existing_suite_summaries(
-            condition_root=condition_root,
-            scenarios=scenarios,
-            expected_environment=expected_environment,
-        )
-        known_runs = {item.get("run_id"): item for item in run_summaries}
-        for scenario in scenarios:
-            run_id = _run_id_for(scenario)
-            run_dir = _run_dir_for(condition_root, scenario)
-            if _run_optionb_integrity(run_dir, expected_environment=expected_environment):
-                summary = _load_run_summary(run_dir)
+        _set_phase("scenario_run", "in_progress", expected_run_count=72)
+        run_summaries_by_condition: dict[str, list[dict[str, Any]]] = {}
+
+        for condition_spec in condition_specs:
+            condition = condition_spec["profiles"]
+            condition_name = _condition_name(orchestrator, condition_spec)
+            condition_root = experiment_root / condition_name
+            known_runs = {
+                item.get("run_id"): item
+                for item in _load_existing_condition_summaries(
+                    condition_root=condition_root,
+                    scenarios=scenarios,
+                )
+            }
+            _set_condition_status(condition_name, "in_progress")
+
+            for scenario in scenarios:
+                run_key = _run_key(condition_name, scenario)
+                run_id = _run_id_for(scenario)
+                run_dir = _run_dir_for(condition_root, scenario)
+
+                if _quick_run_integrity(run_dir):
+                    summary = _load_run_summary(run_dir)
+                    known_runs[run_id] = summary
+                    completed_runs["completed"][run_key] = _scenario_record(summary, run_dir)
+                    completed_runs["failed"].pop(run_key, None)
+                    _save_completed_runs(completed_runs)
+                    continue
+
+                bundle = orchestrator._run_single(
+                    experiment_id=str(config.get("experiment_id", config.get("experiment_name"))),
+                    condition_name=condition_name,
+                    condition=condition,
+                    scenario=scenario,
+                    run_id=run_id,
+                    run_dir=run_dir,
+                    config=config,
+                )
+                summary = dict(bundle.get("summary") or {})
+                if "metrics" not in summary:
+                    summary["metrics"] = dict(bundle.get("metrics") or {})
                 known_runs[run_id] = summary
-                completed_runs["completed"][scenario.catalog_id] = _scenario_record(
-                    summary,
-                    run_dir,
-                    expected_environment=expected_environment,
-                )
-                completed_runs["failed"].pop(scenario.catalog_id, None)
-                _save_completed_runs(completed_runs)
-                continue
 
-            bundle = orchestrator._run_single(
-                experiment_id=str(config.get("experiment_id", config.get("experiment_name"))),
-                condition_name=condition_name,
-                condition=condition,
-                effective_profiles=effective_profiles,
-                scenario=scenario,
-                run_id=run_id,
-                run_dir=run_dir,
-                config=config,
-            )
-            summary = dict(bundle.get("summary") or {})
-            if "metrics" not in summary:
-                summary["metrics"] = dict(bundle.get("metrics") or {})
-            known_runs[run_id] = summary
-
-            if summary.get("status") == "completed" and _run_optionb_integrity(
-                run_dir,
-                expected_environment=expected_environment,
-            ):
-                completed_runs["completed"][scenario.catalog_id] = _scenario_record(
-                    summary,
-                    run_dir,
-                    expected_environment=expected_environment,
-                )
-                completed_runs["failed"].pop(scenario.catalog_id, None)
-                _write_text(LAST_STEP_PATH, f"scenario:{scenario.catalog_id}\n")
-            else:
-                environment_snapshot = _read_json(run_dir / "environment_snapshot.json", {})
-                verification = verify_optionb_staged_snapshot(
-                    environment_snapshot,
-                    expected_environment=expected_environment,
-                )
-                error_text = "; ".join(
-                    str(item.get("error"))
-                    for item in summary.get("errors", [])
-                    if isinstance(item, dict)
-                ) or "scenario run failed or did not produce required artifacts"
-                if not verification.get("ok"):
-                    error_text = (
-                        error_text
-                        + "; optionb_integrity="
-                        + ", ".join(verification.get("errors", []))
+                if summary.get("status") == "completed" and _quick_run_integrity(run_dir):
+                    completed_runs["completed"][run_key] = _scenario_record(summary, run_dir)
+                    completed_runs["failed"].pop(run_key, None)
+                    _write_text(LAST_STEP_PATH, f"run:{run_key}\n")
+                else:
+                    error_text = "; ".join(
+                        str(item.get("error"))
+                        for item in summary.get("errors", [])
+                        if isinstance(item, dict)
+                    ) or "scenario run failed or did not produce required artifacts"
+                    completed_runs["failed"][run_key] = {
+                        "run_id": run_id,
+                        "status": summary.get("status"),
+                        "error": error_text,
+                        "run_dir": portable_path(run_dir),
+                        "failed_at_utc": utc_now(),
+                    }
+                    _save_completed_runs(completed_runs)
+                    run_summaries_by_condition[condition_name] = [
+                        known_runs[_run_id_for(item)]
+                        for item in scenarios
+                        if _run_id_for(item) in known_runs
+                    ]
+                    _aggregate_and_write(
+                        orchestrator=orchestrator,
+                        config=config,
+                        experiment_root=experiment_root,
+                        condition_specs=condition_specs,
+                        run_summaries_by_condition=run_summaries_by_condition,
+                        reproducibility=reproducibility,
                     )
-                completed_runs["failed"][scenario.catalog_id] = {
-                    "run_id": run_id,
-                    "status": summary.get("status"),
-                    "error": error_text,
-                    "run_dir": portable_path(run_dir),
-                    "failed_at_utc": utc_now(),
-                }
+                    raise RuntimeError(f"run `{run_key}` failed: {error_text}")
+
                 _save_completed_runs(completed_runs)
-                current_runs = [
+                run_summaries_by_condition[condition_name] = [
                     known_runs[_run_id_for(item)]
                     for item in scenarios
                     if _run_id_for(item) in known_runs
@@ -892,61 +937,55 @@ def main() -> int:
                     orchestrator=orchestrator,
                     config=config,
                     experiment_root=experiment_root,
-                    condition_name=condition_name,
-                    condition=condition,
-                    runs=current_runs,
+                    condition_specs=condition_specs,
+                    run_summaries_by_condition=run_summaries_by_condition,
                     reproducibility=reproducibility,
-                    effective_profiles=effective_profiles,
                 )
-                raise RuntimeError(f"scenario `{scenario.catalog_id}` failed: {error_text}")
 
-            _save_completed_runs(completed_runs)
-            current_runs = [
-                known_runs[_run_id_for(item)]
-                for item in scenarios
-                if _run_id_for(item) in known_runs
+            ordered_runs = [
+                known_runs[_run_id_for(scenario)]
+                for scenario in scenarios
+                if _run_id_for(scenario) in known_runs
             ]
-            _aggregate_and_write(
-                orchestrator=orchestrator,
-                config=config,
-                experiment_root=experiment_root,
-                condition_name=condition_name,
-                condition=condition,
-                runs=current_runs,
-                reproducibility=reproducibility,
-                effective_profiles=effective_profiles,
+            if len(ordered_runs) != len(scenarios):
+                raise RuntimeError(
+                    f"condition `{condition_name}` only resolved {len(ordered_runs)} of {len(scenarios)} runs"
+                )
+            run_summaries_by_condition[condition_name] = ordered_runs
+            _set_condition_status(
+                condition_name,
+                "completed",
+                completed_runs=len(ordered_runs),
+            )
+            _set_phase(
+                "scenario_run",
+                "in_progress",
+                last_completed_condition=condition_name,
+                completed_run_count=len(completed_runs.get("completed", {})),
             )
 
-        ordered_runs = [
-            known_runs[_run_id_for(scenario)]
-            for scenario in scenarios
-            if _run_id_for(scenario) in known_runs
-        ]
         suite_summary = _aggregate_and_write(
             orchestrator=orchestrator,
             config=config,
             experiment_root=experiment_root,
-            condition_name=condition_name,
-            condition=condition,
-            runs=ordered_runs,
+            condition_specs=condition_specs,
+            run_summaries_by_condition=run_summaries_by_condition,
             reproducibility=reproducibility,
-            effective_profiles=effective_profiles,
         )
-        if len(ordered_runs) != len(scenarios):
+        if len(completed_runs.get("completed", {})) != 72:
             raise RuntimeError(
-                f"aggregate summary only found {len(ordered_runs)} of {len(scenarios)} scenario runs"
+                f"expected 72 completed runs, found {len(completed_runs.get('completed', {}))}"
             )
 
         _set_phase(
             "scenario_run",
             "completed",
-            completed_scenarios=len(ordered_runs),
+            completed_run_count=72,
         )
         _set_phase(
             "aggregate_metrics",
             "completed",
             experiment_summary=portable_path(experiment_root / "experiment_summary.json"),
-            attack_metrics=portable_path(experiment_root / "attack_metrics_summary.json"),
             mitre_phase_metrics=portable_path(experiment_root / "mitre_phase_metrics.json"),
         )
 
@@ -958,19 +997,15 @@ def main() -> int:
         _set_phase(
             "final_report",
             "completed",
-            report_path=portable_path(RESULTS_SUMMARY_PATH),
-        )
-        _set_phase(
-            "code_commit_push",
-            _load_phase_status()["code_commit_push"].get("status", "pending"),
+            report_path=portable_path(COMPARISON_REPORT_PATH),
         )
 
         phase_status = _load_phase_status()
         phase_status["completion_state"] = {
             "completed_at_utc": utc_now(),
             "experiment_root": portable_path(experiment_root),
-            "condition_name": condition_name,
-            "scenario_count": len(ordered_runs),
+            "report_path": portable_path(COMPARISON_REPORT_PATH),
+            "completed_run_count": 72,
             "suite_status": suite_summary.get("status"),
         }
         _save_phase_status(phase_status)

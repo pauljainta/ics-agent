@@ -106,7 +106,7 @@ class RemoteAwareFakeEnvironment(FakeEnvironment):
 def test_stronger_white_box_optionb_config_is_seeded_and_single_condition() -> None:
     config = load_config(
         "/home/researcher/Agentic_ICS/ics-agent/configs/experiments/"
-        "sphere_optionb_mitre_white_box_agentic_pair18_fast_containment_stronger.yaml"
+        "sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml"
     )
 
     assert config["experiment_name"] == "DefendervsWhiteBoxAttackerStronger"

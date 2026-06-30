@@ -1,5 +1,5 @@
-experiment_name: sphere_optionb_mitre_pairs18
-experiment_id: sphere_optionb_mitre_pairs18
+experiment_name: sphere_optionb_mitre_rule_scripted_pairs18
+experiment_id: sphere_optionb_mitre_rule_scripted_pairs18
 scenario_selectors:
   - attack/*
 repeats: 1

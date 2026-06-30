@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Run one staged Option B attacker-vs-agentic-defender pair.
+
+Current supported pair configs:
+- black-box attacker vs current fast-containment agentic defender
+- gray-box attacker vs current fast-containment agentic defender
+- white-box attacker vs current fast-containment agentic defender
+"""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +30,12 @@ from ics_agent.utils import utc_now
 
 
 SEED = 20260623
-CONFIG_PATH = REPO_ROOT / "configs" / "experiments" / "sphere_optionb_mitre_gray_box_agentic_pair18_fast_containment.yaml"
+CONFIG_PATH = (
+    REPO_ROOT
+    / "configs"
+    / "experiments"
+    / "sphere_optionb_mitre_gray_box_vs_agentic_defender_fast_containment.yaml"
+)
 RESULTS_ROOT = WORKSPACE_ROOT / "Artifact" / "Results" / "DefendervsGrayBoxAttacker"
 PROGRESS_ROOT = RESULTS_ROOT / "_progress"
 PHASE_STATUS_PATH = PROGRESS_ROOT / "phase_status.json"
@@ -86,7 +98,10 @@ KNOWLEDGE_NOTE_LINES: dict[str, list[str]] = {
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a seeded staged Option B attacker-vs-agentic-defender study."
+        description=(
+            "Run one seeded staged Option B attacker-vs-agentic-defender pair "
+            "using an explicit pair config."
+        )
     )
     parser.add_argument(
         "config",
