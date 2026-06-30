@@ -1091,6 +1091,8 @@ class AgenticRoleAgent(RoleAgent):
                 "Use system_knowledge as prior context for interpreting evidence, not as proof that an unobserved condition is true.",
                 "Do not assume hidden simulator state, future defender actions, evaluator annotations, or authored attack recipes.",
                 "Choose only from candidate_actions and use live telemetry to confirm the most promising control surface before manipulation.",
+                "Prefer short-horizon, high-leverage paths once topology, safety bounds, and control semantics make a bounded impact path plausible.",
+                "Avoid redundant reconnaissance after a surface is high-confidence unless fresh live evidence is still missing.",
                 "Keep the MITRE-inspired staged chain intact even when topology or control semantics suggest a likely surface early.",
             ]
         elif black_box:
@@ -2795,9 +2797,25 @@ class AgenticRoleAgent(RoleAgent):
             recent_alerts=recent_alerts,
             recent_action_effects=recent_action_effects,
         )
+        commitment = dict(state.get("exploit_commitment") or {})
+        internal_commitment = self._state.setdefault("role_memory", {}).setdefault(
+            "_exploit_commitment",
+            {
+                "surface": "unknown",
+                "template": None,
+                "remaining_steps": 0,
+                "stall_count": 0,
+                "next_goal": None,
+                "target_sensor": None,
+                "sensor_direction": None,
+                "preferred_chemical": None,
+                "last_surface_switch_time_sec": None,
+            },
+        )
         prior_surfaces = self._white_box_surface_priors(
             observation=observation,
             telemetry_summary=telemetry_summary,
+            safety_bounds=dict(context["scenario"].metadata.get("safety_bounds", {})),
         )
         if prior_surfaces:
             existing = list(state.get("candidate_leverage_hypotheses", []))
@@ -2811,13 +2829,60 @@ class AgenticRoleAgent(RoleAgent):
                 merged.append(item)
             state["candidate_leverage_hypotheses"] = merged[:3]
             state["white_box_surface_priors"] = prior_surfaces[:3]
-            if str(state.get("best_known_attack_surface") or "unknown") == "unknown":
-                top_surface = str((prior_surfaces[0] or {}).get("surface") or "unknown")
-                top_confidence = float((prior_surfaces[0] or {}).get("confidence") or 0.0)
-                if top_surface != "unknown" and top_confidence >= 0.55:
-                    state["best_known_attack_surface"] = top_surface
+            top_prior = dict(prior_surfaces[0] or {})
+            top_surface = str(top_prior.get("surface") or "unknown")
+            top_confidence = float(top_prior.get("confidence") or 0.0)
+            top_steps = int(top_prior.get("estimated_steps_to_effect") or 3)
+            direct_commit = bool(
+                top_surface != "unknown"
+                and (top_confidence >= 0.72 or top_steps <= 1)
+            )
+            state["white_box_direct_commit"] = direct_commit
+            state["white_box_commitment_pressure"] = (
+                "high"
+                if direct_commit
+                else "medium"
+                if top_confidence >= 0.55
+                else "low"
+            )
+            if top_surface != "unknown" and top_confidence >= 0.48:
+                state["best_known_attack_surface"] = top_surface
+            if direct_commit:
+                internal_commitment["surface"] = top_surface
+                internal_commitment["template"] = self._gray_box_template_for_surface(
+                    top_surface
+                )
+                internal_commitment["remaining_steps"] = max(
+                    int(internal_commitment.get("remaining_steps", 0) or 0),
+                    3,
+                )
+                if top_surface == "sensor_manipulation":
+                    internal_commitment["target_sensor"] = top_prior.get(
+                        "preferred_target"
+                    )
+                    internal_commitment["sensor_direction"] = top_prior.get(
+                        "preferred_direction"
+                    )
+                elif top_surface == "process2_manual_path":
+                    internal_commitment["preferred_chemical"] = top_prior.get(
+                        "preferred_chemical"
+                    )
+                commitment = {
+                    "surface": internal_commitment.get("surface"),
+                    "template": internal_commitment.get("template"),
+                    "remaining_steps": int(
+                        internal_commitment.get("remaining_steps", 0) or 0
+                    ),
+                    "stall_count": int(
+                        internal_commitment.get("stall_count", 0) or 0
+                    ),
+                    "next_goal": internal_commitment.get("next_goal"),
+                }
+                state["exploit_commitment"] = commitment
         else:
             state.pop("white_box_surface_priors", None)
+            state.pop("white_box_direct_commit", None)
+            state.pop("white_box_commitment_pressure", None)
         state["knowledge_scope"] = "white_box"
         state["rolling_summary"] = (
             f"{state.get('rolling_summary', '').rstrip('.')} "
@@ -2830,6 +2895,7 @@ class AgenticRoleAgent(RoleAgent):
         *,
         observation: dict[str, Any],
         telemetry_summary: dict[str, Any],
+        safety_bounds: dict[str, Any],
     ) -> list[dict[str, Any]]:
         state_name = str(observation.get("STATE_NAME", "")).upper()
         relationship_notes = set(
@@ -2838,30 +2904,89 @@ class AgenticRoleAgent(RoleAgent):
         risk_flags = set(str(item) for item in telemetry_summary.get("risk_flags", []))
         active_alarms = set(str(item) for item in telemetry_summary.get("active_alarms", []))
         open_chemicals = self._gray_box_open_chemicals(observation)
+        sensor_profiles = dict(
+            self._white_box_sensor_breach_profiles(
+                observation=observation,
+                safety_bounds=safety_bounds,
+            )
+        )
+        preferred_sensor = self._gray_box_preconditions(
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            defender_attention="low",
+        ).get("preferred_sensor")
         scores = {
             "process2_manual_path": 0.0,
             "sensor_manipulation": 0.0,
             "availability_disruption": 0.0,
         }
         basis: dict[str, list[str]] = {surface: [] for surface in scores}
+        hints: dict[str, dict[str, Any]] = {
+            "process2_manual_path": {
+                "estimated_steps_to_effect": 3,
+                "preferred_target": None,
+                "preferred_direction": None,
+                "preferred_chemical": None,
+                "immediate_impact": False,
+            },
+            "sensor_manipulation": {
+                "estimated_steps_to_effect": 2,
+                "preferred_target": None,
+                "preferred_direction": "high",
+                "preferred_chemical": None,
+                "immediate_impact": False,
+            },
+            "availability_disruption": {
+                "estimated_steps_to_effect": 2,
+                "preferred_target": None,
+                "preferred_direction": None,
+                "preferred_chemical": None,
+                "immediate_impact": False,
+            },
+        }
 
+        if "P2_Selected" in observation:
+            scores["process2_manual_path"] += 1.0
+            basis["process2_manual_path"].append("process2_control_path_present")
         if self._is_active_flag(observation.get("P2_Selected")):
             scores["process2_manual_path"] += 1.2
             basis["process2_manual_path"].append("P2_Selected=1")
+            hints["process2_manual_path"]["estimated_steps_to_effect"] = min(
+                int(hints["process2_manual_path"]["estimated_steps_to_effect"]),
+                2 if state_name not in {"RUNNING", "STARTING"} else 1,
+            )
         if open_chemicals:
             scores["process2_manual_path"] += 1.0 + (0.25 * len(open_chemicals))
             basis["process2_manual_path"].append(
                 "open_valves=" + ",".join(open_chemicals[:3])
             )
+            hints["process2_manual_path"]["estimated_steps_to_effect"] = 1
+            hints["process2_manual_path"]["immediate_impact"] = True
         depletion_flags = [
             flag for flag in sorted(risk_flags) if flag.endswith("_depleting")
         ]
         if depletion_flags:
             scores["process2_manual_path"] += 1.2 + (0.2 * len(depletion_flags))
             basis["process2_manual_path"].append(depletion_flags[0])
+            hints["process2_manual_path"]["estimated_steps_to_effect"] = 1
+            hints["process2_manual_path"]["immediate_impact"] = True
         if "process2_manual_dosing_active" in relationship_notes:
             scores["process2_manual_path"] += 1.0
             basis["process2_manual_path"].append("manual_dosing_active")
+            hints["process2_manual_path"]["estimated_steps_to_effect"] = 1
+            hints["process2_manual_path"]["immediate_impact"] = True
+        if (
+            open_chemicals
+            or depletion_flags
+            or "process2_manual_dosing_active" in relationship_notes
+        ):
+            scores["process2_manual_path"] += 1.0
+            basis["process2_manual_path"].append("process2_live_path")
+        hints["process2_manual_path"]["preferred_chemical"] = self._gray_box_preferred_chemical(
+            observation=observation,
+            preferred="",
+            open_chemicals=open_chemicals,
+        )
 
         if {
             "raw_water_protection_risk",
@@ -2901,10 +3026,28 @@ class AgenticRoleAgent(RoleAgent):
         ):
             scores["sensor_manipulation"] += 0.8
             basis["sensor_manipulation"].append("abrupt_change")
+        if sensor_profiles:
+            ranked_sensor = max(
+                sensor_profiles.items(),
+                key=lambda item: self._white_box_sensor_target_priority(
+                    field_name=item[0],
+                    preferred_sensor=preferred_sensor,
+                    observation=observation,
+                ),
+            )
+            preferred_target = str(ranked_sensor[0])
+            scores["sensor_manipulation"] += 2.2
+            basis["sensor_manipulation"].append(f"bound_breach={preferred_target}")
+            hints["sensor_manipulation"]["preferred_target"] = preferred_target
+            hints["sensor_manipulation"]["preferred_direction"] = "high"
+            hints["sensor_manipulation"]["estimated_steps_to_effect"] = 1
+            hints["sensor_manipulation"]["immediate_impact"] = True
 
         if state_name in {"RUNNING", "STARTING"}:
             scores["availability_disruption"] += 0.9
             basis["availability_disruption"].append(f"state={state_name.lower()}")
+            hints["availability_disruption"]["estimated_steps_to_effect"] = 1
+            hints["availability_disruption"]["immediate_impact"] = True
         if "command_status_divergence" in risk_flags:
             scores["availability_disruption"] += 0.6
             basis["availability_disruption"].append("command_status_divergence")
@@ -2918,12 +3061,23 @@ class AgenticRoleAgent(RoleAgent):
             key=lambda item: (item[1], item[0]),
             reverse=True,
         ):
-            confidence = round(min(0.95, 0.28 + (score * 0.18)), 2)
+            step_bonus = max(
+                0.0,
+                (4 - float(hints[surface].get("estimated_steps_to_effect", 4))) * 0.08,
+            )
+            confidence = round(min(0.97, 0.26 + (score * 0.16) + step_bonus), 2)
             ranked.append(
                 {
                     "surface": surface,
                     "confidence": confidence,
                     "basis": basis[surface][:4],
+                    "estimated_steps_to_effect": int(
+                        hints[surface].get("estimated_steps_to_effect", 3) or 3
+                    ),
+                    "preferred_target": hints[surface].get("preferred_target"),
+                    "preferred_direction": hints[surface].get("preferred_direction"),
+                    "preferred_chemical": hints[surface].get("preferred_chemical"),
+                    "immediate_impact": bool(hints[surface].get("immediate_impact")),
                 }
             )
         return ranked
@@ -3033,6 +3187,20 @@ class AgenticRoleAgent(RoleAgent):
                     str(item.get("surface"))
                     for item in surface_priors
                     if str(item.get("surface", "")).strip()
+                ],
+                "surface_leverage_hints": [
+                    {
+                        "surface": str(item.get("surface")),
+                        "confidence": item.get("confidence"),
+                        "estimated_steps_to_effect": item.get(
+                            "estimated_steps_to_effect"
+                        ),
+                        "preferred_target": item.get("preferred_target"),
+                        "preferred_direction": item.get("preferred_direction"),
+                        "preferred_chemical": item.get("preferred_chemical"),
+                        "immediate_impact": item.get("immediate_impact"),
+                    }
+                    for item in surface_priors[:3]
                 ],
             },
             "control_logic_summary": {
@@ -6619,11 +6787,18 @@ class AgenticRoleAgent(RoleAgent):
             return [noop_candidate] if noop_candidate is not None else []
         if self.role == "attacker":
             if self._is_gray_box_attacker() or self._is_white_box_attacker():
-                candidates = self._gray_box_attacker_candidates(
-                    context=context,
-                    telemetry_summary=telemetry_summary,
-                    structured_memory=structured_memory,
-                )
+                if self._is_white_box_attacker():
+                    candidates = self._white_box_attacker_candidates(
+                        context=context,
+                        telemetry_summary=telemetry_summary,
+                        structured_memory=structured_memory,
+                    )
+                else:
+                    candidates = self._gray_box_attacker_candidates(
+                        context=context,
+                        telemetry_summary=telemetry_summary,
+                        structured_memory=structured_memory,
+                    )
             elif self._is_black_box_attacker():
                 candidates = self._black_box_candidate_actions(
                     context=context,
@@ -6723,7 +6898,6 @@ class AgenticRoleAgent(RoleAgent):
         mitre_context: dict[str, Any],
         qualification: bool,
     ) -> list[dict[str, Any]]:
-        del structured_memory
         allowed = set(self.profile.get("allowed_action_types", []))
         if "inspect_surface" not in allowed:
             noop_candidate = self._noop_candidate(
@@ -6750,6 +6924,12 @@ class AgenticRoleAgent(RoleAgent):
                 [],
             )
         )
+        if self._is_white_box_attacker():
+            candidate_surfaces = self._white_box_mitre_recon_surface_order(
+                candidate_surfaces,
+                structured_memory=structured_memory,
+                qualification=qualification,
+            )
         ordered_surfaces: list[str] = []
         for surface in candidate_surfaces:
             surface_name = str(surface).strip()
@@ -6919,6 +7099,454 @@ class AgenticRoleAgent(RoleAgent):
             ),
             reverse=True,
         )
+
+    def _white_box_attacker_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        allowed = set(self.profile.get("allowed_action_types", []))
+        observation = context.get("observation", {})
+        state_name = str(observation.get("STATE_NAME", "")).upper()
+        now = float(context.get("time_sec", 0.0))
+        memory_state = self._state.setdefault("role_memory", {})
+        surface_state = memory_state.get("_surface_state", {})
+        commitment = dict(memory_state.get("_exploit_commitment") or {})
+        preconditions = dict(structured_memory.get("simple_precondition_state") or {})
+        if not preconditions:
+            preconditions = self._gray_box_preconditions(
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                defender_attention=str(
+                    structured_memory.get("detection_pressure", "low")
+                ).lower(),
+            )
+        safety_bounds = dict(context["scenario"].metadata.get("safety_bounds", {}))
+        sensor_profiles = dict(
+            self._white_box_sensor_breach_profiles(
+                observation=observation,
+                safety_bounds=safety_bounds,
+            )
+        )
+        detection_pressure = str(
+            preconditions.get("defender_attention")
+            or structured_memory.get("detection_pressure", "low")
+        ).lower()
+        prior_actions = {
+            action_key(action)
+            for item in context.get("executed_actions", [])
+            if item.get("role") == "attacker"
+            for action in [normalize_action(item.get("action"))]
+            if action is not None
+        }
+        direct_commit = bool(structured_memory.get("white_box_direct_commit"))
+        current_phase = str(structured_memory.get("current_phase", "probing"))
+        committed_surface = str(
+            commitment.get("surface")
+            or structured_memory.get("best_known_attack_surface")
+            or "unknown"
+        )
+        observed_effect_map = {
+            str(item.get("surface")): float(item.get("score", 0.0) or 0.0)
+            for item in structured_memory.get("observed_effect_map", [])
+            if str(item.get("surface", "")).strip()
+        }
+        surface_bias: dict[str, float] = {}
+        focus_surfaces: list[str] = []
+        for item in structured_memory.get("white_box_surface_priors", []):
+            surface = str(item.get("surface") or "").strip()
+            if not surface:
+                continue
+            confidence = float(item.get("confidence", 0.0) or 0.0)
+            steps = int(item.get("estimated_steps_to_effect", 3) or 3)
+            bias = confidence * 34.0
+            bias += max(0.0, (4 - steps) * 16.0)
+            if item.get("immediate_impact"):
+                bias += 18.0
+            bias += observed_effect_map.get(surface, 0.0) * 8.0
+            surface_bias[surface] = round(bias, 3)
+            if surface not in focus_surfaces:
+                focus_surfaces.append(surface)
+        for surface in (
+            committed_surface,
+            str(structured_memory.get("best_known_attack_surface") or "unknown"),
+            "sensor_manipulation",
+            "process2_manual_path",
+            "availability_disruption",
+        ):
+            if surface and surface != "unknown" and surface not in focus_surfaces:
+                focus_surfaces.append(surface)
+        focus_surfaces.sort(
+            key=lambda surface: (
+                float(surface_bias.get(surface, 0.0)),
+                float(observed_effect_map.get(surface, 0.0)),
+                surface == committed_surface,
+                surface,
+            ),
+            reverse=True,
+        )
+        if committed_surface in focus_surfaces:
+            focus_surfaces.remove(committed_surface)
+            focus_surfaces.insert(0, committed_surface)
+        focus_surfaces = focus_surfaces[:3]
+        top_surface = focus_surfaces[0] if focus_surfaces else "sensor_manipulation"
+
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            summary: str,
+            action: dict[str, Any] | str | None,
+            *,
+            priority: int,
+            surface: str,
+            category: str,
+            source: str = "white_box",
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", ""))
+            if action_type not in allowed:
+                return
+            if (
+                action_type != "set_sensor"
+                and self._action_satisfied(normalized, observation=observation)
+            ):
+                return
+            payload = {
+                "id": action_key(normalized),
+                "summary": summary,
+                "action": normalized,
+                "source": source,
+                "priority": int(priority),
+                "surface": surface,
+                "category": category,
+            }
+            existing = candidates_by_id.get(payload["id"])
+            if existing is None or int(payload["priority"]) > int(
+                existing.get("priority", 0)
+            ):
+                candidates_by_id[payload["id"]] = payload
+
+        def surface_priority(surface: str, *, category: str) -> int:
+            base_map = {
+                "probe": 150,
+                "support": 154,
+                "exploit": 168,
+                "sustain": 172,
+                "escalate": 178,
+                "fallback": 142,
+                "recon": 96,
+                "hold": 16,
+            }
+            priority = base_map.get(category, 140)
+            priority += int(round(surface_bias.get(surface, 0.0)))
+            if direct_commit and surface == top_surface and category != "recon":
+                priority += 8
+            if committed_surface != "unknown" and surface == committed_surface:
+                priority += 4
+            if detection_pressure == "high" and category == "recon":
+                priority -= 8
+            return priority
+
+        preferred_sensor = None
+        if sensor_profiles:
+            preferred_sensor = max(
+                sensor_profiles,
+                key=lambda field_name: self._white_box_sensor_target_priority(
+                    field_name=field_name,
+                    preferred_sensor=preconditions.get("preferred_sensor"),
+                    observation=observation,
+                ),
+            )
+        sensor_surface_state = dict(surface_state.get("sensor_manipulation", {}))
+        if preferred_sensor and preferred_sensor in sensor_profiles:
+            profile = dict(sensor_profiles[preferred_sensor])
+            ceiling = self._coerce_number(
+                (safety_bounds.get(preferred_sensor) or {}).get("max")
+            )
+            high_breach = int(profile.get("high_breach", profile.get("ceiling", 0)))
+            high_extreme = int(profile.get("high_extreme", high_breach))
+            breach_action = {
+                "type": "set_sensor",
+                "name": preferred_sensor,
+                "value": high_breach,
+            }
+            add_candidate(
+                self._white_box_candidate_summary(
+                    action=breach_action,
+                    surface="sensor_manipulation",
+                    category="exploit",
+                    safety_bounds=safety_bounds,
+                    structured_memory=structured_memory,
+                ),
+                breach_action,
+                priority=surface_priority(
+                    "sensor_manipulation",
+                    category="exploit",
+                ),
+                surface="sensor_manipulation",
+                category="exploit",
+            )
+            if high_extreme != high_breach:
+                extreme_action = {
+                    "type": "set_sensor",
+                    "name": preferred_sensor,
+                    "value": high_extreme,
+                }
+                add_candidate(
+                    self._white_box_candidate_summary(
+                        action=extreme_action,
+                        surface="sensor_manipulation",
+                        category="escalate",
+                        safety_bounds=safety_bounds,
+                        structured_memory=structured_memory,
+                    ),
+                    extreme_action,
+                    priority=surface_priority(
+                        "sensor_manipulation",
+                        category="escalate",
+                    ),
+                    surface="sensor_manipulation",
+                    category="escalate",
+                )
+            last_value = sensor_surface_state.get("last_value")
+            if last_value is not None and ceiling is not None and float(last_value) > float(
+                ceiling
+            ):
+                sustain_action = {
+                    "type": "set_sensor",
+                    "name": preferred_sensor,
+                    "value": last_value,
+                }
+                add_candidate(
+                    self._white_box_candidate_summary(
+                        action=sustain_action,
+                        surface="sensor_manipulation",
+                        category="sustain",
+                        safety_bounds=safety_bounds,
+                        structured_memory=structured_memory,
+                    ),
+                    sustain_action,
+                    priority=surface_priority(
+                        "sensor_manipulation",
+                        category="sustain",
+                    ),
+                    surface="sensor_manipulation",
+                    category="sustain",
+                )
+
+        process2_surface_state = dict(surface_state.get("process2_manual_path", {}))
+        p2_selected = bool(
+            preconditions.get(
+                "process2_enabled",
+                self._is_active_flag(observation.get("P2_Selected")),
+            )
+        )
+        plant_running = bool(
+            preconditions.get("plant_running", state_name in {"RUNNING", "STARTING"})
+        )
+        open_chemicals = list(
+            preconditions.get("manual_open_chemicals")
+            or self._gray_box_open_chemicals(observation)
+        )
+        preferred_chemical = self._gray_box_preferred_chemical(
+            observation=observation,
+            preferred=str(
+                commitment.get("preferred_chemical")
+                or process2_surface_state.get("preferred_target")
+                or ""
+            ),
+            open_chemicals=open_chemicals,
+        )
+        if "select_process" in allowed and not p2_selected:
+            select_action = {
+                "process_id": "WT-P2",
+                "type": "select_process",
+                "active": True,
+            }
+            add_candidate(
+                self._white_box_candidate_summary(
+                    action=select_action,
+                    surface="process2_manual_path",
+                    category="exploit" if top_surface == "process2_manual_path" else "support",
+                    safety_bounds=safety_bounds,
+                    structured_memory=structured_memory,
+                ),
+                select_action,
+                priority=surface_priority(
+                    "process2_manual_path",
+                    category="exploit"
+                    if top_surface == "process2_manual_path"
+                    else "support",
+                ),
+                surface="process2_manual_path",
+                category="exploit"
+                if top_surface == "process2_manual_path"
+                else "support",
+            )
+        if "set_manual_valve" in allowed and p2_selected:
+            chemicals = [preferred_chemical] + [
+                chemical
+                for chemical in self._available_chemicals(observation)
+                if chemical != preferred_chemical
+            ]
+            for index, chemical in enumerate(chemicals[:2]):
+                valve_action = {
+                    "process_id": "WT-P2",
+                    "type": "set_manual_valve",
+                    "chemical": chemical,
+                    "open": True,
+                }
+                add_candidate(
+                    self._white_box_candidate_summary(
+                        action=valve_action,
+                        surface="process2_manual_path",
+                        category="escalate" if chemical in open_chemicals else "exploit",
+                        safety_bounds=safety_bounds,
+                        structured_memory=structured_memory,
+                    ),
+                    valve_action,
+                    priority=surface_priority(
+                        "process2_manual_path",
+                        category="escalate" if chemical in open_chemicals else "exploit",
+                    )
+                    - (index * 4),
+                    surface="process2_manual_path",
+                    category="escalate" if chemical in open_chemicals else "exploit",
+                )
+        if (
+            "hmi_start" in allowed
+            and not plant_running
+            and top_surface in {"process2_manual_path", "availability_disruption"}
+        ):
+            start_action = {"type": "hmi_start", "process_id": "WT-P1"}
+            add_candidate(
+                self._white_box_candidate_summary(
+                    action=start_action,
+                    surface=top_surface,
+                    category="support",
+                    safety_bounds=safety_bounds,
+                    structured_memory=structured_memory,
+                ),
+                start_action,
+                priority=surface_priority(top_surface, category="support"),
+                surface=top_surface,
+                category="support",
+            )
+        if plant_running:
+            if "hmi_estop" in allowed:
+                estop_action = {"type": "hmi_estop", "process_id": "WT-P1"}
+                add_candidate(
+                    self._white_box_candidate_summary(
+                        action=estop_action,
+                        surface="availability_disruption",
+                        category="exploit",
+                        safety_bounds=safety_bounds,
+                        structured_memory=structured_memory,
+                    ),
+                    estop_action,
+                    priority=surface_priority(
+                        "availability_disruption",
+                        category="exploit",
+                    ),
+                    surface="availability_disruption",
+                    category="exploit",
+                )
+            if "hmi_stop" in allowed:
+                stop_action = {"type": "hmi_stop", "process_id": "WT-P1"}
+                add_candidate(
+                    self._white_box_candidate_summary(
+                        action=stop_action,
+                        surface="availability_disruption",
+                        category="fallback",
+                        safety_bounds=safety_bounds,
+                        structured_memory=structured_memory,
+                    ),
+                    stop_action,
+                    priority=surface_priority(
+                        "availability_disruption",
+                        category="fallback",
+                    ),
+                    surface="availability_disruption",
+                    category="fallback",
+                )
+
+        actionable = [
+            item
+            for item in candidates_by_id.values()
+            if normalize_action(item.get("action")) != {"type": "noop"}
+        ]
+        if (
+            not actionable
+            or (
+                not direct_commit
+                and current_phase in {"initial_observation", "reconnaissance", "reorient"}
+            )
+        ) and "inspect_surface" in allowed:
+            for index, surface_name in enumerate(
+                self._white_box_mitre_recon_surface_order(
+                    [
+                        "alarm_bits",
+                        "process2_control_plane",
+                        "actuator_state_bits",
+                        "tags",
+                    ],
+                    structured_memory=structured_memory,
+                    qualification=False,
+                )[:2]
+            ):
+                recon_action = {"type": "inspect_surface", "surface": surface_name}
+                add_candidate(
+                    self._white_box_candidate_summary(
+                        action=recon_action,
+                        surface=top_surface,
+                        category="recon",
+                        safety_bounds=safety_bounds,
+                        structured_memory=structured_memory,
+                    ),
+                    recon_action,
+                    priority=surface_priority(top_surface, category="recon") - (index * 6),
+                    surface=top_surface,
+                    category="recon",
+                )
+
+        noop_candidate = self._noop_candidate(
+            "Hold only if every bounded short-horizon impact path is currently blocked."
+        )
+        if noop_candidate is not None:
+            noop_candidate["priority"] = surface_priority(top_surface, category="hold")
+            noop_candidate["surface"] = top_surface
+            noop_candidate["category"] = "hold"
+            candidates_by_id.setdefault(noop_candidate["id"], noop_candidate)
+
+        ranked = sorted(
+            candidates_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                item["id"],
+            ),
+            reverse=True,
+        )
+        hold = next(
+            (
+                item
+                for item in ranked
+                if normalize_action(item.get("action")) == {"type": "noop"}
+            ),
+            None,
+        )
+        selected = [
+            item
+            for item in ranked
+            if normalize_action(item.get("action")) != {"type": "noop"}
+        ][:8]
+        if hold is not None:
+            selected.append(hold)
+        return selected
 
     def _gray_box_attacker_candidates(
         self,
@@ -7600,6 +8228,53 @@ class AgenticRoleAgent(RoleAgent):
             selected.append(hold)
         return selected
 
+    def _white_box_candidate_summary(
+        self,
+        *,
+        action: dict[str, Any],
+        surface: str,
+        category: str,
+        safety_bounds: dict[str, Any],
+        structured_memory: dict[str, Any],
+    ) -> str:
+        action_type = str(action.get("type", "unknown"))
+        if action_type == "inspect_surface":
+            surface_name = str(action.get("surface", "unknown"))
+            return (
+                f"Inspect `{surface_name}` once to confirm the fastest white-box leverage path."
+            )
+        if action_type == "set_sensor":
+            field_name = str(action.get("name", "sensor"))
+            value = action.get("value")
+            ceiling = self._coerce_number((safety_bounds.get(field_name) or {}).get("max"))
+            if ceiling is not None and self._coerce_number(value) is not None:
+                if float(value) > float(ceiling):
+                    if category == "sustain":
+                        return (
+                            f"Sustain `{field_name}` above its known `{int(ceiling)}` max."
+                        )
+                    return (
+                        f"Drive `{field_name}` above its known `{int(ceiling)}` max immediately."
+                    )
+            return f"Bias `{field_name}` harder to pressure the shortest sensor path."
+        if action_type == "select_process":
+            return "Commit to the Process 2 manual path instead of rediscovering it."
+        if action_type == "set_manual_valve":
+            chemical = str(action.get("chemical", "unknown"))
+            if action.get("open", True):
+                return f"Open `{chemical}` now to extend the Process 2 attack chain."
+            return f"Close `{chemical}` only if reorienting off the Process 2 path."
+        if action_type == "hmi_start":
+            return "Start WT-P1 now so the chosen white-box attack path becomes effectful."
+        if action_type == "hmi_stop":
+            return "Stop WT-P1 to force controlled availability impact on the running plant."
+        if action_type == "hmi_estop":
+            return "Escalate to estop on the running plant when availability impact is shortest."
+        if category == "hold":
+            return "Hold only if no bounded high-leverage action can produce faster impact."
+        surface_name = str(structured_memory.get("best_known_attack_surface") or surface)
+        return f"Advance the bounded `{surface_name}` attack path."
+
     @staticmethod
     def _attacker_surface_from_action_type(action_type: str) -> str:
         if action_type in {"select_process", "set_manual_valve"}:
@@ -7663,6 +8338,109 @@ class AgenticRoleAgent(RoleAgent):
                 high_values[-1] += 1
             profiles.append((field, {"low": low_values, "high": high_values}))
         return profiles
+
+    def _white_box_sensor_breach_profiles(
+        self,
+        *,
+        observation: dict[str, Any],
+        safety_bounds: dict[str, Any],
+    ) -> list[tuple[str, dict[str, int]]]:
+        profiles: list[tuple[str, dict[str, int]]] = []
+        for field, bounds in safety_bounds.items():
+            if field not in observation:
+                continue
+            current = self._coerce_number(observation.get(field))
+            minimum = self._coerce_number((bounds or {}).get("min"))
+            maximum = self._coerce_number((bounds or {}).get("max"))
+            if current is None or minimum is None or maximum is None or maximum <= minimum:
+                continue
+            span = max(1.0, maximum - minimum)
+            high_breach = int(round(min(65535.0, maximum + max(40.0, span * 0.1))))
+            high_extreme = int(
+                round(min(65535.0, maximum + max(120.0, span * 0.25)))
+            )
+            profiles.append(
+                (
+                    str(field),
+                    {
+                        "high_breach": high_breach,
+                        "high_extreme": max(high_breach, high_extreme),
+                        "high_alarm": int(round(min(maximum, maximum - max(10.0, span * 0.03)))),
+                        "ceiling": int(round(maximum)),
+                    },
+                )
+            )
+        return profiles
+
+    def _white_box_sensor_target_priority(
+        self,
+        *,
+        field_name: str,
+        preferred_sensor: Any,
+        observation: dict[str, Any],
+    ) -> float:
+        score = 0.0
+        if field_name == str(preferred_sensor or ""):
+            score += 2.0
+        if field_name == "RW_Tank_Level":
+            score += 3.2
+        elif field_name == "UF_UFFT_Tank_Level":
+            score += 2.4
+        elif field_name.startswith("ChemTreat_"):
+            score += 1.6
+            if self._is_active_flag(observation.get("P2_Selected")):
+                score += 0.8
+        current = self._coerce_number(observation.get(field_name))
+        if current is not None and current >= 500.0:
+            score += 0.4
+        return score
+
+    def _white_box_mitre_recon_surface_order(
+        self,
+        candidate_surfaces: list[Any],
+        *,
+        structured_memory: dict[str, Any],
+        qualification: bool,
+    ) -> list[str]:
+        discovery_map = {
+            "process2_manual_path": [
+                "process2_control_plane",
+                "tags",
+                "registers",
+            ],
+            "sensor_manipulation": ["alarm_bits", "tags", "registers"],
+            "availability_disruption": [
+                "io_image",
+                "actuator_state_bits",
+                "tags",
+            ],
+        }
+        qualification_map = {
+            "process2_manual_path": [
+                "process2_control_plane",
+                "actuator_state_bits",
+            ],
+            "sensor_manipulation": ["alarm_bits", "tags"],
+            "availability_disruption": ["actuator_state_bits", "io_image"],
+        }
+        preferred_surface = str(
+            structured_memory.get("best_known_attack_surface")
+            or ((structured_memory.get("white_box_surface_priors") or [{}])[0] or {}).get(
+                "surface"
+            )
+            or "unknown"
+        )
+        preferred_order = (
+            qualification_map if qualification else discovery_map
+        ).get(preferred_surface, [])
+        normalized_candidates = [
+            str(surface).strip() for surface in candidate_surfaces if str(surface).strip()
+        ]
+        ordered: list[str] = []
+        for surface in preferred_order + normalized_candidates:
+            if surface and surface not in ordered and surface in normalized_candidates:
+                ordered.append(surface)
+        return ordered or normalized_candidates
 
     @staticmethod
     def _available_chemicals(observation: dict[str, Any]) -> list[str]:
@@ -7819,6 +8597,7 @@ class AgenticRoleAgent(RoleAgent):
             and str(structured_memory.get("current_phase", "")) not in {"reconnaissance", "reorient"}
         )
         recon_budget_remaining = int(structured_memory.get("recon_budget_remaining", 0) or 0)
+        white_box_direct_commit = bool(structured_memory.get("white_box_direct_commit"))
         selected_candidate = None
         candidate_id = payload.get("candidate_id")
         selected_action = normalize_action(payload.get("action"))
@@ -7879,6 +8658,22 @@ class AgenticRoleAgent(RoleAgent):
         ):
             override = True
         elif selected_action is None and must_commit and int(top_exploit.get("priority", 0)) >= 132:
+            override = True
+        elif (
+            self._is_white_box_attacker()
+            and white_box_direct_commit
+            and selected_candidate is not None
+            and str(selected_candidate.get("category", "")) in {"recon", "hold"}
+            and int(top_exploit.get("priority", 0))
+            >= int(selected_candidate.get("priority", 0)) + 6
+        ):
+            override = True
+        elif (
+            self._is_white_box_attacker()
+            and white_box_direct_commit
+            and selected_action is None
+            and int(top_exploit.get("priority", 0)) >= 156
+        ):
             override = True
 
         if not override:

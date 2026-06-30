@@ -6,6 +6,7 @@ import json
 import yaml
 
 from ics_agent.agents import RuleBasedRoleAgent, ScriptedRoleAgent
+from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.types import RoleDecision, RunBundle
 
@@ -100,6 +101,24 @@ class RemoteAwareFakeEnvironment(FakeEnvironment):
 
     def record_role_runtime(self, role: str, runtime_info: dict[str, object]) -> None:
         self.runtime_records.append((role, dict(runtime_info)))
+
+
+def test_stronger_white_box_optionb_config_is_seeded_and_single_condition() -> None:
+    config = load_config(
+        "/home/researcher/Agentic_ICS/ics-agent/configs/experiments/"
+        "sphere_optionb_mitre_white_box_agentic_pair18_fast_containment_stronger.yaml"
+    )
+
+    assert config["experiment_name"] == "DefendervsWhiteBoxAttackerStronger"
+    assert config["experiment_id"] == "DefendervsWhiteBoxAttackerStronger"
+    assert config["reproducibility"]["seed"] == 20260623
+    assert config["results_root"] == "../../../Artifact/Results"
+    assert len(config["conditions"]) == 1
+    assert config["conditions"][0]["name"] == "white_box_attacker__agentic_defender"
+    attacker_override = config["conditions"][0]["profile_overrides"]["attacker"]
+    assert attacker_override["action_cooldown_sec"] == 0.5
+    assert attacker_override["reasoning_cooldown_sec"] == 1.0
+    assert attacker_override["reasoning_refresh_sec"] == 2.0
 
 
 def test_orchestrator_runs_live_smoke_with_fake_environment(
