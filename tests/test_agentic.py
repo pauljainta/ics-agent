@@ -2161,6 +2161,415 @@ def test_gray_box_attacker_suppresses_availability_chatter_after_stall() -> None
     )
 
 
+def test_white_box_attacker_context_exposes_richer_system_knowledge_without_oracle_fields() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "white_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_white_box_attacker", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 8.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "RW_Tank_Level": 430,
+                "Alarm_RW_Tank_LL": 1,
+                "ChemTreat_HCl_Level": 760,
+                "ChemTreat_HCl_Valve_Sts": 1,
+            },
+            "observations": [
+                {
+                    "STATE_NAME": "RUNNING",
+                    "P2_Selected": 1,
+                    "RW_Tank_Level": 520,
+                    "ChemTreat_HCl_Level": 800,
+                    "ChemTreat_HCl_Valve_Sts": 0,
+                }
+            ],
+            "executed_actions": [
+                {
+                    "role": "attacker",
+                    "time_sec": 6.0,
+                    "action": {
+                        "type": "select_process",
+                        "process_id": "WT-P2",
+                        "active": True,
+                    },
+                },
+                {
+                    "role": "attacker",
+                    "time_sec": 7.0,
+                    "action": {
+                        "type": "set_manual_valve",
+                        "process_id": "WT-P2",
+                        "chemical": "HCl",
+                        "open": True,
+                    },
+                },
+            ],
+            "decisions": [],
+            "alerts": [
+                {
+                    "role": "observer",
+                    "time_sec": 7.5,
+                    "decision_type": "alert",
+                    "summary": "Process 2 remains suspicious.",
+                    "diagnosis": "unauthorized_chemical_dosing",
+                }
+            ],
+            "playbooks": {
+                "attacker": [
+                    {
+                        "time_sec": 10.0,
+                        "action": {
+                            "type": "set_manual_valve",
+                            "process_id": "WT-P2",
+                            "chemical": "HCl",
+                            "open": True,
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+    assert context["scenario_id"] == "white-box-attack-live"
+    assert context["remaining_playbook"] == []
+    assert context["expected_outcomes"] == []
+    assert context["safety_bounds"]["RW_Tank_Level"]["max"] == 1200
+    assert context["structured_memory"]["knowledge_scope"] == "white_box"
+    assert context["structured_memory"]["best_known_attack_surface"] == "process2_manual_path"
+    assert context["system_knowledge"]["knowledge_regime"] == "white_box"
+    assert context["system_knowledge"]["topology"]["process_paths"][1]["asset"] == "WT-P2"
+    assert context["system_knowledge"]["control_semantics"]["set_manual_valve"].startswith(
+        "Opens or closes"
+    )
+    assert context["system_knowledge"]["process_context"]["preferred_surface_order"][0] == (
+        "process2_manual_path"
+    )
+    assert "_processed_attacker_events" not in context["structured_memory"]
+    serialized = json.dumps(context)
+    assert "ground_truth" not in serialized
+    assert "expected_defender_actions" not in serialized
+    assert "timeline" not in serialized
+    assert "summary" not in context["recent_alerts"][0]
+    assert "diagnosis" not in context["recent_alerts"][0]
+
+
+def test_gray_and_white_box_attacker_prompts_use_json_serializable_contexts() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    base_context = {
+        "scenario": scenario,
+        "time_sec": 8.0,
+        "observation": {
+            "STATE_NAME": "RUNNING",
+            "P2_Selected": 1,
+            "RW_Tank_Level": 430,
+            "Alarm_RW_Tank_LL": 1,
+            "ChemTreat_HCl_Level": 760,
+            "ChemTreat_HCl_Valve_Sts": 1,
+        },
+        "observations": [
+            {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "RW_Tank_Level": 520,
+                "ChemTreat_HCl_Level": 800,
+                "ChemTreat_HCl_Valve_Sts": 0,
+            }
+        ],
+        "executed_actions": [
+            {
+                "role": "attacker",
+                "time_sec": 6.0,
+                "action": {
+                    "type": "select_process",
+                    "process_id": "WT-P2",
+                    "active": True,
+                },
+            },
+            {
+                "role": "attacker",
+                "time_sec": 7.0,
+                "action": {
+                    "type": "set_manual_valve",
+                    "process_id": "WT-P2",
+                    "chemical": "HCl",
+                    "open": True,
+                },
+            },
+        ],
+        "decisions": [],
+        "alerts": [],
+        "playbooks": {},
+    }
+
+    for mode in ("gray_box", "white_box"):
+        agent = AgenticRoleAgent(
+            f"pytest_{mode}_prompt_serialization",
+            {
+                "role": "attacker",
+                "family": "agentic",
+                "knowledge_mode": mode,
+                "allowed_action_types": [
+                    "inspect_surface",
+                    "select_process",
+                    "set_manual_valve",
+                    "set_sensor",
+                    "hmi_start",
+                    "hmi_stop",
+                    "noop",
+                ],
+                "llm": {
+                    "backend": "qwen_langgraph",
+                    "strict_backend": True,
+                },
+            },
+        )
+        agent.reset(scenario)
+        online_context = agent._build_online_context(base_context)
+
+        json.dumps(online_context)
+        prompt = agent.engine._format_prompt(online_context)
+
+        assert '"scenario_id"' in prompt
+
+
+def test_white_box_attacker_context_is_richer_than_gray_and_black_box() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    base_context = {
+        "scenario": scenario,
+        "time_sec": 8.0,
+        "observation": {
+            "STATE_NAME": "RUNNING",
+            "P2_Selected": 1,
+            "RW_Tank_Level": 430,
+            "Alarm_RW_Tank_LL": 1,
+            "ChemTreat_HCl_Level": 760,
+            "ChemTreat_HCl_Valve_Sts": 1,
+        },
+        "observations": [
+            {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 1,
+                "RW_Tank_Level": 520,
+                "ChemTreat_HCl_Level": 800,
+                "ChemTreat_HCl_Valve_Sts": 0,
+            }
+        ],
+        "executed_actions": [
+            {
+                "role": "attacker",
+                "time_sec": 6.0,
+                "action": {
+                    "type": "select_process",
+                    "process_id": "WT-P2",
+                    "active": True,
+                },
+            }
+        ],
+        "decisions": [],
+        "alerts": [],
+        "playbooks": {},
+    }
+
+    def build(mode: str) -> dict[str, object]:
+        agent = AgenticRoleAgent(
+            f"pytest_{mode}_attacker",
+            {
+                "role": "attacker",
+                "family": "agentic",
+                "knowledge_mode": mode,
+                "allowed_action_types": [
+                    "inspect_surface",
+                    "select_process",
+                    "set_manual_valve",
+                    "set_sensor",
+                    "hmi_start",
+                    "hmi_stop",
+                    "noop",
+                ],
+                "llm": {
+                    "backend": "qwen_langgraph",
+                    "strict_backend": True,
+                },
+            },
+        )
+        agent.reset(scenario)
+        return agent._build_online_context(base_context)
+
+    black_context = build("black_box")
+    gray_context = build("gray_box")
+    white_context = build("white_box")
+
+    assert black_context["safety_bounds"] == {}
+    assert gray_context["safety_bounds"] == {}
+    assert white_context["safety_bounds"]["ChemTreat_HCl_Level"]["max"] == 1000
+    assert black_context["system_knowledge"] is None
+    assert gray_context["system_knowledge"] is None
+    assert white_context["system_knowledge"] is not None
+    assert black_context["relationship_notes"] != white_context["relationship_notes"]
+    assert gray_context["relationship_notes"] == []
+    assert "RW_Tank_Level" not in black_context["observation"]
+    assert "RW_Tank_Level" in gray_context["observation"]
+    assert "RW_Tank_Level" in white_context["observation"]
+
+
+def test_white_box_attacker_executes_only_bounded_candidate_actions(monkeypatch) -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "white_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "noop",
+        ],
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_white_box_attacker_bounded", profile)
+    agent.reset(scenario)
+    step_context = {
+        "scenario": scenario,
+        "time_sec": 8.0,
+        "observation": {
+            "STATE_NAME": "RUNNING",
+            "P2_Selected": 1,
+            "RW_Tank_Level": 600,
+            "ChemTreat_HCl_Level": 800,
+        },
+        "observations": [
+            {
+                "STATE_NAME": "RUNNING",
+                "P2_Selected": 0,
+                "RW_Tank_Level": 600,
+                "ChemTreat_HCl_Level": 800,
+            }
+        ],
+        "executed_actions": [
+            {
+                "role": "attacker",
+                "time_sec": 6.0,
+                "action": {
+                    "type": "select_process",
+                    "process_id": "WT-P2",
+                    "active": True,
+                },
+            }
+        ],
+        "decisions": [],
+        "alerts": [],
+        "playbooks": {},
+    }
+    built_context = agent._build_online_context(step_context)
+    selected = next(
+        item
+        for item in built_context["candidate_actions"]
+        if item["action"]["type"] != "noop"
+    )
+    monkeypatch.setattr(
+        agent.engine,
+        "decide",
+        lambda context: {
+            "summary": "Apply the highest-confidence white-box action.",
+            "candidate_id": selected["id"],
+            "decision_type": "action",
+            "diagnosis": None,
+        },
+    )
+
+    decisions = agent.step(step_context)
+
+    assert len(decisions) == 1
+    assert decisions[0].action == selected["action"]
+
+
+def test_optionb_mitre_white_box_attacker_keeps_staged_recon_and_bounded_candidates() -> None:
+    scenario = ScenarioCatalog().get("attack/wt-attack-sensor-rw-refill-spoof")
+    profile = {
+        "role": "attacker",
+        "family": "agentic",
+        "knowledge_mode": "white_box",
+        "allowed_action_types": [
+            "inspect_surface",
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "hmi_start",
+            "hmi_stop",
+            "hmi_estop",
+            "noop",
+        ],
+        "behavior_model": {
+            "id": "optionb_mitre_staged",
+            "policy": "agentic",
+        },
+        "llm": {
+            "backend": "qwen_langgraph",
+            "strict_backend": True,
+        },
+    }
+    agent = AgenticRoleAgent("pytest_white_box_attacker_optionb_mitre", profile)
+    agent.reset(scenario)
+
+    context = agent._build_online_context(
+        {
+            "scenario": scenario,
+            "time_sec": 0.0,
+            "observation": {
+                "STATE_NAME": "IDLE",
+                "RW_Tank_Level": 600,
+                "UF_UFFT_Tank_Level": 400,
+                "P2_Selected": 0,
+            },
+            "observations": [],
+            "executed_actions": [],
+            "decisions": [],
+            "alerts": [],
+            "playbooks": {},
+        }
+    )
+
+    assert context["scenario_id"] == "white-box-attack-live"
+    assert context["mitre_context"]["phase_model"] == "optionb_mitre_staged"
+    assert context["mitre_context"]["next_phase"] == "staged_entry_context"
+    assert context["system_knowledge"]["topology"]["staged_path"] == [
+        "local_orchestrator",
+        "access",
+        "engineering",
+        "plant_runtime",
+    ]
+    assert all(item["action"]["type"] == "noop" for item in context["candidate_actions"])
+    assert "timeline" not in json.dumps(context["system_knowledge"])
+
+
 def test_black_box_attacker_context_uses_opaque_aliases_and_hides_semantics() -> None:
     scenario = ScenarioCatalog().get("attack/wt-attack-p2-hcl-drain")
     profile = {

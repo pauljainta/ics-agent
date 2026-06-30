@@ -21,7 +21,7 @@ from .paths import REPO_ROOT, portable_path, results_root
 from .reporting import write_json, write_run_bundle
 from .scenarios import ScenarioCatalog
 from .types import RunBundle, ScenarioDefinition
-from .utils import stable_hash, utc_now
+from .utils import load_yaml, stable_hash, utc_now
 
 
 ROLE_ORDER = ["planner", "observer", "defender", "operator", "attacker"]
@@ -54,6 +54,27 @@ class ExperimentOrchestrator:
         self.catalog = catalog or ScenarioCatalog()
         self._current_reproducibility: dict[str, Any] = {}
         raw_profiles = load_config("agent_profiles.yaml").get("profiles", {})
+        overlay_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
+        if overlay_path.exists():
+            overlay_payload = load_yaml(overlay_path)
+            if not isinstance(overlay_payload, dict):
+                raise ConfigError(
+                    f"expected mapping at repo profile overlay {overlay_path}"
+                )
+            overlay_profiles = overlay_payload.get("profiles", {})
+            if not isinstance(overlay_profiles, dict):
+                raise ConfigError(
+                    f"repo profile overlay {overlay_path} must define a `profiles` mapping"
+                )
+            for profile_id, profile in overlay_profiles.items():
+                base_profile = raw_profiles.get(profile_id)
+                if isinstance(base_profile, dict) and isinstance(profile, dict):
+                    raw_profiles[profile_id] = self._deep_merge_mapping(
+                        base_profile,
+                        profile,
+                    )
+                else:
+                    raw_profiles[profile_id] = deepcopy(profile)
         self.agent_profiles = {
             profile_id: self._normalized_profile(profile)
             for profile_id, profile in raw_profiles.items()
@@ -74,6 +95,7 @@ class ExperimentOrchestrator:
         if role == "attacker" and knowledge_mode in {
             "gray_box",
             "black_box",
+            "white_box",
         }:
             allowed = list(normalized.get("allowed_action_types", []))
             if "inspect_surface" not in allowed:

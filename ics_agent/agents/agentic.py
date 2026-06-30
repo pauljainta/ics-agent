@@ -205,6 +205,7 @@ class CachedQwenDecisionEngine:
             "incident": context.get("incident"),
             "structured_memory": context.get("structured_memory"),
             "structured_prior_knowledge": context.get("structured_prior_knowledge"),
+            "system_knowledge": context.get("system_knowledge"),
             "mitre_context": context.get("mitre_context"),
             "staged_path": context.get("staged_path"),
             "decision_epoch": context.get("decision_epoch"),
@@ -532,6 +533,7 @@ class AgenticRoleAgent(RoleAgent):
         if role == "attacker" and knowledge_mode in {
             "gray_box",
             "black_box",
+            "white_box",
         }:
             allowed = list(normalized.get("allowed_action_types", []))
             if "inspect_surface" not in allowed:
@@ -554,6 +556,9 @@ class AgenticRoleAgent(RoleAgent):
 
     def _is_gray_box_attacker(self) -> bool:
         return self.role == "attacker" and self.knowledge_mode == "gray_box"
+
+    def _is_white_box_attacker(self) -> bool:
+        return self.role == "attacker" and self.knowledge_mode == "white_box"
 
     def _is_black_box_attacker(self) -> bool:
         return self.role == "attacker" and self.knowledge_mode == "black_box"
@@ -656,7 +661,7 @@ class AgenticRoleAgent(RoleAgent):
                     f"agentic attacker backend failure: {exc}"
                 ) from exc
             return []
-        if self._is_gray_box_attacker():
+        if self._is_gray_box_attacker() or self._is_white_box_attacker():
             payload = self._enforce_gray_box_payload(payload, agent_context)
         return self._payload_to_decisions(payload, agent_context)
 
@@ -797,6 +802,22 @@ class AgenticRoleAgent(RoleAgent):
             return (
                 "Use bounded readback patterns to choose the most promising opaque surface."
             )
+        if self._is_white_box_attacker():
+            surface = str(memory.get("best_known_attack_surface") or "unknown")
+            priors = list(memory.get("white_box_surface_priors", []))
+            if surface and surface != "unknown":
+                return (
+                    f"Use topology and control semantics to confirm `{surface}` as the staged leverage surface."
+                )
+            if priors:
+                surface = str((priors[0] or {}).get("surface") or "unknown")
+                if surface and surface != "unknown":
+                    return (
+                        f"White-box process knowledge suggests `{surface}` is the most plausible staged leverage surface."
+                    )
+            return (
+                "Use structured topology and control semantics to narrow the most plausible staged leverage surface."
+            )
         surface = str(memory.get("best_known_attack_surface") or "unknown")
         hypotheses = list(memory.get("candidate_leverage_hypotheses", []))
         if surface and surface != "unknown":
@@ -815,6 +836,7 @@ class AgenticRoleAgent(RoleAgent):
         scenario = context["scenario"]
         now = float(context["time_sec"])
         gray_box = self._is_gray_box_attacker()
+        white_box = self._is_white_box_attacker()
         black_box = self._is_black_box_attacker()
         raw_recent_actions = context.get("executed_actions", [])[-self.action_window :]
         raw_recent_decisions = context.get("decisions", [])[-self.decision_window :]
@@ -830,6 +852,9 @@ class AgenticRoleAgent(RoleAgent):
                 now=now,
             )
             memory_recent_actions = raw_recent_actions
+        elif white_box:
+            recent_actions = self._visible_recent_actions(raw_recent_actions, now=now)
+            memory_recent_actions = raw_recent_actions
         elif black_box:
             recent_actions = self._black_box_visible_recent_actions(
                 raw_recent_actions,
@@ -840,6 +865,15 @@ class AgenticRoleAgent(RoleAgent):
             recent_actions = self._visible_recent_actions(raw_recent_actions, now=now)
             memory_recent_actions = recent_actions
         if gray_box:
+            recent_decisions = self._gray_box_visible_recent_decisions(
+                raw_recent_decisions,
+                now=now,
+            )
+            recent_alerts = self._gray_box_visible_recent_alerts(
+                raw_recent_alerts,
+                now=now,
+            )
+        elif white_box:
             recent_decisions = self._gray_box_visible_recent_decisions(
                 raw_recent_decisions,
                 now=now,
@@ -865,9 +899,13 @@ class AgenticRoleAgent(RoleAgent):
             recent_alerts = self._visible_recent_alerts(raw_recent_alerts, now=now)
         compact_observation = self._compact_observation(observation)
         remaining_playbook = self._remaining_playbook(context)
-        visible_remaining_playbook = [] if (gray_box or black_box) else remaining_playbook
+        visible_remaining_playbook = (
+            [] if (gray_box or white_box or black_box) else remaining_playbook
+        )
         planned_relationship_notes = (
-            [] if (gray_box or black_box) else self._planned_relationship_notes(context)
+            []
+            if (gray_box or white_box or black_box)
+            else self._planned_relationship_notes(context)
         )
         telemetry_summary = self._summarize_telemetry(
             observation=observation,
@@ -896,6 +934,7 @@ class AgenticRoleAgent(RoleAgent):
             telemetry_summary=telemetry_summary,
             defender_reasoning=defender_reasoning,
         )
+        system_knowledge = None
         if black_box:
             internal_structured_memory = self._gray_box_attacker_memory(
                 context=context,
@@ -932,6 +971,42 @@ class AgenticRoleAgent(RoleAgent):
                 self._black_box_visible_observation(item)
                 for item in context.get("observations", [])[-self.observation_window :]
             ]
+        elif white_box:
+            internal_structured_memory = self._white_box_attacker_memory(
+                context=context,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                recent_actions=memory_recent_actions,
+                recent_alerts=recent_alerts,
+                recent_action_effects=recent_action_effects,
+            )
+            structured_memory = self._visible_memory(internal_structured_memory)
+            structured_prior_knowledge = None
+            mitre_context = self._optionb_mitre_context(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                incident=internal_incident,
+                structured_memory=internal_structured_memory,
+            )
+            system_knowledge = self._white_box_attacker_system_knowledge(
+                scenario=scenario,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                structured_memory=internal_structured_memory,
+                defender_reasoning=defender_reasoning,
+                mitre_context=mitre_context,
+            )
+            candidate_actions = self._candidate_actions(
+                context,
+                visible_remaining_playbook,
+                telemetry_summary=telemetry_summary,
+                incident=None,
+                structured_memory=internal_structured_memory,
+                structured_prior_knowledge=structured_prior_knowledge,
+                mitre_context=mitre_context,
+                defender_reasoning=defender_reasoning,
+            )
+            incident = None
         else:
             structured_memory = self._role_memory_context(
                 context=context,
@@ -983,6 +1058,12 @@ class AgenticRoleAgent(RoleAgent):
             role_goal = self._gray_box_attacker_goals()
             expected_outcomes = []
             safety_bounds = {}
+        elif white_box:
+            scenario_id = "white-box-attack-live"
+            process_id = None
+            intent = self._white_box_attacker_intent()
+            role_goal = self._white_box_attacker_goals()
+            expected_outcomes = []
         elif black_box:
             scenario_id = "opaque-interface-live"
             process_id = None
@@ -1004,6 +1085,13 @@ class AgenticRoleAgent(RoleAgent):
                 "Treat recent blue-team alerts as attention markers only; they intentionally omit summary text and diagnoses.",
                 "Choose only from candidate_actions and prefer short exploit chains over repeated inspection.",
                 "Use structured_memory to decide when to commit, sustain, escalate, or reorient.",
+            ]
+        elif white_box:
+            role_constraints = [
+                "Use system_knowledge as prior context for interpreting evidence, not as proof that an unobserved condition is true.",
+                "Do not assume hidden simulator state, future defender actions, evaluator annotations, or authored attack recipes.",
+                "Choose only from candidate_actions and use live telemetry to confirm the most promising control surface before manipulation.",
+                "Keep the MITRE-inspired staged chain intact even when topology or control semantics suggest a likely surface early.",
             ]
         elif black_box:
             role_constraints = [
@@ -1072,6 +1160,7 @@ class AgenticRoleAgent(RoleAgent):
             if defender_reasoning is None
             else defender_reasoning.get("control_logic_checks"),
             "structured_prior_knowledge": structured_prior_knowledge,
+            "system_knowledge": system_knowledge,
             "mitre_context": mitre_context,
             "staged_path": [] if mitre_context is None else mitre_context.get("staged_path", []),
             "decision_epoch": {
@@ -1263,6 +1352,22 @@ class AgenticRoleAgent(RoleAgent):
             "Use bounded reconnaissance reads to inspect tags, registers, alarms, and control-plane state without assuming hidden truth.",
             "Use early turns to probe controllability, then exploit the most effective discovered surface.",
             "Treat alarms, state transitions, and defender reaction as observable success proxies rather than hidden ground truth.",
+        ]
+
+    @staticmethod
+    def _white_box_attacker_intent() -> str:
+        return (
+            "Use rich but bounded system knowledge to qualify reachable control "
+            "surfaces, then create disruptive physical effect without oracle shortcuts."
+        )
+
+    @staticmethod
+    def _white_box_attacker_goals() -> list[str]:
+        return [
+            "Use topology, asset semantics, and control relationships to narrow promising surfaces before committing.",
+            "Use safety bounds and process context to choose manipulations that are more likely to create physical effect.",
+            "Confirm reachability and effect with live evidence before escalating from discovery to manipulation.",
+            "Choose only from bounded candidate actions and avoid relying on hidden simulator truth or authored plans.",
         ]
 
     @staticmethod
@@ -2032,6 +2137,15 @@ class AgenticRoleAgent(RoleAgent):
                 recent_alerts=recent_alerts,
                 recent_action_effects=recent_action_effects,
             )
+        if self._is_white_box_attacker():
+            return self._white_box_attacker_memory(
+                context=context,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                recent_actions=recent_actions,
+                recent_alerts=recent_alerts,
+                recent_action_effects=recent_action_effects,
+            )
         state = self._state.setdefault("role_memory", {})
         total_objective_steps = len(context.get("playbooks", {}).get("attacker", []))
         remaining_steps = len(remaining_playbook)
@@ -2662,6 +2776,275 @@ class AgenticRoleAgent(RoleAgent):
             }
         )
         return state
+
+    def _white_box_attacker_memory(
+        self,
+        *,
+        context: dict[str, Any],
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        recent_actions: list[dict[str, Any]],
+        recent_alerts: list[dict[str, Any]],
+        recent_action_effects: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        state = self._gray_box_attacker_memory(
+            context=context,
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+            recent_actions=recent_actions,
+            recent_alerts=recent_alerts,
+            recent_action_effects=recent_action_effects,
+        )
+        prior_surfaces = self._white_box_surface_priors(
+            observation=observation,
+            telemetry_summary=telemetry_summary,
+        )
+        if prior_surfaces:
+            existing = list(state.get("candidate_leverage_hypotheses", []))
+            merged: list[dict[str, Any]] = []
+            seen_surfaces: set[str] = set()
+            for item in prior_surfaces + existing:
+                surface = str((item or {}).get("surface") or "").strip()
+                if not surface or surface in seen_surfaces:
+                    continue
+                seen_surfaces.add(surface)
+                merged.append(item)
+            state["candidate_leverage_hypotheses"] = merged[:3]
+            state["white_box_surface_priors"] = prior_surfaces[:3]
+            if str(state.get("best_known_attack_surface") or "unknown") == "unknown":
+                top_surface = str((prior_surfaces[0] or {}).get("surface") or "unknown")
+                top_confidence = float((prior_surfaces[0] or {}).get("confidence") or 0.0)
+                if top_surface != "unknown" and top_confidence >= 0.55:
+                    state["best_known_attack_surface"] = top_surface
+        else:
+            state.pop("white_box_surface_priors", None)
+        state["knowledge_scope"] = "white_box"
+        state["rolling_summary"] = (
+            f"{state.get('rolling_summary', '').rstrip('.')} "
+            "knowledge=white_box."
+        ).strip()
+        return state
+
+    def _white_box_surface_priors(
+        self,
+        *,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        state_name = str(observation.get("STATE_NAME", "")).upper()
+        relationship_notes = set(
+            str(item) for item in telemetry_summary.get("relationship_notes", [])
+        )
+        risk_flags = set(str(item) for item in telemetry_summary.get("risk_flags", []))
+        active_alarms = set(str(item) for item in telemetry_summary.get("active_alarms", []))
+        open_chemicals = self._gray_box_open_chemicals(observation)
+        scores = {
+            "process2_manual_path": 0.0,
+            "sensor_manipulation": 0.0,
+            "availability_disruption": 0.0,
+        }
+        basis: dict[str, list[str]] = {surface: [] for surface in scores}
+
+        if self._is_active_flag(observation.get("P2_Selected")):
+            scores["process2_manual_path"] += 1.2
+            basis["process2_manual_path"].append("P2_Selected=1")
+        if open_chemicals:
+            scores["process2_manual_path"] += 1.0 + (0.25 * len(open_chemicals))
+            basis["process2_manual_path"].append(
+                "open_valves=" + ",".join(open_chemicals[:3])
+            )
+        depletion_flags = [
+            flag for flag in sorted(risk_flags) if flag.endswith("_depleting")
+        ]
+        if depletion_flags:
+            scores["process2_manual_path"] += 1.2 + (0.2 * len(depletion_flags))
+            basis["process2_manual_path"].append(depletion_flags[0])
+        if "process2_manual_dosing_active" in relationship_notes:
+            scores["process2_manual_path"] += 1.0
+            basis["process2_manual_path"].append("manual_dosing_active")
+
+        if {
+            "raw_water_protection_risk",
+            "raw_water_low_band",
+            "raw_water_high_high_band",
+            "sensor_or_process_jump",
+        }.intersection(risk_flags):
+            scores["sensor_manipulation"] += 1.3
+            basis["sensor_manipulation"].append(
+                next(
+                    iter(
+                        sorted(
+                            {
+                                item
+                                for item in risk_flags
+                                if item
+                                in {
+                                    "raw_water_protection_risk",
+                                    "raw_water_low_band",
+                                    "raw_water_high_high_band",
+                                    "sensor_or_process_jump",
+                                }
+                            }
+                        )
+                    ),
+                    "risk_signal",
+                )
+            )
+        if {"Alarm_RW_Tank_LL", "Alarm_RW_Tank_HH"}.intersection(active_alarms):
+            scores["sensor_manipulation"] += 1.1
+            basis["sensor_manipulation"].append(
+                next(iter(sorted(active_alarms.intersection({"Alarm_RW_Tank_LL", "Alarm_RW_Tank_HH"}))), "alarm")
+            )
+        if any(
+            note.startswith("abrupt_change:")
+            for note in telemetry_summary.get("relationship_notes", [])
+        ):
+            scores["sensor_manipulation"] += 0.8
+            basis["sensor_manipulation"].append("abrupt_change")
+
+        if state_name in {"RUNNING", "STARTING"}:
+            scores["availability_disruption"] += 0.9
+            basis["availability_disruption"].append(f"state={state_name.lower()}")
+        if "command_status_divergence" in risk_flags:
+            scores["availability_disruption"] += 0.6
+            basis["availability_disruption"].append("command_status_divergence")
+        if self._is_active_flag(observation.get("RW_Pump_Sts")):
+            scores["availability_disruption"] += 0.4
+            basis["availability_disruption"].append("RW_Pump_Sts=1")
+
+        ranked: list[dict[str, Any]] = []
+        for surface, score in sorted(
+            scores.items(),
+            key=lambda item: (item[1], item[0]),
+            reverse=True,
+        ):
+            confidence = round(min(0.95, 0.28 + (score * 0.18)), 2)
+            ranked.append(
+                {
+                    "surface": surface,
+                    "confidence": confidence,
+                    "basis": basis[surface][:4],
+                }
+            )
+        return ranked
+
+    def _white_box_attacker_system_knowledge(
+        self,
+        *,
+        scenario: Any,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        defender_reasoning: dict[str, Any] | None,
+        mitre_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        control_logic_checks = dict(
+            (defender_reasoning or {}).get("control_logic_checks") or {}
+        )
+        failed_checks = [
+            str(item.get("id"))
+            for item in control_logic_checks.get("checks", [])
+            if item.get("status") == "failed" and item.get("id")
+        ][:4]
+        surface_priors = list(structured_memory.get("white_box_surface_priors", []))
+        return {
+            "knowledge_regime": "white_box",
+            "topology": {
+                "staged_path": list(
+                    (mitre_context or {}).get(
+                        "staged_path",
+                        [
+                            "local_orchestrator",
+                            "access",
+                            "engineering",
+                            "plant_runtime",
+                        ],
+                    )
+                ),
+                "phase_model": None
+                if mitre_context is None
+                else mitre_context.get("phase_model"),
+                "process_paths": [
+                    {
+                        "asset": "WT-P1",
+                        "role": "raw_water_intake",
+                        "signals": ["RW_Tank_Level", "RW_Pump_Sts", "RW_Tank_PR_Valve_Sts"],
+                        "controls": ["hmi_start", "hmi_stop", "hmi_estop"],
+                    },
+                    {
+                        "asset": "WT-P2",
+                        "role": "manual_chemical_dosing",
+                        "signals": [
+                            "P2_Selected",
+                            "ChemTreat_NaCl_Level",
+                            "ChemTreat_NaOCl_Level",
+                            "ChemTreat_HCl_Level",
+                        ],
+                        "controls": ["select_process", "set_manual_valve"],
+                    },
+                    {
+                        "asset": "WT-P3",
+                        "role": "uf_feed_side",
+                        "signals": ["UF_UFFT_Tank_Level"],
+                        "controls": [],
+                    },
+                ],
+                "surface_relationships": [
+                    {
+                        "surface": "process2_control_plane",
+                        "maps_to": "process2_manual_path",
+                        "signals": ["P2_Selected", "ChemTreat_*_Valve_Sts"],
+                    },
+                    {
+                        "surface": "tags/registers/alarm_bits",
+                        "maps_to": "sensor_manipulation",
+                        "signals": ["RW_Tank_Level", "UF_UFFT_Tank_Level", "Alarm_*"],
+                    },
+                    {
+                        "surface": "io_image/actuator_state_bits",
+                        "maps_to": "availability_disruption",
+                        "signals": ["STATE_NAME", "RW_Pump_Sts", "HMI_*"],
+                    },
+                ],
+            },
+            "asset_metadata": {
+                "suite": scenario.suite,
+                "state_name": observation.get("STATE_NAME"),
+                "process2_selected": bool(self._is_active_flag(observation.get("P2_Selected"))),
+                "open_manual_chemicals": self._gray_box_open_chemicals(observation),
+            },
+            "control_semantics": {
+                "hmi_start": "Starts WT-P1 when permissives allow.",
+                "hmi_stop": "Stops WT-P1 in a controlled way.",
+                "hmi_estop": "Forces immediate WT-P1 stop.",
+                "select_process": "Enables or disables the WT-P2 manual control path.",
+                "set_manual_valve": "Opens or closes a selected WT-P2 chemical valve.",
+                "set_sensor": "Forces a simulator-side sensor or level value.",
+                "inspect_surface": "Reads bounded discovery information from a labeled surface.",
+            },
+            "safety_envelope": dict(scenario.metadata.get("safety_bounds", {})),
+            "process_context": {
+                "active_alarms": list(telemetry_summary.get("active_alarms", []))[:4],
+                "risk_flags": list(telemetry_summary.get("risk_flags", []))[:6],
+                "relationship_notes": list(telemetry_summary.get("relationship_notes", []))[
+                    :8
+                ],
+                "preferred_surface_order": [
+                    str(item.get("surface"))
+                    for item in surface_priors
+                    if str(item.get("surface", "")).strip()
+                ],
+            },
+            "control_logic_summary": {
+                "failed_checks": failed_checks,
+                "failed_check_count": int(
+                    control_logic_checks.get("failed_check_count", 0) or len(failed_checks)
+                ),
+                "immediate_attention_required": bool(
+                    control_logic_checks.get("immediate_attention_required")
+                ),
+            },
+        }
 
     @staticmethod
     def _gray_box_surface_template() -> dict[str, Any]:
@@ -6227,6 +6610,7 @@ class AgenticRoleAgent(RoleAgent):
             and not remaining_playbook
             and not context["scenario"].metadata.get("attacker_actions")
             and not self._is_gray_box_attacker()
+            and not self._is_white_box_attacker()
             and not self._is_black_box_attacker()
         ):
             noop_candidate = self._noop_candidate(
@@ -6234,7 +6618,7 @@ class AgenticRoleAgent(RoleAgent):
             )
             return [noop_candidate] if noop_candidate is not None else []
         if self.role == "attacker":
-            if self._is_gray_box_attacker():
+            if self._is_gray_box_attacker() or self._is_white_box_attacker():
                 candidates = self._gray_box_attacker_candidates(
                     context=context,
                     telemetry_summary=telemetry_summary,

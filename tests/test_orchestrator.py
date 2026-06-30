@@ -309,21 +309,30 @@ def test_orchestrator_tracks_decoding_per_condition_without_role_overwrite() -> 
     )
 
 
-def test_orchestrator_profiles_split_gray_box_and_black_box_attackers() -> None:
+def test_orchestrator_profiles_split_black_gray_and_white_box_attackers() -> None:
     orchestrator = ExperimentOrchestrator()
 
     assert "gray_box_attacker" in orchestrator.agent_profiles
     assert "black_box_attacker" in orchestrator.agent_profiles
+    assert "white_box_attacker" in orchestrator.agent_profiles
 
     gray_box_profile = orchestrator.agent_profiles["gray_box_attacker"]
     black_box_profile = orchestrator.agent_profiles["black_box_attacker"]
+    white_box_profile = orchestrator.agent_profiles["white_box_attacker"]
 
     assert gray_box_profile["knowledge_mode"] == "gray_box"
     assert black_box_profile["knowledge_mode"] == "black_box"
+    assert white_box_profile["knowledge_mode"] == "white_box"
     assert gray_box_profile["llm"]["prompt_file"] == "configs/prompts/gray_box_attacker.md"
     assert black_box_profile["llm"]["prompt_file"] == "configs/prompts/black_box_attacker.md"
+    assert white_box_profile["llm"]["prompt_file"] == "configs/prompts/white_box_attacker.md"
     assert "inspect_surface" in gray_box_profile["allowed_action_types"]
     assert "inspect_surface" in black_box_profile["allowed_action_types"]
+    assert "inspect_surface" in white_box_profile["allowed_action_types"]
+    assert white_box_profile["knowledge_files"] == [
+        "configs/knowledge/shared_testbed_manual.md",
+        "configs/knowledge/attacker_manual.md",
+    ]
 
 
 def test_execute_online_roles_logs_reconnaissance_results(tmp_path) -> None:

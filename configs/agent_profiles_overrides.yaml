@@ -1,0 +1,34 @@
+profiles:
+  white_box_attacker:
+    role: attacker
+    family: agentic
+    mode: online
+    knowledge_mode: white_box
+    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    abort_on_backend_error: true
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/attacker_manual.md
+    llm:
+      backend: qwen_langgraph
+      framework: langchain
+      use_langgraph: true
+      strict_backend: true
+      allow_langchain_fallback: true
+      model_id: Qwen/Qwen3.5-9B
+      prompt_file: configs/prompts/white_box_attacker.md
+      local_files_only: true
+      require_cuda: true
+      quantization: bf16
+      temperature: 0
+      max_new_tokens: 160
+    memory:
+      observation_window: 10
+      decision_window: 8
+      action_window: 12
+      alert_window: 8
+      summary_window: 6
+      attacker_candidate_window: 6
+    action_cooldown_sec: 1.0
+    reasoning_cooldown_sec: 6.0
+    reasoning_refresh_sec: 12.0
