@@ -167,7 +167,8 @@ class RemoteRoleService:
 
     def apply_action(self, payload: dict[str, Any]) -> dict[str, Any]:
         action = payload.get("action")
-        result = self.env.act(action)
+        role = payload.get("role") or self.role
+        result = self.env.act(action, role=role)
         return {
             "status": "ok",
             "runtime": self.runtime_info(),

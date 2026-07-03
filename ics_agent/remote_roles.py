@@ -84,8 +84,16 @@ class RemoteRoleAgentProxy:
     def finalize(self, context: dict[str, Any]) -> list[RoleDecision]:
         return []
 
-    def apply_action(self, action: dict[str, Any] | str) -> dict[str, Any]:
-        response = self._request("/apply_action", {"action": action})
+    def apply_action(
+        self,
+        action: dict[str, Any] | str,
+        *,
+        role: str | None = None,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "/apply_action",
+            {"action": action, "role": role or self.role},
+        )
         runtime = response.get("runtime")
         if isinstance(runtime, dict):
             self.runtime_info = dict(runtime)

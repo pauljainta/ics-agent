@@ -1,5 +1,5 @@
-experiment_name: DefendervsGrayBoxAttacker
-experiment_id: DefendervsGrayBoxAttacker
+experiment_name: DefendervsGrayBoxAttackerConcreteContainment
+experiment_id: DefendervsGrayBoxAttackerConcreteContainment
 scenario_selectors:
   - attack/*
 repeats: 1
@@ -9,11 +9,11 @@ reproducibility:
   seed: 20260623
 results_root: ../../../Artifact/Results
 study_metadata:
-  family: defender_vs_gray_box_attacker_optionb_mitre18
+  family: defender_vs_gray_box_attacker_concrete_containment_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
     - Gray-box attacker versus the current LLM defender on the staged Option B testbed
-    - Same fast-containment defender path as the current seeded black-box study
+    - Concrete-containment pass replaces symbolic cutoff shortcuts with runtime-enforced surface isolation
     - Primary timing summaries use the interaction-ready wargame_t0 boundary and exclude setup or transfer latency
 environment:
   backend: sphere_openplc
@@ -53,7 +53,7 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B agentic defender with fast containment
+          notes: MITRE-informed staged Option B agentic defender with concrete runtime containment
         allowed_action_types:
           - hmi_stop
           - hmi_estop

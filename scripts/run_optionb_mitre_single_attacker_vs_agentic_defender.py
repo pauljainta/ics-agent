@@ -2,9 +2,9 @@
 """Run one staged Option B attacker-vs-agentic-defender pair.
 
 Current supported pair configs:
-- black-box attacker vs current fast-containment agentic defender
-- gray-box attacker vs current fast-containment agentic defender
-- white-box attacker vs current fast-containment agentic defender
+- black-box attacker vs current concrete-containment agentic defender
+- gray-box attacker vs current concrete-containment agentic defender
+- white-box attacker vs current concrete-containment agentic defender
 """
 from __future__ import annotations
 
@@ -36,7 +36,12 @@ CONFIG_PATH = (
     / "experiments"
     / "sphere_optionb_mitre_gray_box_vs_agentic_defender_fast_containment.yaml"
 )
-RESULTS_ROOT = WORKSPACE_ROOT / "Artifact" / "Results" / "DefendervsGrayBoxAttacker"
+RESULTS_ROOT = (
+    WORKSPACE_ROOT
+    / "Artifact"
+    / "Results"
+    / "DefendervsGrayBoxAttackerConcreteContainment"
+)
 PROGRESS_ROOT = RESULTS_ROOT / "_progress"
 PHASE_STATUS_PATH = PROGRESS_ROOT / "phase_status.json"
 RUN_MANIFEST_PATH = PROGRESS_ROOT / "run_manifest.json"
@@ -46,6 +51,8 @@ LAST_STEP_PATH = PROGRESS_ROOT / "last_successful_step.txt"
 RESULTS_SUMMARY_PATH = RESULTS_ROOT / "results_summary.md"
 ATTACKER_KNOWLEDGE_NOTE_PATH = RESULTS_ROOT / "attacker_knowledge_regime.md"
 REPRODUCIBILITY_MANIFEST_PATH = RESULTS_ROOT / "reproducibility_manifest.json"
+BASELINE_COMPARISON_PATH = RESULTS_ROOT / "baseline_comparison.json"
+DEFENDER_CHANGE_NOTE_PATH = RESULTS_ROOT / "defender_change_note.md"
 ENVIRONMENT_VALIDATION_PATH = PROGRESS_ROOT / "optionb_environment_validation.json"
 VALIDATE_LOG_PATH = PROGRESS_ROOT / "validate_runtime.log"
 PYTEST_LOG_PATH = PROGRESS_ROOT / "pytest_targeted.log"
@@ -95,6 +102,39 @@ KNOWLEDGE_NOTE_LINES: dict[str, list[str]] = {
     ],
 }
 
+BASELINE_RESULT_ROOTS: dict[str, Path] = {
+    "black_box_attacker": (
+        WORKSPACE_ROOT / "Artifact" / "Results" / "DefendervsBlackBoxAttackerFastContainment"
+    ),
+    "gray_box_attacker": (
+        WORKSPACE_ROOT / "Artifact" / "Results" / "DefendervsGrayBoxAttacker"
+    ),
+    "white_box_attacker": (
+        WORKSPACE_ROOT / "Artifact" / "Results" / "DefendervsWhiteBoxAttackerStronger"
+    ),
+}
+
+COMPARISON_METRICS: tuple[tuple[str, str, str], ...] = (
+    ("defender_detection_rate_avg", "Defender detection rate", "higher"),
+    ("contained_before_safety_violation_run_count", "Contained-before-violation runs", "higher"),
+    ("attacker_safety_success_rate", "Attacker safety-success rate", "lower"),
+    ("safety_violation_count_avg", "Average safety-violation samples", "lower"),
+    ("time_to_first_containment_from_wargame_t0_sec_avg", "Average time to first containment", "lower"),
+    ("blocked_attacker_action_count_avg", "Average blocked attacker actions", "higher"),
+    ("attacker_execution_cutoff_rate", "Attacker cutoff activation rate", "higher"),
+    ("downtime_timestep_count_avg", "Average downtime metric", "lower"),
+    (
+        "defender_runtime_enforced_containment_action_count_avg",
+        "Average runtime-enforced containment actions",
+        "higher",
+    ),
+    (
+        "defender_symbolic_containment_action_count_avg",
+        "Average symbolic containment actions",
+        "lower",
+    ),
+)
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -121,6 +161,96 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text)
 
 
+def _baseline_root_for(attacker_profile_id: str) -> Path | None:
+    return BASELINE_RESULT_ROOTS.get(attacker_profile_id)
+
+
+def _artifact_cleanup_status() -> list[dict[str, str]]:
+    configs_dir = WORKSPACE_ROOT / "Artifact" / "Configs"
+    scenarios_dir = WORKSPACE_ROOT / "Artifact" / "Scenarios"
+    experiments_dir = WORKSPACE_ROOT / "Artifact" / "Experiments"
+    return [
+        {
+            "path": portable_path(configs_dir),
+            "status": "kept" if configs_dir.exists() else "missing",
+            "reason": (
+                "Current runtime config resolution still loads agent profiles and catalog files from Artifact/Configs."
+                if configs_dir.exists()
+                else "Artifact/Configs unexpectedly missing."
+            ),
+        },
+        {
+            "path": portable_path(scenarios_dir),
+            "status": "kept" if scenarios_dir.exists() else "missing",
+            "reason": (
+                "Current scenario catalog and the 18-scenario suite still resolve through Artifact/Scenarios."
+                if scenarios_dir.exists()
+                else "Artifact/Scenarios unexpectedly missing."
+            ),
+        },
+        {
+            "path": portable_path(experiments_dir),
+            "status": "kept" if experiments_dir.exists() else "pruned",
+            "reason": (
+                "Artifact/Experiments is still present."
+                if experiments_dir.exists()
+                else "Pruned because the live seeded runner uses repo configs and current validation no longer depends on Artifact/Experiments."
+            ),
+        },
+    ]
+
+
+def _comparison_bucket(current: Any, baseline: Any, *, direction: str) -> str:
+    if current is None or baseline is None:
+        return "unavailable"
+    current_value = float(current)
+    baseline_value = float(baseline)
+    if abs(current_value - baseline_value) < 1e-9:
+        return "stayed flat"
+    if direction == "higher":
+        return "improved" if current_value > baseline_value else "worsened"
+    return "improved" if current_value < baseline_value else "worsened"
+
+
+def _baseline_comparison(current_attack_metrics: dict[str, Any]) -> dict[str, Any]:
+    baseline_root = _baseline_root_for(ATTACKER_PROFILE_ID)
+    baseline_metrics_path = (
+        None if baseline_root is None else baseline_root / "attack_metrics_summary.json"
+    )
+    baseline_attack_metrics = (
+        {}
+        if baseline_metrics_path is None
+        else _read_json(baseline_metrics_path, {})
+    )
+    comparisons = []
+    for key, label, direction in COMPARISON_METRICS:
+        comparisons.append(
+            {
+                "metric": key,
+                "label": label,
+                "direction": direction,
+                "baseline": baseline_attack_metrics.get(key),
+                "current": current_attack_metrics.get(key),
+                "status": _comparison_bucket(
+                    current_attack_metrics.get(key),
+                    baseline_attack_metrics.get(key),
+                    direction=direction,
+                ),
+            }
+        )
+    return {
+        "generated_at_utc": utc_now(),
+        "attacker_profile": ATTACKER_PROFILE_ID,
+        "baseline_root": None if baseline_root is None else portable_path(baseline_root),
+        "baseline_metrics_path": (
+            None
+            if baseline_metrics_path is None
+            else portable_path(baseline_metrics_path)
+        ),
+        "comparisons": comparisons,
+    }
+
+
 def _configure_runtime_paths(
     *,
     config_path: Path,
@@ -139,6 +269,8 @@ def _configure_runtime_paths(
     global RESULTS_SUMMARY_PATH
     global ATTACKER_KNOWLEDGE_NOTE_PATH
     global REPRODUCIBILITY_MANIFEST_PATH
+    global BASELINE_COMPARISON_PATH
+    global DEFENDER_CHANGE_NOTE_PATH
     global ENVIRONMENT_VALIDATION_PATH
     global VALIDATE_LOG_PATH
     global PYTEST_LOG_PATH
@@ -156,6 +288,8 @@ def _configure_runtime_paths(
     RESULTS_SUMMARY_PATH = RESULTS_ROOT / "results_summary.md"
     ATTACKER_KNOWLEDGE_NOTE_PATH = RESULTS_ROOT / "attacker_knowledge_regime.md"
     REPRODUCIBILITY_MANIFEST_PATH = RESULTS_ROOT / "reproducibility_manifest.json"
+    BASELINE_COMPARISON_PATH = RESULTS_ROOT / "baseline_comparison.json"
+    DEFENDER_CHANGE_NOTE_PATH = RESULTS_ROOT / "defender_change_note.md"
     ENVIRONMENT_VALIDATION_PATH = PROGRESS_ROOT / "optionb_environment_validation.json"
     VALIDATE_LOG_PATH = PROGRESS_ROOT / "validate_runtime.log"
     PYTEST_LOG_PATH = PROGRESS_ROOT / "pytest_targeted.log"
@@ -227,6 +361,19 @@ def _save_phase_status(payload: dict[str, Any]) -> None:
     write_json(PHASE_STATUS_PATH, payload)
 
 
+def _set_completion_state(status: str, **fields: Any) -> None:
+    payload = _load_phase_status()
+    item = dict(payload.get("completion_state", {}))
+    item["status"] = status
+    item["updated_utc"] = utc_now()
+    if status == "in_progress" and "started_at_utc" not in item:
+        item["started_at_utc"] = item["updated_utc"]
+    item.update(fields)
+    payload["completion_state"] = item
+    _save_phase_status(payload)
+    _write_resume_notes()
+
+
 def _set_phase(phase: str, status: str, **fields: Any) -> None:
     payload = _load_phase_status()
     item = dict(payload.get(phase, {}))
@@ -277,6 +424,7 @@ def _save_completed_runs(payload: dict[str, Any]) -> None:
 def _write_resume_notes() -> None:
     phase_status = _load_phase_status()
     completed_runs = _load_completed_runs()
+    cleanup_status = _artifact_cleanup_status()
     expected = list(completed_runs.get("expected_scenarios") or [])
     completed = dict(completed_runs.get("completed") or {})
     failed = dict(completed_runs.get("failed") or {})
@@ -288,6 +436,10 @@ def _write_resume_notes() -> None:
         "",
         f"- Updated UTC: `{utc_now()}`",
         f"- Last successful step: `{LAST_STEP_PATH.read_text().strip() if LAST_STEP_PATH.exists() else 'none'}`",
+        f"- Results root: `{portable_path(RESULTS_ROOT)}`",
+        f"- Attacker family under test: `{ATTACKER_PROFILE_ID}`",
+        "- Defender family: `agentic_defender` with concrete runtime-enforced containment.",
+        "- Implemented concrete containment actions: `block_sensor_write`, `quarantine_signal_source`, `disable_hmi_session`, `block_process2_manual_path`, `isolate_engineering_host`.",
         f"- Completed scenarios: `{len(completed)}`",
         f"- Failed scenarios: `{len(failed)}`",
         f"- Remaining scenarios: `{len(remaining)}`",
@@ -296,6 +448,11 @@ def _write_resume_notes() -> None:
     ]
     for phase in PHASE_ORDER:
         lines.append(f"- `{phase}`: `{phase_status.get(phase, {}).get('status', 'pending')}`")
+    lines.extend(["", "## Artifact Cleanup"])
+    for item in cleanup_status:
+        lines.append(
+            f"- `{item['path']}`: `{item['status']}` {item['reason']}"
+        )
     if remaining:
         lines.extend(["", "## Remaining Scenarios"])
         for scenario in remaining:
@@ -681,6 +838,12 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _rate(count: Any, total: Any) -> float | None:
+    if count is None or total in (None, 0):
+        return None
+    return round(float(count) / float(total), 4)
+
+
 def _write_knowledge_note() -> None:
     lines = [
         "# Attacker Knowledge Regime",
@@ -688,7 +851,7 @@ def _write_knowledge_note() -> None:
         f"- Generated UTC: `{utc_now()}`",
         f"- Attacker profile: `{ATTACKER_PROFILE_ID}`",
         f"- Knowledge mode: `{ATTACKER_KNOWLEDGE_MODE}`",
-        "- Defender family remained the current staged Option B agentic defender with explicit containment-class cutoff semantics.",
+        "- Defender family remained the current staged Option B agentic defender with concrete runtime-enforced containment.",
         "- The attacker continued to use the same bounded candidate-action surface and MITRE-inspired staged progression.",
         "",
         "## Notes",
@@ -696,6 +859,43 @@ def _write_knowledge_note() -> None:
     for item in KNOWLEDGE_NOTE_LINES.get(ATTACKER_PROFILE_ID, []):
         lines.append(f"- {item}")
     _write_text(ATTACKER_KNOWLEDGE_NOTE_PATH, "\n".join(lines) + "\n")
+
+
+def _write_defender_change_note(
+    *,
+    experiment_root: Path,
+    comparison: dict[str, Any],
+) -> None:
+    cleanup_status = _artifact_cleanup_status()
+    lines = [
+        "# Defender Change Note",
+        "",
+        f"- Generated UTC: `{utc_now()}`",
+        f"- Attacker family under test: `{ATTACKER_PROFILE_ID}`",
+        "- Defender family remained the current staged Option B agentic defender.",
+        "- This pass changed the defender from symbolic containment execution to concrete runtime-enforced containment execution.",
+        "- Preserved the MITRE-inspired staged Option B path: staged entry context, discovery, process understanding, control-path qualification, manipulation, impact.",
+        f"- New results saved under: `{portable_path(experiment_root)}`",
+        "",
+        "## Concrete Actions",
+        "",
+        "- `block_sensor_write`: runtime now rejects later attacker `set_sensor` writes on the spoofed sensor-write surface.",
+        "- `quarantine_signal_source`: runtime now enforces the same telemetry-write block as a stronger alias on that surface.",
+        "- `disable_hmi_session`: runtime now rejects later attacker HMI-session commands.",
+        "- `block_process2_manual_path`: runtime now rejects later attacker `select_process` and `set_manual_valve` abuse on Process 2.",
+        "- `isolate_engineering_host`: runtime now rejects all later attacker actions through the engineering-side command ingress path.",
+        "",
+        "## Artifact Cleanup",
+        "",
+    ]
+    for item in cleanup_status:
+        lines.append(f"- `{item['path']}`: `{item['status']}` {item['reason']}")
+    lines.extend(["", "## Baseline Comparison"])
+    for item in comparison.get("comparisons", []):
+        lines.append(
+            f"- {item['label']}: `{item['status']}` baseline=`{_fmt(item.get('baseline'))}` current=`{_fmt(item.get('current'))}`"
+        )
+    _write_text(DEFENDER_CHANGE_NOTE_PATH, "\n".join(lines) + "\n")
 
 
 def _write_final_report(
@@ -707,6 +907,9 @@ def _write_final_report(
     condition_summary = suite_summary["conditions"][0]
     attack_metrics = dict(condition_summary.get("attack_metrics") or {})
     mitre_metrics = dict(condition_summary.get("mitre_phase_metrics") or {})
+    comparison = _baseline_comparison(attack_metrics)
+    cleanup_status = _artifact_cleanup_status()
+    completed_runs = attack_metrics.get("completed_attack_run_count", 0)
     distribution = ", ".join(
         f"{phase}:{count}"
         for phase, count in (mitre_metrics.get("highest_attacker_phase_distribution") or {}).items()
@@ -727,6 +930,9 @@ def _write_final_report(
         f"- Primary timing origin: `{attack_metrics.get('primary_timing_origin')}`",
         f"- Attacker profile: `{ATTACKER_PROFILE_ID}`",
         f"- Knowledge mode: `{ATTACKER_KNOWLEDGE_MODE}`",
+        "- Defender change in this pass: symbolic containment execution was replaced with concrete runtime-enforced containment execution.",
+        "- Defender family remained the current staged Option B agentic defender.",
+        "- MITRE-inspired staged Option B path was preserved.",
         "",
         "## Study Scope",
         "",
@@ -741,8 +947,9 @@ def _write_final_report(
         f"- Defender-detected scenario count: `{attack_metrics.get('defender_detected_attack_run_count', 0)}`",
         f"- Defender-detected scenario rate: `{_fmt(attack_metrics.get('defender_detection_rate_avg'))}`",
         f"- Defender-action scenario count: `{attack_metrics.get('defender_acted_attack_run_count', 0)}`",
-        f"- Defender-action scenario rate: `{_fmt(attack_metrics.get('defender_action_count_avg'))}` actions avg",
+        f"- Defender-action scenario rate: `{_fmt(_rate(attack_metrics.get('defender_acted_attack_run_count'), completed_runs))}`",
         f"- Contained-before-violation scenario count: `{attack_metrics.get('contained_before_safety_violation_run_count', 0)}`",
+        f"- Contained-before-violation scenario rate: `{_fmt(_rate(attack_metrics.get('contained_before_safety_violation_run_count'), completed_runs))}`",
         f"- Attacker safety-success scenario count: `{attack_metrics.get('attacker_caused_safety_violation_run_count', 0)}`",
         f"- Attacker safety-success scenario rate: `{_fmt(attack_metrics.get('attacker_safety_success_rate'))}`",
         f"- Average safety-violation samples: `{_fmt(attack_metrics.get('safety_violation_count_avg'))}`",
@@ -752,6 +959,7 @@ def _write_final_report(
         f"- Average time to physical impact from wargame_t0: `{_fmt(attack_metrics.get('time_to_physical_impact_sec_avg'))}`",
         f"- Average defender action count: `{_fmt(attack_metrics.get('defender_action_count_avg'))}`",
         f"- Average shutdown / intervention count: `{_fmt(attack_metrics.get('defender_shutdown_action_count_avg'))}` / `{_fmt(attack_metrics.get('defender_intervention_action_count_avg'))}`",
+        f"- Average runtime-enforced containment action count: `{_fmt(attack_metrics.get('defender_runtime_enforced_containment_action_count_avg'))}`",
         f"- Average symbolic containment action count: `{_fmt(attack_metrics.get('defender_symbolic_containment_action_count_avg'))}`",
         f"- Average downtime metric: `{_fmt(attack_metrics.get('downtime_timestep_count_avg'))}`",
         f"- First defender action symbolic containment rate: `{_fmt(attack_metrics.get('first_defender_symbolic_containment_rate'))}`",
@@ -767,12 +975,36 @@ def _write_final_report(
         f"- Manipulation to defender detection delay avg: `{_fmt(mitre_metrics.get('manipulation_to_defender_detection_delay_sec_avg'))}`",
         f"- Manipulation to first defender action delay avg: `{_fmt(mitre_metrics.get('manipulation_to_first_defender_action_delay_sec_avg'))}`",
         "",
+        "## Artifact Cleanup",
+        "",
+    ]
+    for item in cleanup_status:
+        lines.append(f"- `{item['path']}`: `{item['status']}` {item['reason']}")
+    lines.extend(
+        [
+            "",
+            "## Baseline Comparison",
+            "",
+        ]
+    )
+    for item in comparison.get("comparisons", []):
+        lines.append(
+            f"- {item['label']}: `{item['status']}` baseline=`{_fmt(item.get('baseline'))}` current=`{_fmt(item.get('current'))}`"
+        )
+    lines.extend(
+        [
+            "",
         "## Artifacts",
         "",
         f"- Reproducibility manifest: `{portable_path(REPRODUCIBILITY_MANIFEST_PATH)}`",
         f"- Knowledge-regime note: `{portable_path(ATTACKER_KNOWLEDGE_NOTE_PATH)}`",
+        f"- Defender change note: `{portable_path(DEFENDER_CHANGE_NOTE_PATH)}`",
+        f"- Baseline comparison: `{portable_path(BASELINE_COMPARISON_PATH)}`",
         f"- Resume notes: `{portable_path(RESUME_NOTES_PATH)}`",
-    ]
+        ]
+    )
+    write_json(BASELINE_COMPARISON_PATH, comparison)
+    _write_defender_change_note(experiment_root=experiment_root, comparison=comparison)
     _write_text(RESULTS_SUMMARY_PATH, "\n".join(lines) + "\n")
 
 
@@ -830,6 +1062,12 @@ def main() -> int:
         )
         PROGRESS_ROOT.mkdir(parents=True, exist_ok=True)
         RESULTS_ROOT.mkdir(parents=True, exist_ok=True)
+        _set_completion_state(
+            "in_progress",
+            completed_at_utc=None,
+            failed_at_utc=None,
+            error=None,
+        )
         _ensure_env_defaults()
         condition_root = experiment_root / condition_name
         expected_environment = _expected_environment(config)
@@ -873,7 +1111,7 @@ def main() -> int:
             "containment_runtime",
             "completed",
             defender_profile="agentic_defender",
-            runtime_rule="successful containment-class defender actions cut off later attacker execution",
+            runtime_rule="runtime-enforced containment state now rejects later attacker actions on targeted or isolated surfaces",
             blocked_event="attacker_action_blocked",
         )
         _set_phase(
@@ -1065,27 +1303,24 @@ def main() -> int:
             _load_phase_status()["code_commit_push"].get("status", "pending"),
         )
 
-        phase_status = _load_phase_status()
-        phase_status["completion_state"] = {
-            "completed_at_utc": utc_now(),
-            "experiment_root": portable_path(experiment_root),
-            "condition_name": condition_name,
-            "scenario_count": len(ordered_runs),
-            "suite_status": suite_summary.get("status"),
-        }
-        _save_phase_status(phase_status)
-        _write_resume_notes()
+        _set_completion_state(
+            "completed",
+            completed_at_utc=utc_now(),
+            failed_at_utc=None,
+            error=None,
+            experiment_root=portable_path(experiment_root),
+            condition_name=condition_name,
+            scenario_count=len(ordered_runs),
+            suite_status=suite_summary.get("status"),
+        )
         return 0
     except Exception as exc:
-        phase_status = _load_phase_status()
-        phase_status["completion_state"] = {
-            "completed_at_utc": None,
-            "failed_at_utc": utc_now(),
-            "status": "blocked",
-            "error": str(exc),
-        }
-        _save_phase_status(phase_status)
-        _write_resume_notes()
+        _set_completion_state(
+            "blocked",
+            completed_at_utc=None,
+            failed_at_utc=utc_now(),
+            error=str(exc),
+        )
         print(str(exc), file=sys.stderr)
         return 1
 

@@ -471,20 +471,16 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         for item in defender_intervention_actions
         if is_containment_action(item.get("action"))
     ]
+    defender_runtime_enforced_containment_actions = [
+        item
+        for item in defender_containment_actions
+        if str((item.get("containment") or {}).get("execution_mode", ""))
+        == "runtime_enforced"
+    ]
     defender_symbolic_containment_actions = [
         item
         for item in defender_containment_actions
         if bool((item.get("containment") or {}).get("is_symbolic"))
-        or (
-            _action_type(item)
-            in {
-                "block_sensor_write",
-                "quarantine_signal_source",
-                "disable_hmi_session",
-                "isolate_engineering_host",
-                "block_process2_manual_path",
-            }
-        )
     ]
     attacker_recon_actions = [
         item
@@ -746,6 +742,9 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "action_count": len(defender_actions),
         "mitigation_action_count": len(mitigation_actions),
         "containment_action_count": len(defender_containment_actions),
+        "runtime_enforced_containment_action_count": len(
+            defender_runtime_enforced_containment_actions
+        ),
         "symbolic_containment_action_count": len(defender_symbolic_containment_actions),
         "contained_before_safety_violation": contained_before_violation,
         "decision_correctness": round(decision_correctness, 4),
@@ -755,6 +754,9 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "intervention_action_count": len(defender_intervention_actions),
         "shutdown_action_count": len(defender_shutdown_actions),
         "containment_action_count": len(defender_containment_actions),
+        "runtime_enforced_containment_action_count": len(
+            defender_runtime_enforced_containment_actions
+        ),
         "symbolic_containment_action_count": len(defender_symbolic_containment_actions),
         "downtime_timestep_count": downtime_timestep_count,
     }
@@ -1016,6 +1018,9 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     )
     runtime_containment_metrics = {
         "containment_action_count": len(defender_containment_actions),
+        "runtime_enforced_containment_action_count": len(
+            defender_runtime_enforced_containment_actions
+        ),
         "symbolic_containment_action_count": len(defender_symbolic_containment_actions),
         "first_containment_action_type": first_containment_action_type,
         "first_containment_action_is_symbolic": first_containment_is_symbolic,
@@ -1129,6 +1134,9 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender_action_count": len(defender_actions),
         "defender_shutdown_action_count": len(defender_shutdown_actions),
         "defender_containment_action_count": len(defender_containment_actions),
+        "defender_runtime_enforced_containment_action_count": len(
+            defender_runtime_enforced_containment_actions
+        ),
         "defender_symbolic_containment_action_count": len(
             defender_symbolic_containment_actions
         ),

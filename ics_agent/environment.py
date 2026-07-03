@@ -17,7 +17,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .paths import OPENPLC_SUPPORT_DIR, OPENPLC_SUPPORT_SCRIPTS, REPO_ROOT
+from .action_semantics import (
+    action_type,
+    attacker_surface,
+    containment_metadata,
+    containment_surfaces,
+    is_runtime_enforced_containment_action,
+    normalize_action,
+)
+from .paths import OPENPLC_SUPPORT_DIR, OPENPLC_SUPPORT_SCRIPTS, REPO_ROOT, WORKSPACE_ROOT
 from .remote_roles import RemoteRoleAgentProxy
 from .utils import stable_hash, utc_now
 
@@ -30,23 +38,45 @@ def _import_openplc_module(module_name: str):
     try:
         return importlib.import_module(module_name)
     except ModuleNotFoundError:
-        pyc_path = (
-            OPENPLC_SUPPORT_SCRIPTS
+        candidate_paths = [
+            WORKSPACE_ROOT
+            / "sphere-usecases"
+            / "water-treatment"
+            / "implementations"
+            / "openplc"
+            / "scripts"
             / "__pycache__"
-            / f"{module_name}.cpython-310.pyc"
-        )
-        if not pyc_path.exists():
-            raise
-        loader = importlib.machinery.SourcelessFileLoader(module_name, str(pyc_path))
-        spec = importlib.util.spec_from_loader(module_name, loader)
-        if spec is None:
-            raise ModuleNotFoundError(
-                f"unable to create import spec for compiled module {module_name}"
-            )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        loader.exec_module(module)
-        return module
+            / f"{module_name}.cpython-310.pyc",
+            WORKSPACE_ROOT
+            / "sphere-usecases"
+            / "water-treatment"
+            / "implementations"
+            / "openplc"
+            / "scripts"
+            / "__pycache__"
+            / f"{module_name}.py",
+            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.cpython-310.pyc",
+            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.py",
+        ]
+        for candidate_path in candidate_paths:
+            if not candidate_path.exists():
+                continue
+            if candidate_path.suffix == ".pyc":
+                loader = importlib.machinery.SourcelessFileLoader(
+                    module_name, str(candidate_path)
+                )
+            else:
+                loader = importlib.machinery.SourceFileLoader(
+                    module_name, str(candidate_path)
+                )
+            spec = importlib.util.spec_from_loader(module_name, loader)
+            if spec is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            loader.exec_module(module)
+            return module
+        raise
 
 
 def _normalized_backend_name(value: Any) -> str:
@@ -68,6 +98,107 @@ def _temporary_testbed_backend_mode(requested_backend: str):
             os.environ.pop("OPENPLC_TESTBED_BACKEND", None)
         else:
             os.environ["OPENPLC_TESTBED_BACKEND"] = previous
+
+
+class RuntimeContainmentState:
+    """Track concrete runtime enforcement that can block later attacker actions."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._rules: dict[str, dict[str, Any]] = {}
+        self._history: list[dict[str, Any]] = []
+        self._blocked_attempt_count = 0
+
+    def snapshot(self) -> dict[str, Any]:
+        rules = {
+            surface: dict(payload)
+            for surface, payload in sorted(self._rules.items(), key=lambda item: item[0])
+        }
+        return {
+            "active": bool(rules),
+            "surface_scope": "all" if "all" in rules else ("targeted" if rules else None),
+            "target_surfaces": list(rules.keys()),
+            "rules": rules,
+            "history": list(self._history),
+            "blocked_attempt_count": self._blocked_attempt_count,
+        }
+
+    def apply(self, action: dict[str, Any] | str | None) -> dict[str, Any] | None:
+        normalized = normalize_action(action)
+        if normalized is None or not is_runtime_enforced_containment_action(normalized):
+            return None
+
+        target_surfaces = containment_surfaces(normalized)
+        action_name = action_type(normalized)
+        newly_enforced: list[str] = []
+        already_enforced: list[str] = []
+        stronger_alias = action_name == "quarantine_signal_source"
+
+        for surface in target_surfaces:
+            existing = dict(self._rules.get(surface) or {})
+            current_strength = int(existing.get("strength", 0) or 0)
+            next_strength = 2 if stronger_alias else 1
+            if current_strength >= next_strength:
+                already_enforced.append(surface)
+                continue
+            self._rules[surface] = {
+                "surface": surface,
+                "source_action_type": action_name,
+                "source_action": dict(normalized),
+                "strength": next_strength,
+                "mode": "runtime_enforced",
+            }
+            newly_enforced.append(surface)
+
+        applied = {
+            "action_type": action_name,
+            "target_surfaces": target_surfaces,
+            "newly_enforced_surfaces": newly_enforced,
+            "already_enforced_surfaces": already_enforced,
+            "stronger_alias": stronger_alias,
+        }
+        self._history.append(applied)
+        return applied
+
+    def block_result(
+        self,
+        action: dict[str, Any] | str | None,
+        *,
+        role: str | None,
+    ) -> dict[str, Any] | None:
+        if str(role or "").strip().lower() != "attacker":
+            return None
+        normalized = normalize_action(action)
+        if normalized is None:
+            return None
+
+        surface = attacker_surface(normalized)
+        rule = self._rules.get("all") or self._rules.get(surface)
+        if rule is None:
+            return None
+
+        self._blocked_attempt_count += 1
+        source_action = dict(rule.get("source_action") or {})
+        source_action_type = str(rule.get("source_action_type") or "")
+        blocked_surface = "all" if "all" in self._rules else surface
+        reason = {
+            "all": "engineering host isolation blocks all later attacker actions",
+            "hmi_session": "disabled HMI session blocks later attacker HMI commands",
+            "sensor_write_path": "contained telemetry-write surface blocks later attacker sensor writes",
+            "process2_manual_path": "contained Process 2 manual path blocks later attacker Process 2 commands",
+        }.get(blocked_surface, "runtime containment blocked the attacker action")
+        return {
+            "blocked": True,
+            "blocked_by_runtime_containment": True,
+            "blocked_surface": blocked_surface,
+            "attempted_surface": surface,
+            "reason": reason,
+            "blocked_by_action": source_action,
+            "blocked_by_action_type": source_action_type,
+            "runtime_containment": self.snapshot(),
+        }
 
 
 class _SphereOpenPLCBackend:
@@ -253,6 +384,7 @@ class _SphereOpenPLCBackend:
         conditions = dict(self._default_initial_conditions)
         if initial_conditions:
             conditions.update({key: int(value) for key, value in initial_conditions.items()})
+        self._require_direct_env().clear_runtime_containment()
 
         if self.remote_reset_mode == "restart":
             self._restart_remote_runtime(conditions)
@@ -350,8 +482,8 @@ class _SphereOpenPLCBackend:
     def observe(self) -> dict[str, Any]:
         return self._require_direct_env().observe()
 
-    def act(self, action: dict[str, Any] | str) -> dict[str, Any]:
-        return self._require_direct_env().act(action)
+    def act(self, action: dict[str, Any] | str, *, role: str | None = None) -> dict[str, Any]:
+        return self._require_direct_env().act(action, role=role)
 
     def inspect_surface(self, action: dict[str, Any]) -> dict[str, Any]:
         return self._require_direct_env().inspect_surface(action)
@@ -600,6 +732,9 @@ class _SphereOpenPLCBackend:
         payload.setdefault("assigned_node", self.remote_role_hosts.get(role))
         self._role_runtime_info[role] = payload
 
+    def runtime_containment_snapshot(self) -> dict[str, Any]:
+        return self._require_direct_env().runtime_containment_snapshot()
+
     def export_run_artifacts(self, run_dir: Path, bundle: dict[str, Any]) -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         environment_snapshot = {
@@ -609,6 +744,7 @@ class _SphereOpenPLCBackend:
             "revision": self.revision,
             "xdc": self._xdc_ref,
             "xdc_fqdn": self._xdc_fqdn,
+            "runtime_containment": self.runtime_containment_snapshot(),
             "node_placement": {
                 "controller": {
                     "runtime": "process_controller",
@@ -1769,6 +1905,7 @@ class OpenPLCEnvironment:
         self._backend_name = _normalized_backend_name(self.backend)
         self.keep_running = bool(cfg.get("keep_running", False))
         self.started = False
+        self._runtime_containment = RuntimeContainmentState()
         self._backend_impl: _SphereOpenPLCBackend | None = None
 
         if self._backend_name == "sphere_openplc":
@@ -1816,6 +1953,7 @@ class OpenPLCEnvironment:
     def reset(self, initial_conditions: dict[str, int] | None = None) -> dict[str, Any]:
         if self._backend_impl is not None:
             return self._backend_impl.reset(initial_conditions)
+        self.clear_runtime_containment()
         try:
             return self.testbed.reset(
                 initial_conditions,
@@ -1840,16 +1978,63 @@ class OpenPLCEnvironment:
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
 
-    def act(self, action: dict[str, Any] | str) -> dict[str, Any]:
+    def act(self, action: dict[str, Any] | str, *, role: str | None = None) -> dict[str, Any]:
         if self._backend_impl is not None:
-            return self._backend_impl.act(action)
-        descriptor = action if isinstance(action, dict) else {"type": action}
+            return self._backend_impl.act(action, role=role)
+        descriptor = normalize_action(action) or {"type": action}
+        blocked = self._runtime_containment.block_result(descriptor, role=role)
+        if blocked is not None:
+            state_after = self._observe_state_snapshot()
+            state_after.update(blocked)
+            return state_after
+
         if str(descriptor.get("type", "")).strip().lower() == "inspect_surface":
             return self.inspect_surface(descriptor)
+
+        enforcement = self._runtime_containment.apply(descriptor)
+        if enforcement is not None:
+            state_after = self._observe_state_snapshot()
+            containment = containment_metadata(descriptor)
+            containment.update(
+                {
+                    "is_symbolic": False,
+                    "execution_mode": "runtime_enforced",
+                    "newly_enforced_surfaces": enforcement.get(
+                        "newly_enforced_surfaces", []
+                    ),
+                    "already_enforced_surfaces": enforcement.get(
+                        "already_enforced_surfaces", []
+                    ),
+                }
+            )
+            state_after["containment"] = containment
+            state_after["runtime_containment"] = self.runtime_containment_snapshot()
+            return state_after
+
         try:
             return self.testbed.apply_action(action)
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
+
+    def runtime_containment_snapshot(self) -> dict[str, Any]:
+        if self._backend_impl is not None:
+            return self._backend_impl.runtime_containment_snapshot()
+        return self._runtime_containment.snapshot()
+
+    def clear_runtime_containment(self) -> None:
+        if self._backend_impl is not None:
+            direct_env = self._backend_impl._require_direct_env()
+            direct_env.clear_runtime_containment()
+            return
+        self._runtime_containment.reset()
+
+    def _observe_state_snapshot(self) -> dict[str, Any]:
+        observation = self.observe_flat()
+        return {
+            "state_name": observation.get("STATE_NAME")
+            or observation.get("state_name")
+            or "UNKNOWN",
+        }
 
     def inspect_surface(self, action: dict[str, Any]) -> dict[str, Any]:
         if self._backend_impl is not None:

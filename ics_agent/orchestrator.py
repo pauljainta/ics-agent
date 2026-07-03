@@ -10,7 +10,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .action_semantics import action_type, containment_metadata, is_symbolic_containment_action
+from .action_semantics import action_type, containment_metadata
 from .agents import AgenticRoleAgent, RuleBasedRoleAgent, ScriptedRoleAgent
 from .config import ConfigError, load_config, require_fields, resolve_repo_path
 from .environment import EnvironmentError, OpenPLCEnvironment
@@ -136,22 +136,6 @@ class ExperimentOrchestrator:
         }
 
     @staticmethod
-    def _symbolic_action_state_after(
-        action: dict[str, Any],
-        observation: dict[str, Any],
-    ) -> dict[str, Any]:
-        state_name = (
-            observation.get("STATE_NAME")
-            or observation.get("state_name")
-            or "UNKNOWN"
-        )
-        metadata = containment_metadata(action)
-        return {
-            "state_name": state_name,
-            "symbolic_containment": metadata,
-        }
-
-    @staticmethod
     def _record_containment_activation(
         *,
         runtime_containment: dict[str, Any],
@@ -159,9 +143,12 @@ class ExperimentOrchestrator:
         action: dict[str, Any],
         role: str,
         elapsed: float,
+        state_after: dict[str, Any] | None = None,
     ) -> None:
-        metadata = containment_metadata(action)
-        if runtime_containment.get("active"):
+        state_after = dict(state_after or {})
+        metadata = dict(state_after.get("containment") or containment_metadata(action))
+        runtime_snapshot = dict(state_after.get("runtime_containment") or {})
+        if runtime_containment.get("active") or not runtime_snapshot.get("active"):
             return
         runtime_containment.update(
             {
@@ -169,8 +156,12 @@ class ExperimentOrchestrator:
                 "activated_at_sec": round(elapsed, 3),
                 "activated_by_action": dict(action),
                 "activated_by_role": role,
-                "surface_scope": metadata.get("surface_scope"),
-                "target_surfaces": list(metadata.get("target_surfaces", [])),
+                "surface_scope": runtime_snapshot.get("surface_scope")
+                or metadata.get("surface_scope"),
+                "target_surfaces": list(
+                    runtime_snapshot.get("target_surfaces")
+                    or metadata.get("target_surfaces", [])
+                ),
                 "is_symbolic": bool(metadata.get("is_symbolic")),
             }
         )
@@ -193,7 +184,18 @@ class ExperimentOrchestrator:
         decision: Any,
         action: dict[str, Any],
         elapsed: float,
+        block_info: dict[str, Any] | None = None,
     ) -> None:
+        block_info = dict(block_info or {})
+        runtime_snapshot = dict(block_info.get("runtime_containment") or {})
+        if runtime_snapshot.get("active"):
+            runtime_containment.update(
+                {
+                    "active": True,
+                    "surface_scope": runtime_snapshot.get("surface_scope"),
+                    "target_surfaces": list(runtime_snapshot.get("target_surfaces", [])),
+                }
+            )
         runtime_containment["blocked_action_count"] = int(
             runtime_containment.get("blocked_action_count", 0) or 0
         ) + 1
@@ -207,13 +209,19 @@ class ExperimentOrchestrator:
                 "attempted_action": dict(action),
                 "attempted_action_type": action_type(action),
                 "blocked_by_action": dict(
-                    runtime_containment.get("activated_by_action") or {}
+                    block_info.get("blocked_by_action")
+                    or runtime_containment.get("activated_by_action")
+                    or {}
                 ),
+                "blocked_by_action_type": block_info.get("blocked_by_action_type"),
                 "blocked_by_time_sec": runtime_containment.get("activated_at_sec"),
-                "containment_scope": runtime_containment.get("surface_scope"),
+                "containment_scope": block_info.get("blocked_surface")
+                or runtime_containment.get("surface_scope"),
                 "target_surfaces": list(
-                    runtime_containment.get("target_surfaces", [])
+                    runtime_snapshot.get("target_surfaces")
+                    or runtime_containment.get("target_surfaces", [])
                 ),
+                "reason": block_info.get("reason"),
             }
         )
 
@@ -953,8 +961,9 @@ class ExperimentOrchestrator:
                 "scenario": scenario.catalog_id,
                 "environment": config.get("environment", {}),
                 "experiment_rules": {
-                    "containment_class_actions_cut_off_later_attacker_execution": True,
-                    "containment_rule_scope": "rest_of_run",
+                    "containment_class_actions_cut_off_later_attacker_execution": False,
+                    "runtime_enforced_containment_blocks_later_attacker_actions": True,
+                    "containment_rule_scope": "surface_specific_or_broad_runtime_enforcement",
                     "timing_metrics_exclude_pre_run_setup_latency": True,
                 },
                 "reproducibility": self._condition_reproducibility(
@@ -1291,6 +1300,9 @@ class ExperimentOrchestrator:
                 "defender_containment_action_count": run.get("metrics", {}).get(
                     "defender_containment_action_count"
                 ),
+                "defender_runtime_enforced_containment_action_count": run.get(
+                    "metrics", {}
+                ).get("defender_runtime_enforced_containment_action_count"),
                 "defender_symbolic_containment_action_count": run.get("metrics", {}).get(
                     "defender_symbolic_containment_action_count"
                 ),
@@ -1324,6 +1336,9 @@ class ExperimentOrchestrator:
                 "containment_action_count": run.get("metrics", {})
                 .get("defender_intervention", {})
                 .get("containment_action_count"),
+                "runtime_enforced_containment_action_count": run.get("metrics", {})
+                .get("defender_intervention", {})
+                .get("runtime_enforced_containment_action_count"),
                 "symbolic_containment_action_count": run.get("metrics", {})
                 .get("defender_intervention", {})
                 .get("symbolic_containment_action_count"),
@@ -1538,6 +1553,9 @@ class ExperimentOrchestrator:
             "defender_containment_action_count_avg": average(
                 "defender_containment_action_count"
             ),
+            "defender_runtime_enforced_containment_action_count_avg": average(
+                "defender_runtime_enforced_containment_action_count"
+            ),
             "defender_symbolic_containment_action_count_avg": average(
                 "defender_symbolic_containment_action_count"
             ),
@@ -1559,6 +1577,9 @@ class ExperimentOrchestrator:
             ),
             "mitigation_action_count_avg": average("mitigation_action_count"),
             "containment_action_count_avg": average("containment_action_count"),
+            "runtime_enforced_containment_action_count_avg": average(
+                "runtime_enforced_containment_action_count"
+            ),
             "symbolic_containment_action_count_avg": average(
                 "symbolic_containment_action_count"
             ),
@@ -2202,29 +2223,24 @@ class ExperimentOrchestrator:
                 if action is None:
                     continue
 
-                if role == "attacker" and runtime_containment.get("active"):
+                action_executor = getattr(agent, "apply_action", None)
+                if callable(action_executor):
+                    state_after = action_executor(action, role=role)
+                else:
+                    state_after = env.act(action, role=role)
+                runtime_info = getattr(agent, "runtime_info", runtime_info)
+                if isinstance(runtime_info, dict) and runtime_info:
+                    env.record_role_runtime(role, runtime_info)
+                if role == "attacker" and state_after.get("blocked_by_runtime_containment"):
                     self._record_blocked_attacker_action(
                         runtime_containment=runtime_containment,
                         bundle=bundle,
                         decision=decision,
                         action=action,
                         elapsed=elapsed,
+                        block_info=state_after,
                     )
                     continue
-
-                action_executor = getattr(agent, "apply_action", None)
-                if role == "defender" and is_symbolic_containment_action(action):
-                    state_after = self._symbolic_action_state_after(
-                        action,
-                        context.get("observation", {}),
-                    )
-                elif callable(action_executor):
-                    state_after = action_executor(action)
-                else:
-                    state_after = env.act(action)
-                runtime_info = getattr(agent, "runtime_info", runtime_info)
-                if isinstance(runtime_info, dict) and runtime_info:
-                    env.record_role_runtime(role, runtime_info)
                 executed_action = True
                 record = {
                     "timestamp_utc": utc_now(),
@@ -2247,16 +2263,21 @@ class ExperimentOrchestrator:
                 recon_result = state_after.get("reconnaissance")
                 if isinstance(recon_result, dict):
                     record["result"] = recon_result
-                containment = containment_metadata(action)
+                runtime_snapshot = state_after.get("runtime_containment")
+                if isinstance(runtime_snapshot, dict):
+                    record["runtime_containment"] = runtime_snapshot
+                containment = dict(state_after.get("containment") or containment_metadata(action))
                 if role == "defender" and containment.get("is_containment_action"):
                     record["containment"] = containment
-                    self._record_containment_activation(
-                        runtime_containment=runtime_containment,
-                        bundle=bundle,
-                        action=action,
-                        role=role,
-                        elapsed=elapsed,
-                    )
+                    if containment.get("execution_mode") == "runtime_enforced":
+                        self._record_containment_activation(
+                            runtime_containment=runtime_containment,
+                            bundle=bundle,
+                            action=action,
+                            role=role,
+                            elapsed=elapsed,
+                            state_after=state_after,
+                        )
                 bundle.executed_actions.append(record)
         return executed_action
 
