@@ -7,27 +7,39 @@ from pathlib import Path
 
 
 def _load_sourceless(module_name: str):
-    workspace_root = Path(__file__).resolve().parents[4]
-    candidate_paths = [
-        workspace_root
-        / "sphere-usecases"
-        / "water-treatment"
-        / "implementations"
-        / "openplc"
-        / "scripts"
-        / "__pycache__"
-        / f"{module_name}.cpython-310.pyc",
-        workspace_root
-        / "sphere-usecases"
-        / "water-treatment"
-        / "implementations"
-        / "openplc"
-        / "scripts"
-        / "__pycache__"
-        / f"{module_name}.py",
-        Path(__file__).resolve().parent / "__pycache__" / f"{module_name}.cpython-310.pyc",
-        Path(__file__).resolve().parent / "__pycache__" / f"{module_name}.py",
-    ]
+    script_dir = Path(__file__).resolve().parent
+    parent_chain = Path(__file__).resolve().parents
+    workspace_root = parent_chain[4] if len(parent_chain) > 4 else None
+    candidate_paths = []
+    if workspace_root is not None:
+        candidate_paths.extend(
+            [
+                workspace_root
+                / "sphere-usecases"
+                / "water-treatment"
+                / "implementations"
+                / "openplc"
+                / "scripts"
+                / "__pycache__"
+                / f"{module_name}.cpython-310.pyc",
+                workspace_root
+                / "sphere-usecases"
+                / "water-treatment"
+                / "implementations"
+                / "openplc"
+                / "scripts"
+                / "__pycache__"
+                / f"{module_name}.py",
+            ]
+        )
+    candidate_paths.extend(
+        [
+            script_dir / "__pycache__" / f"{module_name}.cpython-310.pyc",
+            script_dir / "__pycache__" / f"{module_name}.py",
+            script_dir / f"{module_name}.cpython-310.pyc",
+            script_dir / f"{module_name}.py",
+        ]
+    )
     for candidate_path in candidate_paths:
         if not candidate_path.exists():
             continue

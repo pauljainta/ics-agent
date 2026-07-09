@@ -9,9 +9,9 @@ environment:
   backend: sphere_openplc
   merge_server: merge.example.invalid
   experiment: openplcwater.lgarcia
-  realization: optionbsmoke
+  realization: example-realization-03
   revision: ac79757fe0d3f8e98bbfa43a303fee121b88be05
-  xdc: optionb0
+  xdc: example-xdc-07
   keep_running: true
   start_bridge: true
   remote_bind_host: 0.0.0.0
