@@ -6,6 +6,11 @@ __pycache__/
 .Python
 .pytest_cache/
 .ruff_cache/
+!vendor/openplc/scripts/__pycache__/
+!vendor/openplc/scripts/__pycache__/modbus_bridge.cpython-310.pyc
+!vendor/openplc/scripts/__pycache__/modbus_raw.cpython-310.pyc
+!vendor/openplc/scripts/__pycache__/native_plc_runtime.cpython-310.pyc
+!vendor/openplc/scripts/__pycache__/openplc_testbed.cpython-310.pyc
 
 # Environments
 .venv/

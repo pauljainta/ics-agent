@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+from ics_agent import environment as environment_module
 from ics_agent.environment import OpenPLCEnvironment
 
 
@@ -119,3 +123,20 @@ def test_runtime_containment_state_resets_between_episodes(fake_openplc) -> None
     assert allowed.get("blocked_by_runtime_containment") is not True
     assert env.runtime_containment_snapshot()["active"] is False
     assert env.testbed.actions[-1]["type"] == "set_sensor"
+
+
+def test_vendor_openplc_payload_imports_without_workspace_repos(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(environment_module, "WORKSPACE_ROOT", tmp_path)
+    vendor_scripts = environment_module.OPENPLC_SUPPORT_SCRIPTS.resolve()
+
+    for module_name in ("modbus_raw", "native_plc_runtime", "openplc_testbed"):
+        sys.modules.pop(module_name, None)
+
+    imported = {
+        module_name: environment_module._import_openplc_module(module_name)
+        for module_name in ("modbus_raw", "native_plc_runtime", "openplc_testbed")
+    }
+
+    for module in imported.values():
+        module_path = Path(module.__file__).resolve()
+        assert vendor_scripts in module_path.parents

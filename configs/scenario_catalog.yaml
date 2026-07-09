@@ -1,0 +1,314 @@
+global_required_metrics: &global_required_metrics
+  - time_to_detection_sec
+  - time_to_mitigation_sec
+  - true_positive_rate
+  - false_positive_rate
+  - false_negative_rate
+  - safety_violation_count
+  - recovery_success_rate
+  - decision_correctness
+  - diagnosis_accuracy
+  - system_stability_indicators
+  - operator_workload
+
+suite_defaults:
+  readiness:
+    name: Readiness Scenario
+    intent: Validate the OpenPLC water-treatment stack can start, reset, step, and stop cleanly while exposing the process state required for experiments.
+    prerequisites:
+      - The OpenPLC controller and simulator backend are available through the configured runtime backend.
+      - Modbus bridge startup succeeds.
+    start_state:
+      source: execution.initial_conditions
+      mode: online
+    attacker_actions: []
+    defender_responses:
+      - Confirm alarms, permissives, and shutdown behavior match the scenario expectations.
+      - Preserve safety by stopping the plant if bounds are exceeded.
+    expected_outcomes:
+      - The environment completes the scenario without manual intervention.
+      - Telemetry and state transitions are logged end to end.
+    success_conditions:
+      - Scenario expectations defined in the execution file pass.
+      - The run writes observations, actions, decisions, and metrics.
+    failure_conditions:
+      - The environment fails to start or reset.
+      - The execution expectations fail.
+    required_metrics: *global_required_metrics
+    ground_truth:
+      incident_type: fault
+      mitigation_actions: [hmi_stop, hmi_estop]
+    safety_bounds:
+      RW_Tank_Level: { min: 0, max: 1200 }
+      UF_UFFT_Tank_Level: { min: 0, max: 1200 }
+      ChemTreat_NaCl_Level: { min: 0, max: 1000 }
+      ChemTreat_NaOCl_Level: { min: 0, max: 1000 }
+      ChemTreat_HCl_Level: { min: 0, max: 1000 }
+    tags: [baseline, readiness]
+  normal:
+    name: Nominal Operations Scenario
+    intent: Exercise normal water-treatment operations with deterministic scripted operator actions on the same environment interface used by agentic roles.
+    prerequisites:
+      - The OpenPLC environment can be reset to the configured initial conditions.
+      - Nominal operator actions are allowed by the controller.
+    start_state:
+      source: execution.initial_conditions
+      mode: online
+    attacker_actions: []
+    defender_responses:
+      - Monitor state transitions, alarms, and flows for anomalies.
+      - Intervene only if safety bounds are violated.
+    expected_outcomes:
+      - Nominal actions complete without safety violations.
+      - The environment reaches the expected final state.
+    success_conditions:
+      - Scenario expectations pass.
+      - No unexpected state transition persists at the end of the run.
+    failure_conditions:
+      - Nominal action sequence cannot be executed.
+      - Safety bounds are violated.
+    required_metrics: *global_required_metrics
+    ground_truth:
+      incident_type: nominal
+      mitigation_actions: [hmi_stop, hmi_estop]
+    safety_bounds:
+      RW_Tank_Level: { min: 0, max: 1200 }
+      UF_UFFT_Tank_Level: { min: 0, max: 1200 }
+      ChemTreat_NaCl_Level: { min: 0, max: 1000 }
+      ChemTreat_NaOCl_Level: { min: 0, max: 1000 }
+      ChemTreat_HCl_Level: { min: 0, max: 1000 }
+    tags: [baseline, nominal]
+  attack:
+    name: Attack Scenario
+    intent: Exercise cyber-physical attack steps and defender responses on the shared action and observation surface used by scripted and agentic roles.
+    prerequisites:
+      - The OpenPLC environment is reachable and resettable.
+      - The attacker action space exposed by the testbed is available.
+    start_state:
+      source: execution.initial_conditions
+      mode: online
+    attacker_actions:
+      - Execute the scenario attack plan using the shared role interface.
+    defender_responses:
+      - Detect attack indicators from telemetry or alarms.
+      - Mitigate with safe shutdown or process deselection if needed.
+    expected_outcomes:
+      - Attack steps are logged with timestamps.
+      - Defender and observer decisions can be compared across role families.
+    success_conditions:
+      - Attack actions and environment responses are logged.
+      - Metrics artifacts capture detection and mitigation timing.
+    failure_conditions:
+      - Attack steps cannot be executed.
+      - The run terminates without artifacts.
+    required_metrics: *global_required_metrics
+    ground_truth:
+      incident_type: attack
+      mitigation_actions: [hmi_stop, hmi_estop, select_process]
+    safety_bounds:
+      RW_Tank_Level: { min: 0, max: 1200 }
+      UF_UFFT_Tank_Level: { min: 0, max: 1200 }
+      ChemTreat_NaCl_Level: { min: 0, max: 1000 }
+      ChemTreat_NaOCl_Level: { min: 0, max: 1000 }
+      ChemTreat_HCl_Level: { min: 0, max: 1000 }
+    tags: [attack, cyber-physical]
+  recheck:
+    name: Regression Recheck Scenario
+    intent: Re-run representative scenarios after changes to confirm prior fixes and baseline behaviors still hold.
+    prerequisites:
+      - A previously working baseline exists for comparison.
+      - The environment can be reset cleanly.
+    start_state:
+      source: execution.initial_conditions
+      mode: online
+    attacker_actions: []
+    defender_responses:
+      - Verify previously observed issues do not regress.
+    expected_outcomes:
+      - The recheck scenario matches baseline expectations.
+    success_conditions:
+      - Scenario expectations pass and logs are generated.
+    failure_conditions:
+      - A previously passing scenario fails.
+    required_metrics: *global_required_metrics
+    ground_truth:
+      incident_type: regression
+      mitigation_actions: [hmi_stop, hmi_estop]
+    safety_bounds:
+      RW_Tank_Level: { min: 0, max: 1200 }
+      UF_UFFT_Tank_Level: { min: 0, max: 1200 }
+      ChemTreat_NaCl_Level: { min: 0, max: 1000 }
+      ChemTreat_NaOCl_Level: { min: 0, max: 1000 }
+      ChemTreat_HCl_Level: { min: 0, max: 1000 }
+    tags: [recheck, regression]
+  smoke:
+    name: Smoke Scenario
+    intent: Provide short-duration scenarios for fast validation of environment stepping, role interfaces, metrics, and replay flows.
+    prerequisites:
+      - The configured runtime backend can launch locally.
+      - The results root is writable.
+    start_state:
+      source: execution.initial_conditions
+      mode: online
+    attacker_actions:
+      - Execute short smoke attack actions if present.
+    defender_responses:
+      - Raise at least one alert or mitigation when the smoke attack begins.
+    expected_outcomes:
+      - The smoke run completes quickly and writes complete artifacts.
+    success_conditions:
+      - Observations, actions, metrics, and summaries are created under the configured runtime results root.
+    failure_conditions:
+      - The smoke run fails to produce artifacts.
+    required_metrics: *global_required_metrics
+    ground_truth:
+      incident_type: smoke
+      mitigation_actions: [hmi_stop, hmi_estop, select_process]
+    safety_bounds:
+      RW_Tank_Level: { min: 0, max: 1200 }
+      UF_UFFT_Tank_Level: { min: 0, max: 1200 }
+      ChemTreat_NaCl_Level: { min: 0, max: 1000 }
+      ChemTreat_NaOCl_Level: { min: 0, max: 1000 }
+      ChemTreat_HCl_Level: { min: 0, max: 1000 }
+    tags: [smoke, fast]
+
+scenario_overrides:
+  attack/wt-attack-sensor-rw-refill-spoof:
+    name: Raw Water Refill Spoof Attack
+    intent: Force unnecessary raw-water refill behavior by spoofing the tank level during runtime.
+    attacker_actions:
+      - Start the plant, spoof RW_Tank_Level low during RUNNING, and observe refill valve activation.
+    defender_responses:
+      - Detect the low-level inconsistency and stop the plant if safety risk persists.
+    expected_outcomes:
+      - Defender or observer can report a low-level or spoofing diagnosis.
+    ground_truth:
+      incident_start_time_sec: 15
+      expected_diagnosis: raw_water_low_or_spoof
+      expected_defender_actions: [hmi_stop]
+  attack/wt-attack-p2-multi-chemical-drain:
+    name: P2 Multi-Chemical Drain Attack
+    intent: Abuse Process 2 manual dosing to drain multiple chemical tanks in sequence.
+    attacker_actions:
+      - Select Process 2 and open multiple manual dosing valves while the plant is running.
+    defender_responses:
+      - Deselect Process 2 or stop the plant when unauthorized dosing is detected.
+    expected_outcomes:
+      - Tank depletion, valve status changes, and defender response timing are logged.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-naocl-drain:
+    name: P2 NaOCl Drain Attack
+    intent: Abuse the Process 2 NaOCl manual valve to drain chemical inventory while the plant is running.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-hcl-drain:
+    name: P2 HCl Drain Attack
+    intent: Abuse the Process 2 HCl manual valve to drain chemical inventory while the plant is running.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-dual-hijack:
+    name: P2 Dual Hijack Attack
+    intent: Chain two unauthorized chemical actions to create a multi-stage Process 2 compromise.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  attack/wt-attack-p2-select-chatter:
+    name: P2 Selection Chatter Attack
+    intent: Repeatedly toggle Process 2 selection to create control confusion and distract operators.
+    ground_truth:
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process]
+  attack/wt-attack-sensor-rw-cascade-low-hh:
+    name: Raw Water Cascade Spoof Attack
+    intent: Drive a low-to-high-high sensor cascade to force multiple controller reactions in one attack run.
+    ground_truth:
+      incident_start_time_sec: 14
+      expected_diagnosis: raw_water_alarm_condition
+      expected_defender_actions: [hmi_stop, hmi_estop]
+  attack/wt-attack-sensor-rw-oscillation:
+    name: Raw Water Oscillation Spoof Attack
+    intent: Oscillate raw-water level readings to create repeated, confusing process responses.
+    ground_truth:
+      incident_start_time_sec: 14
+      expected_diagnosis: raw_water_low_or_spoof
+      expected_defender_actions: [hmi_stop]
+  readiness/wt-uc1-low-level-block:
+    name: Low-Level Permissive Block
+    intent: Validate that raw-water permissives block startup from an unsafe low initial level.
+    attacker_actions: []
+    defender_responses:
+      - Report blocked permissives without forcing unsafe startup.
+    expected_outcomes:
+      - The plant remains blocked from entering RUNNING until conditions are corrected.
+    ground_truth:
+      expected_diagnosis: startup_blocked_low_level
+  readiness/wt-uc1-alarm-hh:
+    name: High-High Alarm Injection
+    intent: Force a high-high raw-water condition and verify alarm surfacing and shutdown behavior.
+    expected_outcomes:
+      - The run records a high-high alarm condition and defender decisions if configured.
+    ground_truth:
+      expected_diagnosis: raw_water_alarm_condition
+  smoke/wt-smoke-p1-short-nominal:
+    name: Short P1 Nominal Smoke Run
+    intent: Quickly verify startup, observation capture, and clean shutdown on the live OpenPLC path.
+    attacker_actions: []
+    defender_responses:
+      - Remain passive unless a safety threshold is crossed.
+    expected_outcomes:
+      - The plant reaches RUNNING and then SHUTDOWN within the short window.
+    ground_truth:
+      incident_type: nominal
+  smoke/wt-smoke-rw-refill-spoof:
+    name: Short RW Refill Spoof Smoke Attack
+    intent: Provide a short attack scenario for core combination-matrix smoke testing.
+    attacker_actions:
+      - Start the plant and spoof raw-water level low once the process is running.
+    defender_responses:
+      - Raise an alert and optionally stop the plant.
+    expected_outcomes:
+      - Detection and mitigation timing are available from a short run.
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 7
+      expected_diagnosis: raw_water_low_or_spoof
+      expected_defender_actions: [hmi_stop]
+      mitigation_actions: [hmi_stop, hmi_estop]
+  smoke/wt-smoke-p2-naocl-attack:
+    name: Short P2 NaOCl Attack
+    intent: Provide a compact Process 2 hijack scenario for fully agentic and mixed-role smoke testing.
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 6
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]
+  smoke/wt-smoke-p2-dual-nominal:
+    name: Short P2 Dual Nominal Smoke Run
+    intent: Quickly verify nominal manual dosing across two chemicals and clean Process 2 deselection.
+    ground_truth:
+      incident_type: nominal
+  recheck/wt-recheck-attack-rw-refill-spoof:
+    name: Recheck Raw Water Refill Spoof
+    intent: Re-run the refill spoof attack after framework changes to confirm detection still fires.
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 15
+      expected_diagnosis: raw_water_low_or_spoof
+      expected_defender_actions: [hmi_stop]
+  recheck/wt-recheck-attack-p2-naocl-drain:
+    name: Recheck P2 NaOCl Drain
+    intent: Re-run the NaOCl hijack after framework changes to confirm Process 2 abuse remains visible.
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 8
+      expected_diagnosis: unauthorized_chemical_dosing
+      expected_defender_actions: [select_process, hmi_stop]

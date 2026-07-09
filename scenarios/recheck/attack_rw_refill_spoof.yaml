@@ -1,0 +1,29 @@
+scenario_id: "wt-recheck-attack-rw-refill-spoof"
+process_id: "WT-P1"
+description: "Recheck: confirm defender detection still catches raw-water refill spoof attack"
+duration_sec: 40
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 15
+    action: { type: set_sensor, name: RW_Tank_Level, value: 400 }
+  - { time_sec: 28, action: hmi_stop }
+
+expectations:
+  final_state: SHUTDOWN
+  must_reach_states: [RUNNING]
+  ever_nonzero:
+    - RW_Tank_PR_Valve_Sts
+  event_count:
+    hmi_start: 1
+    hmi_stop: 1
+  min_samples: 56
+

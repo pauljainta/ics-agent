@@ -166,35 +166,55 @@ def _baseline_root_for(attacker_profile_id: str) -> Path | None:
 
 
 def _artifact_cleanup_status() -> list[dict[str, str]]:
+    repo_configs_dir = REPO_ROOT / "configs"
+    repo_scenarios_dir = REPO_ROOT / "scenarios"
     configs_dir = WORKSPACE_ROOT / "Artifact" / "Configs"
     scenarios_dir = WORKSPACE_ROOT / "Artifact" / "Scenarios"
     experiments_dir = WORKSPACE_ROOT / "Artifact" / "Experiments"
     return [
         {
-            "path": portable_path(configs_dir),
-            "status": "kept" if configs_dir.exists() else "missing",
+            "path": portable_path(repo_configs_dir),
+            "status": "kept" if repo_configs_dir.exists() else "missing",
             "reason": (
-                "Current runtime config resolution still loads agent profiles and catalog files from Artifact/Configs."
+                "Runtime config resolution now loads agent profiles and scenario catalog from repo-local configs."
+                if repo_configs_dir.exists()
+                else "Repo-local configs unexpectedly missing."
+            ),
+        },
+        {
+            "path": portable_path(repo_scenarios_dir),
+            "status": "kept" if repo_scenarios_dir.exists() else "missing",
+            "reason": (
+                "The 18-scenario suite now resolves from repo-local scenarios."
+                if repo_scenarios_dir.exists()
+                else "Repo-local scenarios unexpectedly missing."
+            ),
+        },
+        {
+            "path": portable_path(configs_dir),
+            "status": "present" if configs_dir.exists() else "pruned",
+            "reason": (
+                "Legacy Artifact/Configs is still present but no longer used by runtime config resolution."
                 if configs_dir.exists()
-                else "Artifact/Configs unexpectedly missing."
+                else "Pruned because runtime config resolution is repo-local."
             ),
         },
         {
             "path": portable_path(scenarios_dir),
-            "status": "kept" if scenarios_dir.exists() else "missing",
+            "status": "present" if scenarios_dir.exists() else "pruned",
             "reason": (
-                "Current scenario catalog and the 18-scenario suite still resolve through Artifact/Scenarios."
+                "Legacy Artifact/Scenarios is still present but no longer used by the scenario catalog."
                 if scenarios_dir.exists()
-                else "Artifact/Scenarios unexpectedly missing."
+                else "Pruned because scenario resolution is repo-local."
             ),
         },
         {
             "path": portable_path(experiments_dir),
-            "status": "kept" if experiments_dir.exists() else "pruned",
+            "status": "present" if experiments_dir.exists() else "pruned",
             "reason": (
-                "Artifact/Experiments is still present."
+                "Legacy Artifact/Experiments is still present."
                 if experiments_dir.exists()
-                else "Pruned because the live seeded runner uses repo configs and current validation no longer depends on Artifact/Experiments."
+                else "Pruned because the live seeded runner uses repo experiment configs and no longer depends on Artifact/Experiments."
             ),
         },
     ]

@@ -3,7 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .paths import REPO_ROOT, artifact_config_root, artifact_experiment_root, artifact_scenario_root
+from .paths import (
+    REPO_ROOT,
+    artifact_config_root,
+    artifact_experiment_root,
+    artifact_scenario_root,
+    config_roots,
+    experiment_roots,
+    scenario_roots,
+)
 from .utils import load_yaml
 
 
@@ -38,11 +46,11 @@ def resolve_runtime_config_path(value: str | Path) -> Path:
     search_plan: list[tuple[Path, tuple[Path, ...]]] = []
 
     for prefix, roots in (
-        (("configs", "experiments"), (artifact_experiment_root(),)),
-        (("experiments",), (artifact_experiment_root(),)),
-        (("configs", "scenarios"), (artifact_scenario_root(),)),
-        (("scenarios",), (artifact_scenario_root(),)),
-        (("configs",), (artifact_config_root(),)),
+        (("configs", "experiments"), experiment_roots()),
+        (("experiments",), experiment_roots()),
+        (("configs", "scenarios"), scenario_roots()),
+        (("scenarios",), scenario_roots()),
+        (("configs",), config_roots()),
     ):
         stripped = _strip_prefix(parts, prefix)
         if stripped is not None:
@@ -51,9 +59,9 @@ def resolve_runtime_config_path(value: str | Path) -> Path:
 
     if not search_plan:
         search_plan = [
-            (path, (artifact_config_root(),)),
-            (path, (artifact_experiment_root(),)),
-            (path, (artifact_scenario_root(),)),
+            (path, config_roots()),
+            (path, experiment_roots()),
+            (path, scenario_roots()),
         ]
 
     first_candidate: Path | None = None
@@ -68,7 +76,7 @@ def resolve_runtime_config_path(value: str | Path) -> Path:
     if first_candidate is None:
         raise ConfigError(f"unable to resolve runtime config path: {value}")
     raise ConfigError(
-        f"runtime config not found for `{value}` under Artifact roots: "
+        f"runtime config not found for `{value}` under repo runtime roots: "
         f"{artifact_config_root()}, {artifact_experiment_root()}, {artifact_scenario_root()}"
     )
 

@@ -1,0 +1,28 @@
+scenario_id: "wt-uc1-alarm-hh"
+process_id: "WT-P1"
+description: "Experimental: force RW tank past 1200mm to trigger HH alarm"
+duration_sec: 60
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 1250
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - { time_sec: 40, action: hmi_stop }
+
+expectations:
+  final_state: SHUTDOWN
+  must_reach_states: [RUNNING]
+  peak_at_least:
+    RW_Tank_Level: 1200
+  ever_nonzero:
+    - Alarm_RW_Tank_HH
+  final_equals:
+    RW_Pump_Sts: 0
+
+reference_bundle: null

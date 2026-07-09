@@ -39,24 +39,10 @@ def _import_openplc_module(module_name: str):
         return importlib.import_module(module_name)
     except ModuleNotFoundError:
         candidate_paths = [
-            WORKSPACE_ROOT
-            / "sphere-usecases"
-            / "water-treatment"
-            / "implementations"
-            / "openplc"
-            / "scripts"
-            / "__pycache__"
-            / f"{module_name}.cpython-310.pyc",
-            WORKSPACE_ROOT
-            / "sphere-usecases"
-            / "water-treatment"
-            / "implementations"
-            / "openplc"
-            / "scripts"
-            / "__pycache__"
-            / f"{module_name}.py",
             OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.cpython-310.pyc",
             OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.py",
+            OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.cpython-310.pyc",
+            OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.py",
         ]
         for candidate_path in candidate_paths:
             if not candidate_path.exists():
@@ -1095,54 +1081,14 @@ class _SphereOpenPLCBackend:
             )
         self.ssh_config_path.write_text("\n".join(lines))
 
-    @staticmethod
-    def _support_payload_candidates(*relative_paths: str) -> list[Path]:
-        vendor_root = OPENPLC_SUPPORT_SCRIPTS
-        workspace_openplc_root = (
-            WORKSPACE_ROOT
-            / "sphere-usecases"
-            / "water-treatment"
-            / "implementations"
-            / "openplc"
-            / "scripts"
-        )
-        candidates: list[Path] = []
-        for relative_path in relative_paths:
-            candidates.append(vendor_root / relative_path)
-            candidates.append(workspace_openplc_root / relative_path)
-        return candidates
-
-    @staticmethod
-    def _workspace_support_payload_candidates(*relative_paths: str) -> list[Path]:
-        workspace_openplc_root = (
-            WORKSPACE_ROOT
-            / "sphere-usecases"
-            / "water-treatment"
-            / "implementations"
-            / "openplc"
-            / "scripts"
-        )
-        return [workspace_openplc_root / relative_path for relative_path in relative_paths]
-
     def _resolve_support_payload(self, *relative_paths: str) -> Path:
-        for candidate in self._support_payload_candidates(*relative_paths):
+        candidate_paths = [OPENPLC_SUPPORT_SCRIPTS / relative_path for relative_path in relative_paths]
+        for candidate in candidate_paths:
             if candidate.exists():
                 return candidate
         raise EnvironmentError(
             "required native runtime payload is missing: "
-            + ", ".join(str(path) for path in self._support_payload_candidates(*relative_paths))
-        )
-
-    def _resolve_workspace_support_payload(self, *relative_paths: str) -> Path:
-        for candidate in self._workspace_support_payload_candidates(*relative_paths):
-            if candidate.exists():
-                return candidate
-        raise EnvironmentError(
-            "required native runtime payload is missing: "
-            + ", ".join(
-                str(path)
-                for path in self._workspace_support_payload_candidates(*relative_paths)
-            )
+            + ", ".join(str(path) for path in candidate_paths)
         )
 
     def _stage_remote_runtime(self, targets: list[str] | tuple[str, ...] | None = None) -> None:
@@ -1152,15 +1098,13 @@ class _SphereOpenPLCBackend:
                 "native_plc_runtime.py",
             ),
             (
-                self._resolve_workspace_support_payload(
+                self._resolve_support_payload(
                     "__pycache__/native_plc_runtime.cpython-310.pyc"
                 ),
                 "__pycache__/native_plc_runtime.cpython-310.pyc",
             ),
             (
-                self._resolve_workspace_support_payload(
-                    "__pycache__/modbus_raw.cpython-310.pyc"
-                ),
+                self._resolve_support_payload("__pycache__/modbus_raw.cpython-310.pyc"),
                 "__pycache__/modbus_raw.cpython-310.pyc",
             ),
             (
@@ -1168,9 +1112,7 @@ class _SphereOpenPLCBackend:
                 "modbus_bridge.py",
             ),
             (
-                self._resolve_workspace_support_payload(
-                    "__pycache__/modbus_bridge.cpython-310.pyc"
-                ),
+                self._resolve_support_payload("__pycache__/modbus_bridge.cpython-310.pyc"),
                 "__pycache__/modbus_bridge.cpython-310.pyc",
             ),
         ]

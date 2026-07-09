@@ -9,6 +9,9 @@ WORKSPACE_ROOT = REPO_ROOT.parent
 DEFAULT_ARTIFACT_ROOT = WORKSPACE_ROOT / "Artifact"
 OPENPLC_SUPPORT_DIR = REPO_ROOT / "vendor" / "openplc"
 OPENPLC_SUPPORT_SCRIPTS = OPENPLC_SUPPORT_DIR / "scripts"
+RUNTIME_CONFIG_ROOT = REPO_ROOT / "configs"
+RUNTIME_EXPERIMENT_ROOT = RUNTIME_CONFIG_ROOT / "experiments"
+RUNTIME_SCENARIO_ROOT = REPO_ROOT / "scenarios"
 
 
 def artifact_root() -> Path:
@@ -19,15 +22,15 @@ def artifact_root() -> Path:
 
 
 def artifact_config_root() -> Path:
-    return artifact_root() / "Configs"
+    return RUNTIME_CONFIG_ROOT
 
 
 def artifact_experiment_root() -> Path:
-    return artifact_root() / "Experiments"
+    return RUNTIME_EXPERIMENT_ROOT
 
 
 def artifact_scenario_root() -> Path:
-    return artifact_root() / "Scenarios"
+    return RUNTIME_SCENARIO_ROOT
 
 
 def results_root() -> Path:
@@ -35,24 +38,24 @@ def results_root() -> Path:
 
 
 def config_roots() -> tuple[Path, ...]:
-    return (artifact_config_root(),)
+    return (RUNTIME_CONFIG_ROOT,)
 
 
 def experiment_roots() -> tuple[Path, ...]:
-    return (artifact_experiment_root(),)
+    return (RUNTIME_EXPERIMENT_ROOT,)
 
 
 def scenario_roots() -> tuple[Path, ...]:
-    return (artifact_scenario_root(),)
+    return (RUNTIME_SCENARIO_ROOT,)
 
 
 def active_scenario_config_root() -> Path:
-    return artifact_scenario_root()
+    return RUNTIME_SCENARIO_ROOT
 
 
-CONFIG_ROOT = artifact_config_root()
+CONFIG_ROOT = RUNTIME_CONFIG_ROOT
 RESULTS_ROOT = results_root()
-SCENARIO_CONFIG_ROOT = active_scenario_config_root()
+SCENARIO_CONFIG_ROOT = RUNTIME_SCENARIO_ROOT
 
 
 def portable_path(path: Path) -> str:
