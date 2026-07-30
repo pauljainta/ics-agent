@@ -21,6 +21,7 @@ from ..mitre import (
     phase_metadata,
 )
 from ..paths import REPO_ROOT
+from ..testbeds import observation_focus_fields, trend_fields
 
 
 class CachedQwenDecisionEngine:
@@ -335,32 +336,33 @@ class CachedQwenDecisionEngine:
 
         decoder = json.JSONDecoder()
         for candidate in candidates:
-            try:
-                payload = json.loads(candidate)
-            except json.JSONDecodeError:
-                payload = None
-            if isinstance(payload, dict):
-                return payload
-            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                return payload[0]
+            for variant in CachedQwenDecisionEngine._candidate_variants(candidate):
+                try:
+                    payload = json.loads(variant)
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict):
+                    return payload
+                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                    return payload[0]
 
-            try:
-                payload = yaml.safe_load(candidate)
-            except yaml.YAMLError:
-                payload = None
-            if isinstance(payload, dict):
-                return payload
-            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                return payload[0]
+                try:
+                    payload = yaml.safe_load(variant)
+                except yaml.YAMLError:
+                    payload = None
+                if isinstance(payload, dict):
+                    return payload
+                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                    return payload[0]
 
-            try:
-                payload = ast.literal_eval(candidate)
-            except (SyntaxError, ValueError):
-                payload = None
-            if isinstance(payload, dict):
-                return payload
-            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                return payload[0]
+                try:
+                    payload = ast.literal_eval(variant)
+                except (SyntaxError, ValueError):
+                    payload = None
+                if isinstance(payload, dict):
+                    return payload
+                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                    return payload[0]
 
             for index, char in enumerate(candidate):
                 if char != "{":
@@ -372,6 +374,99 @@ class CachedQwenDecisionEngine:
                 if isinstance(payload, dict):
                     return payload
         return None
+
+    @staticmethod
+    def _candidate_variants(candidate: str) -> list[str]:
+        variants: list[str] = []
+        seen: set[str] = set()
+
+        def add_variant(value: str) -> None:
+            value = value.strip()
+            if not value or value in seen:
+                return
+            seen.add(value)
+            variants.append(value)
+
+        add_variant(candidate)
+        brace_index = candidate.find("{")
+        if brace_index > 0:
+            add_variant(candidate[brace_index:])
+
+        working = candidate[brace_index:] if brace_index >= 0 else candidate
+        while working:
+            repaired = CachedQwenDecisionEngine._repair_partial_json(working)
+            add_variant(repaired)
+            comma_index = CachedQwenDecisionEngine._last_top_level_comma(working)
+            if comma_index < 0:
+                break
+            working = working[:comma_index]
+
+        return variants
+
+    @staticmethod
+    def _repair_partial_json(candidate: str) -> str:
+        text = candidate.rstrip()
+        while text.endswith(("\\", ",", ":")):
+            text = text[:-1].rstrip()
+
+        closers: list[str] = []
+        in_string = False
+        escape = False
+        for char in text:
+            if in_string:
+                if escape:
+                    escape = False
+                    continue
+                if char == "\\":
+                    escape = True
+                    continue
+                if char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                closers.append("}")
+            elif char == "[":
+                closers.append("]")
+            elif char in {"}", "]"} and closers:
+                closers.pop()
+
+        if in_string:
+            text += '"'
+        if escape:
+            text += '"'
+        if closers:
+            text += "".join(reversed(closers))
+        return text
+
+    @staticmethod
+    def _last_top_level_comma(candidate: str) -> int:
+        in_string = False
+        escape = False
+        depth = 0
+        last_index = -1
+        for index, char in enumerate(candidate):
+            if in_string:
+                if escape:
+                    escape = False
+                    continue
+                if char == "\\":
+                    escape = True
+                    continue
+                if char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char in "{[":
+                depth += 1
+            elif char in "}]":
+                depth = max(0, depth - 1)
+            elif char == "," and depth == 1:
+                last_index = index
+        return last_index
 
     @staticmethod
     def _raw_excerpt(raw: Any, *, limit: int = 320) -> str:
@@ -6551,15 +6646,7 @@ class AgenticRoleAgent(RoleAgent):
     def _short_horizon_trends(
         self, observations: list[dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        fields = [
-            "RW_Tank_Level",
-            "UF_UFFT_Tank_Level",
-            "ChemTreat_NaCl_Level",
-            "ChemTreat_NaOCl_Level",
-            "ChemTreat_HCl_Level",
-            "RW_Pump_Flow",
-            "RW_Pump_Speed_Cmd",
-        ]
+        fields = trend_fields(self._state.get("testbed_id"))
         if not observations:
             return {}
 
@@ -6596,6 +6683,11 @@ class AgenticRoleAgent(RoleAgent):
         observation: dict[str, Any],
         trends: dict[str, dict[str, Any]],
     ) -> list[str]:
+        if self._state.get("testbed_id") == "water_distribution":
+            return self._derive_water_distribution_relationship_notes(
+                observation=observation,
+                trends=trends,
+            )
         notes: list[str] = []
         if self._is_active_flag(observation.get("Alarm_RW_Tank_LL")):
             notes.append("raw_water_low_low_alarm_active")
@@ -6654,6 +6746,13 @@ class AgenticRoleAgent(RoleAgent):
         relationship_notes: list[str],
         trends: dict[str, dict[str, Any]],
     ) -> list[str]:
+        if self._state.get("testbed_id") == "water_distribution":
+            return self._derive_water_distribution_risk_flags(
+                observation=observation,
+                active_alarms=active_alarms,
+                relationship_notes=relationship_notes,
+                trends=trends,
+            )
         risks: list[str] = []
         if active_alarms:
             risks.append("alarm_active")
@@ -9578,49 +9677,88 @@ class AgenticRoleAgent(RoleAgent):
         except (TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _compact_observation(observation: dict[str, Any]) -> dict[str, Any]:
-        fields = [
-            "timestamp_utc",
-            "elapsed_sec",
-            "sample_phase",
-            "STATE_NAME",
-            "RW_Tank_Level",
-            "UF_UFFT_Tank_Level",
-            "ChemTreat_NaCl_Level",
-            "ChemTreat_NaOCl_Level",
-            "ChemTreat_HCl_Level",
-            "RW_Pump_Flow",
-            "RW_Pump_Speed_Cmd",
-            "RW_Tank_PR_Valve_Cmd",
-            "RW_Tank_P_Valve_Cmd",
-            "RW_Tank_PR_Valve_Sts",
-            "RW_Tank_P_Valve_Sts",
-            "RW_Pump_Sts",
-            "ChemTreat_NaCl_Valve_Cmd",
-            "ChemTreat_NaOCl_Valve_Cmd",
-            "ChemTreat_HCl_Valve_Cmd",
-            "ChemTreat_NaCl_Valve_Sts",
-            "ChemTreat_NaOCl_Valve_Sts",
-            "ChemTreat_HCl_Valve_Sts",
-            "SYS_IDLE",
-            "SYS_START",
-            "SYS_RUNNING",
-            "SYS_SHUTDOWN",
-            "P2_Selected",
-            "P2_NaCl_Cmd",
-            "P2_NaOCl_Cmd",
-            "P2_HCl_Cmd",
-            "Alarm_RW_Tank_LL",
-            "Alarm_RW_Tank_L",
-            "Alarm_RW_Tank_H",
-            "Alarm_RW_Tank_HH",
-            "HMI_Start_Active",
-            "HMI_Stop_Active",
-        ]
+    def _compact_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
+        fields = ["timestamp_utc", "elapsed_sec", "sample_phase"]
+        fields.extend(observation_focus_fields(self._state.get("testbed_id")))
         return {
             field: observation.get(field) for field in fields if field in observation
         }
+
+    def _derive_water_distribution_relationship_notes(
+        self,
+        *,
+        observation: dict[str, Any],
+        trends: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        notes: list[str] = []
+        if self._is_active_flag(observation.get("Alarm_Supply_Tank_HH")):
+            notes.append("supply_high_high_alarm_active")
+
+        for cmd_field, sts_field in (
+            ("Supply_Tank_Valve_Cmd", "Supply_Tank_Valve_Sts"),
+            ("Grid_Elev_Valve_Cmd", "Grid_Elev_Valve_Sts"),
+            ("RWS_Tank_Valve_Cmd", "RWS_Tank_Valve_Sts"),
+        ):
+            if cmd_field in observation and sts_field in observation:
+                if self._is_active_flag(observation.get(cmd_field)) != self._is_active_flag(
+                    observation.get(sts_field)
+                ):
+                    notes.append(f"command_status_mismatch:{cmd_field}->{sts_field}")
+
+        if (
+            self._is_active_flag(observation.get("Supply_Pump_Sts"))
+            and self._coerce_number(observation.get("Supply_Tank_Level")) is not None
+            and self._coerce_number(observation.get("Supply_Tank_Level")) <= 350.0
+        ):
+            notes.append("pump_running_while_supply_low")
+
+        for field in (
+            "Supply_Tank_Level",
+            "Grid_Elev_Tank_Level",
+            "Grid_Consum_Tank_Level",
+            "RWS_Tank_Level",
+        ):
+            trend = trends.get(field)
+            if trend and abs(float(trend.get("delta_1", 0.0))) >= 80.0:
+                notes.append(f"abrupt_change:{field}")
+
+        return notes
+
+    def _derive_water_distribution_risk_flags(
+        self,
+        *,
+        observation: dict[str, Any],
+        active_alarms: list[str],
+        relationship_notes: list[str],
+        trends: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        del trends
+        risks: list[str] = []
+        if active_alarms:
+            risks.append("alarm_active")
+        if "supply_high_high_alarm_active" in relationship_notes:
+            risks.append("overflow_risk")
+        if any(note.startswith("command_status_mismatch:") for note in relationship_notes):
+            risks.append("command_status_divergence")
+        if any(note.startswith("abrupt_change:") for note in relationship_notes):
+            risks.append("sensor_or_process_jump")
+
+        supply_level = self._coerce_number(observation.get("Supply_Tank_Level"))
+        grid_level = self._coerce_number(observation.get("Grid_Elev_Tank_Level"))
+        rws_level = self._coerce_number(observation.get("RWS_Tank_Level"))
+        if supply_level is not None and supply_level <= 350.0:
+            risks.append("supply_low_band")
+        if supply_level is not None and supply_level >= 1180.0:
+            risks.append("supply_high_high_band")
+        if grid_level is not None and grid_level <= 350.0:
+            risks.append("grid_low_band")
+        if grid_level is not None and grid_level >= 1800.0:
+            risks.append("grid_high_band")
+        if rws_level is not None and rws_level <= 150.0:
+            risks.append("rws_low_band")
+        if rws_level is not None and rws_level >= 1350.0:
+            risks.append("rws_high_band")
+        return sorted(set(risks))
 
     def _visible_recent_actions(
         self,

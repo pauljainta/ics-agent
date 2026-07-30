@@ -1,0 +1,26 @@
+scenario_id: "wd-attack-supply-high-high-spoof"
+process_id: "WD-Supply"
+description: "Spoof the supply tank high-high to trigger an unnecessary protective response."
+duration_sec: 58
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 880
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 920
+  Grid_Consum_Tank_Level: 850
+  RWS_Tank_Level: 500
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 16
+    action: { type: set_sensor, name: Supply_Tank_Level, value: 1280 }
+  - { time_sec: 40, action: hmi_stop }
+
+expectations:
+  must_reach_states: [RUNNING]
+  ever_nonzero: [Alarm_Supply_Tank_HH]
+  min_samples: 24
+
+reference_bundle: null

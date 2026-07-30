@@ -36,7 +36,9 @@ def build_candidate_actions(
     playbook_anticipation_sec: float,
 ) -> list[dict[str, Any]]:
     allowed = set(allowed_action_types)
-    process_id = scenario.execution.get("process_id")
+    testbed_id = _scenario_testbed_id(scenario)
+    primary_process_id = _primary_process_id(testbed_id)
+    process_id = scenario.execution.get("process_id") or primary_process_id
     safety_bounds = scenario.metadata.get("safety_bounds", {})
     risk_flags = list(risk_flags or [])
     active_alarms = list(active_alarms or [])
@@ -88,28 +90,52 @@ def build_candidate_actions(
     if role != "defender":
         if "hmi_start" in allowed:
             add(
-                "Start Process 1 from the HMI if the plant should begin operating.",
-                {"type": "hmi_start", "process_id": "WT-P1"},
+                "Start the primary process from the HMI if the plant should begin operating.",
+                {"type": "hmi_start", "process_id": primary_process_id},
                 source="action_space",
             )
         if "hmi_stop" in allowed:
             add(
-                "Stop Process 1 from the HMI to halt plant operation in a controlled way.",
-                {"type": "hmi_stop", "process_id": "WT-P1"},
+                "Stop the primary process from the HMI to halt plant operation in a controlled way.",
+                {"type": "hmi_stop", "process_id": primary_process_id},
                 source="action_space",
             )
         if "hmi_reset" in allowed:
             add(
-                "Reset Process 1 from the HMI after a stop or fault condition.",
-                {"type": "hmi_reset", "process_id": "WT-P1"},
+                "Reset the primary process from the HMI after a stop or fault condition.",
+                {"type": "hmi_reset", "process_id": primary_process_id},
                 source="action_space",
             )
         if "hmi_estop" in allowed:
             add(
-                "Emergency stop Process 1 immediately to prioritize safety over continuity.",
-                {"type": "hmi_estop", "process_id": "WT-P1"},
+                "Emergency stop the primary process immediately to prioritize safety over continuity.",
+                {"type": "hmi_estop", "process_id": primary_process_id},
                 source="action_space",
             )
+
+    if testbed_id == "water_distribution":
+        _add_water_distribution_candidates(
+            add=add,
+            role=role,
+            allowed=allowed,
+            process_id=process_id,
+            primary_process_id=primary_process_id,
+            observation=observation,
+            safety_bounds=safety_bounds,
+            risk_flags=risk_flags,
+            active_alarms=active_alarms,
+            relationship_notes=relationship_notes,
+            recent_alerts=recent_alerts,
+            recent_actions=recent_actions,
+            incident=incident,
+        )
+        if "noop" in allowed:
+            add(
+                "Hold position and gather one more sample before changing the distribution process.",
+                {"type": "noop"},
+                source="action_space",
+            )
+        return candidates
 
     p2_selected = _coerce_number(observation.get("P2_Selected"))
     allow_process_selection = process_id == "WT-P2" or p2_selected == 1.0
@@ -420,6 +446,250 @@ def _available_chemicals(observation: dict[str, Any]) -> list[str]:
         if level_field in observation:
             chemicals.append(chemical)
     return chemicals or ["NaCl", "NaOCl", "HCl"]
+
+
+def _scenario_testbed_id(scenario: Any) -> str:
+    return str(
+        getattr(scenario, "testbed_id", None)
+        or scenario.metadata.get("testbed_id", "water_treatment")
+    ).strip()
+
+
+def _primary_process_id(testbed_id: str) -> str:
+    if testbed_id == "water_distribution":
+        return "WD-UC0"
+    return "WT-P1"
+
+
+def _add_water_distribution_candidates(
+    *,
+    add,
+    role: str,
+    allowed: set[str],
+    process_id: str | None,
+    primary_process_id: str,
+    observation: dict[str, Any],
+    safety_bounds: dict[str, Any],
+    risk_flags: list[str],
+    active_alarms: list[str],
+    relationship_notes: list[str],
+    recent_alerts: list[dict[str, Any]],
+    recent_actions: list[dict[str, Any]],
+    incident: dict[str, Any],
+) -> None:
+    del relationship_notes, recent_alerts, incident
+    process_id = process_id or primary_process_id
+    if role != "defender" and "set_sensor" in allowed:
+        for field, values in _water_distribution_sensor_profiles(
+            observation=observation,
+            safety_bounds=safety_bounds,
+            process_id=process_id,
+        ):
+            add(
+                f"Bias `{field}` low to mislead the controller about distribution state.",
+                {"type": "set_sensor", "name": field, "value": values["low"]},
+                source="action_space",
+            )
+            add(
+                f"Bias `{field}` high to mislead the controller about distribution state.",
+                {"type": "set_sensor", "name": field, "value": values["high"]},
+                source="action_space",
+            )
+
+    if role != "defender" and "set_actuator" in allowed:
+        for action in _water_distribution_actuator_actions(process_id):
+            name = str(action.get("name", "actuator"))
+            value = action.get("value")
+            summary = f"Force `{name}` to `{value}` through the actuator write path."
+            add(summary, action, source="action_space")
+
+    if role == "defender":
+        _add_water_distribution_defender_candidates(
+            add=add,
+            allowed=allowed,
+            primary_process_id=primary_process_id,
+            observation=observation,
+            risk_flags=risk_flags,
+            active_alarms=active_alarms,
+            recent_actions=recent_actions,
+        )
+
+
+def _water_distribution_sensor_profiles(
+    *,
+    observation: dict[str, Any],
+    safety_bounds: dict[str, Any],
+    process_id: str | None,
+) -> list[tuple[str, dict[str, int]]]:
+    candidates: list[tuple[str, dict[str, int]]] = []
+    for field in _water_distribution_sensor_fields(process_id):
+        bounds = safety_bounds.get(field)
+        if field not in observation or not isinstance(bounds, dict):
+            continue
+        current = _coerce_number(observation.get(field))
+        minimum = _coerce_number(bounds.get("min"))
+        maximum = _coerce_number(bounds.get("max"))
+        if current is None or minimum is None or maximum is None or maximum <= minimum:
+            continue
+        span = maximum - minimum
+        low_value = int(round(minimum + (span * 0.18)))
+        high_value = int(round(minimum + (span * 0.92)))
+        if low_value == high_value:
+            continue
+        candidates.append((field, {"low": low_value, "high": high_value}))
+    return candidates
+
+
+def _water_distribution_sensor_fields(process_id: str | None) -> list[str]:
+    mapping = {
+        "WD-Supply": [
+            "Supply_Tank_Level",
+            "Supply_Pump_Flow",
+        ],
+        "WD-Grid": [
+            "Grid_Elev_Tank_Level",
+            "Grid_Consum_Tank_Level",
+        ],
+        "WD-RWS": [
+            "RWS_Tank_Level",
+        ],
+    }
+    if process_id in mapping:
+        return mapping[process_id]
+    return [
+        "Supply_Tank_Level",
+        "Grid_Elev_Tank_Level",
+        "Grid_Consum_Tank_Level",
+        "RWS_Tank_Level",
+    ]
+
+
+def _water_distribution_actuator_actions(process_id: str | None) -> list[dict[str, Any]]:
+    process_actions = {
+        "WD-Supply": [
+            {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 0},
+            {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 100},
+            {"type": "set_actuator", "name": "Supply_Tank_Valve", "value": True},
+            {"type": "set_actuator", "name": "Supply_Tank_Valve", "value": False},
+        ],
+        "WD-Grid": [
+            {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": True},
+            {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": False},
+        ],
+        "WD-RWS": [
+            {"type": "set_actuator", "name": "RWS_Pump_Speed", "value": 0},
+            {"type": "set_actuator", "name": "RWS_Pump_Speed", "value": 100},
+            {"type": "set_actuator", "name": "RWS_Tank_Valve", "value": True},
+            {"type": "set_actuator", "name": "RWS_Tank_Valve", "value": False},
+        ],
+    }
+    if process_id in process_actions:
+        return process_actions[process_id]
+    return [
+        {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 100},
+        {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": True},
+        {"type": "set_actuator", "name": "RWS_Pump_Speed", "value": 100},
+        {"type": "set_actuator", "name": "RWS_Tank_Valve", "value": True},
+    ]
+
+
+def _add_water_distribution_defender_candidates(
+    *,
+    add,
+    allowed: set[str],
+    primary_process_id: str,
+    observation: dict[str, Any],
+    risk_flags: list[str],
+    active_alarms: list[str],
+    recent_actions: list[dict[str, Any]],
+) -> None:
+    recent_attacker_action_types = {
+        str((item.get("action") or {}).get("type", ""))
+        for item in recent_actions
+        if item.get("role") == "attacker"
+    }
+    supply_level = _coerce_number(observation.get("Supply_Tank_Level"))
+    grid_level = _coerce_number(observation.get("Grid_Elev_Tank_Level"))
+    rws_level = _coerce_number(observation.get("RWS_Tank_Level"))
+    pump_running = _is_active_flag(observation.get("Supply_Pump_Sts"))
+
+    sensor_pressure = "set_sensor" in recent_attacker_action_types or bool(
+        set(risk_flags).intersection({"sensor_or_process_jump", "supply_low_band", "supply_high_high_band"})
+    )
+    actuator_pressure = "set_actuator" in recent_attacker_action_types or (
+        "command_status_divergence" in risk_flags
+    )
+    hmi_pressure = bool(
+        recent_attacker_action_types.intersection({"hmi_start", "hmi_stop", "hmi_estop"})
+    )
+    distribution_extreme = bool(
+        "Alarm_Supply_Tank_HH" in active_alarms
+        or (supply_level is not None and (supply_level <= 320.0 or supply_level >= 1180.0))
+        or (grid_level is not None and (grid_level <= 250.0 or grid_level >= 1850.0))
+        or (rws_level is not None and (rws_level <= 120.0 or rws_level >= 1380.0))
+    )
+
+    if sensor_pressure and "block_sensor_write" in allowed:
+        add(
+            "Block further sensor writes now to preserve controller trust in distribution telemetry.",
+            {"type": "block_sensor_write"},
+            source="action_space",
+            priority=98,
+            guardrail_reason="distribution_sensor_containment",
+        )
+        add(
+            "Quarantine the suspicious signal source before more deceptive telemetry reaches the controller.",
+            {"type": "quarantine_signal_source"},
+            source="action_space",
+            priority=90,
+            guardrail_reason="distribution_signal_quarantine",
+        )
+
+    if actuator_pressure and "block_actuator_write" in allowed:
+        add(
+            "Block actuator writes to cut off unauthorized pump or valve forcing on the distribution process.",
+            {"type": "block_actuator_write"},
+            source="action_space",
+            priority=101,
+            guardrail_reason="distribution_actuator_containment",
+        )
+        add(
+            "Isolate the engineering host if actuator misuse suggests a broader control-path compromise.",
+            {"type": "isolate_engineering_host"},
+            source="action_space",
+            priority=89,
+            guardrail_reason="distribution_engineering_isolation",
+        )
+
+    if hmi_pressure and "disable_hmi_session" in allowed:
+        add(
+            "Disable the suspicious HMI session to stop further unauthorized start or stop commands.",
+            {"type": "disable_hmi_session"},
+            source="action_space",
+            priority=94,
+            guardrail_reason="distribution_hmi_session_containment",
+        )
+
+    if distribution_extreme and "hmi_stop" in allowed:
+        add(
+            "Issue a controlled stop because supply, grid, or return-water evidence indicates unsafe distribution behavior.",
+            {"type": "hmi_stop", "process_id": primary_process_id},
+            source="action_space",
+            priority=88 if pump_running else 78,
+            guardrail_reason="distribution_controlled_stop",
+        )
+    if (
+        distribution_extreme
+        and "hmi_estop" in allowed
+        and ("Alarm_Supply_Tank_HH" in active_alarms or actuator_pressure)
+    ):
+        add(
+            "Escalate to estop because the distribution process is still driving an unsafe condition.",
+            {"type": "hmi_estop", "process_id": primary_process_id},
+            source="action_space",
+            priority=97,
+            guardrail_reason="distribution_estop",
+        )
 
 
 def _sensor_profiles(

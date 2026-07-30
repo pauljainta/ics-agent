@@ -1,0 +1,28 @@
+scenario_id: "wd-smoke-supply-low-spoof"
+process_id: "WD-Supply"
+description: "Short smoke case: spoof supply tank low during runtime"
+duration_sec: 36
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 820
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 900
+  Grid_Consum_Tank_Level: 820
+  RWS_Tank_Level: 480
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 12
+    action:
+      type: set_sensor
+      name: Supply_Tank_Level
+      value: 260
+  - { time_sec: 24, action: hmi_stop }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 14
+
+reference_bundle: null

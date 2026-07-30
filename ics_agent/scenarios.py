@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ConfigError, load_config
-from .paths import active_scenario_config_root
+from .testbeds import get_testbed_spec, normalize_testbed_id
 from .types import ScenarioDefinition
 from .utils import load_yaml
 
@@ -32,6 +32,19 @@ def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             merged[key] = deepcopy(value)
     return merged
+
+
+def _load_catalog_config(testbed_id: str) -> dict[str, Any]:
+    config = load_config("scenario_catalog.yaml")
+    overlay_path = (
+        get_testbed_spec(testbed_id).scenario_root.parent / "scenario_catalog.yaml"
+    )
+    if overlay_path.exists():
+        overlay = load_yaml(overlay_path)
+        if not isinstance(overlay, dict):
+            raise ConfigError(f"expected mapping at {overlay_path}")
+        config = _merge_dict(config, overlay)
+    return config
 
 
 def _default_role_bindings(
@@ -86,8 +99,26 @@ def _validate_execution(path: Path, payload: dict[str, Any]) -> None:
 
 
 class ScenarioCatalog:
-    def __init__(self, config_path: str | Path | None = None) -> None:
-        self.config = load_config(config_path or "scenario_catalog.yaml")
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        *,
+        testbed_id: str | None = None,
+    ) -> None:
+        self.testbed_id = normalize_testbed_id(testbed_id)
+        self.testbed = get_testbed_spec(self.testbed_id)
+        if config_path is not None:
+            self.config = load_config(config_path)
+            overlay_path = (
+                self.testbed.scenario_root.parent / "scenario_catalog.yaml"
+            )
+            if overlay_path.exists():
+                overlay = load_yaml(overlay_path)
+                if not isinstance(overlay, dict):
+                    raise ConfigError(f"expected mapping at {overlay_path}")
+                self.config = _merge_dict(self.config, overlay)
+        else:
+            self.config = _load_catalog_config(self.testbed_id)
         self.scenarios = self._load_definitions()
 
     def _load_definitions(self) -> dict[str, ScenarioDefinition]:
@@ -95,7 +126,7 @@ class ScenarioCatalog:
         scenario_overrides = self.config.get("scenario_overrides", {})
         definitions: dict[str, ScenarioDefinition] = {}
 
-        scenario_root = active_scenario_config_root()
+        scenario_root = self.testbed.scenario_root
         for path in sorted(scenario_root.rglob("*.yaml")):
             if path.name.startswith("."):
                 continue
@@ -146,7 +177,9 @@ class ScenarioCatalog:
                     f"scenario metadata for {catalog_id} missing fields: {', '.join(missing)}"
                 )
 
+            metadata["testbed_id"] = self.testbed_id
             definitions[catalog_id] = ScenarioDefinition(
+                testbed_id=self.testbed_id,
                 catalog_id=catalog_id,
                 suite=suite,
                 scenario_id=execution["scenario_id"],

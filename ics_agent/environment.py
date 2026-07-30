@@ -27,6 +27,7 @@ from .action_semantics import (
 )
 from .paths import OPENPLC_SUPPORT_DIR, OPENPLC_SUPPORT_SCRIPTS, REPO_ROOT, WORKSPACE_ROOT
 from .remote_roles import RemoteRoleAgentProxy
+from .testbeds import normalize_testbed_id
 from .utils import stable_hash, utc_now
 
 
@@ -1159,6 +1160,7 @@ class _SphereOpenPLCBackend:
         tracked_paths = [
             REPO_ROOT / "ics_agent",
             REPO_ROOT / "configs",
+            REPO_ROOT / "testbeds",
             REPO_ROOT / "vendor",
         ]
         manifest: list[tuple[str, int, int]] = []
@@ -1189,6 +1191,7 @@ class _SphereOpenPLCBackend:
         with tarfile.open(archive_path, "w:gz") as handle:
             handle.add(REPO_ROOT / "ics_agent", arcname="ics-agent/ics_agent")
             handle.add(REPO_ROOT / "configs", arcname="ics-agent/configs")
+            handle.add(REPO_ROOT / "testbeds", arcname="ics-agent/testbeds")
             handle.add(REPO_ROOT / "vendor", arcname="ics-agent/vendor")
         return archive_path, stage_hash
 
@@ -1913,6 +1916,7 @@ class OpenPLCEnvironment:
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         cfg = config or {}
         self.config = cfg
+        self.testbed_id = normalize_testbed_id(cfg.get("testbed"))
         self.backend = cfg.get("backend", "auto")
         self._backend_name = _normalized_backend_name(self.backend)
         self.keep_running = bool(cfg.get("keep_running", False))
@@ -1924,24 +1928,44 @@ class OpenPLCEnvironment:
             self._backend_impl = _SphereOpenPLCBackend(cfg)
             return
 
-        scripts_path = str(OPENPLC_SUPPORT_SCRIPTS)
-        sys.path = [entry for entry in sys.path if entry not in ("", scripts_path)]
-        sys.path.insert(0, scripts_path)
-        _import_openplc_module("modbus_raw")
-        _import_openplc_module("native_plc_runtime")
-        openplc_testbed = _import_openplc_module("openplc_testbed")
+        if self.testbed_id == "water_distribution":
+            from .testbeds import water_distribution as water_distribution_testbed
 
-        self._testbed_module = openplc_testbed
-        self._testbed_cls = openplc_testbed.OpenPLCWaterTreatmentTestbed
-        self._testbed_error = openplc_testbed.TestbedError
-        self.testbed = self._testbed_cls(
-            base_dir=Path(cfg.get("base_dir", OPENPLC_SUPPORT_DIR)),
-            controller_host=cfg.get("controller_host", "127.0.0.1"),
-            controller_port=cfg.get("controller_port") or None,
-            simulator_host=cfg.get("simulator_host", "127.0.0.1"),
-            simulator_port=cfg.get("simulator_port") or None,
-            unit_id=int(cfg.get("unit_id", 1)),
-        )
+            self._testbed_module = water_distribution_testbed
+            self._testbed_cls = water_distribution_testbed.OpenPLCWaterDistributionTestbed
+            self._testbed_error = water_distribution_testbed.TestbedError
+            self.testbed = self._testbed_cls(
+                base_dir=Path(
+                    cfg.get(
+                        "base_dir",
+                        REPO_ROOT / "testbeds" / "water_distribution" / "openplc",
+                    )
+                ),
+                controller_host=cfg.get("controller_host", "127.0.0.1"),
+                controller_port=cfg.get("controller_port") or None,
+                simulator_host=cfg.get("simulator_host", "127.0.0.1"),
+                simulator_port=cfg.get("simulator_port") or None,
+                unit_id=int(cfg.get("unit_id", 1)),
+            )
+        else:
+            scripts_path = str(OPENPLC_SUPPORT_SCRIPTS)
+            sys.path = [entry for entry in sys.path if entry not in ("", scripts_path)]
+            sys.path.insert(0, scripts_path)
+            _import_openplc_module("modbus_raw")
+            _import_openplc_module("native_plc_runtime")
+            openplc_testbed = _import_openplc_module("openplc_testbed")
+
+            self._testbed_module = openplc_testbed
+            self._testbed_cls = openplc_testbed.OpenPLCWaterTreatmentTestbed
+            self._testbed_error = openplc_testbed.TestbedError
+            self.testbed = self._testbed_cls(
+                base_dir=Path(cfg.get("base_dir", OPENPLC_SUPPORT_DIR)),
+                controller_host=cfg.get("controller_host", "127.0.0.1"),
+                controller_port=cfg.get("controller_port") or None,
+                simulator_host=cfg.get("simulator_host", "127.0.0.1"),
+                simulator_port=cfg.get("simulator_port") or None,
+                unit_id=int(cfg.get("unit_id", 1)),
+            )
 
     def start(self) -> dict[str, Any]:
         if self._backend_impl is not None:
@@ -2056,6 +2080,11 @@ class OpenPLCEnvironment:
             raise EnvironmentError("inspect_surface requires a non-empty `surface`")
 
         try:
+            custom_inspector = getattr(self.testbed, "inspect_surface", None)
+            if callable(custom_inspector):
+                result = custom_inspector(surface)
+                if isinstance(result, dict):
+                    return result
             return self._inspect_surface(surface)
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc

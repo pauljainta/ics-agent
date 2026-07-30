@@ -1,0 +1,30 @@
+scenario_id: "wd-uc0-nominal-startup"
+process_id: "WD-UC0"
+description: "Nominal water-distribution startup, short run, and clean shutdown"
+duration_sec: 45
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 900
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 900
+  Grid_Consum_Tank_Level: 850
+  RWS_Tank_Level: 500
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - { time_sec: 32, action: hmi_stop }
+
+expectations:
+  final_state: IDLE
+  must_reach_states: [RUNNING, SHUTDOWN]
+  event_count:
+    hmi_start: 1
+    hmi_stop: 1
+  min_samples: 20
+  final_equals:
+    Supply_Pump_Sts: 0
+    RWS_Pump_Sts: 0
+
+reference_bundle: null

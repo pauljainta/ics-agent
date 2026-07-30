@@ -1,0 +1,29 @@
+scenario_id: "wd-attack-coordinated-grid-rws-delay"
+process_id: "WD-Coordinated"
+description: "Delay impact by spoofing the elevated tank high, then forcing the return path on once operator trust is reduced."
+duration_sec: 72
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 930
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 920
+  Grid_Consum_Tank_Level: 840
+  RWS_Tank_Level: 320
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 16
+    action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 1880 }
+  - time_sec: 30
+    action: { type: set_actuator, name: RWS_Pump_Speed, value: 100 }
+  - time_sec: 34
+    action: { type: set_actuator, name: RWS_Tank_Valve, value: true }
+  - { time_sec: 52, action: hmi_stop }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 30
+
+reference_bundle: null

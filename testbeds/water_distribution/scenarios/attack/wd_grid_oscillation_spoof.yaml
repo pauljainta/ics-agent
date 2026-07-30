@@ -1,0 +1,29 @@
+scenario_id: "wd-attack-grid-oscillation-spoof"
+process_id: "WD-Grid"
+description: "Oscillate the elevated tank reading to create repeated valve reversals and operator confusion."
+duration_sec: 64
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 930
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 910
+  Grid_Consum_Tank_Level: 820
+  RWS_Tank_Level: 500
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 16
+    action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 240 }
+  - time_sec: 26
+    action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 1860 }
+  - time_sec: 36
+    action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 260 }
+  - { time_sec: 46, action: hmi_stop }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 26
+
+reference_bundle: null

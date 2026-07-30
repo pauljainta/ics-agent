@@ -13,6 +13,7 @@ class ScenarioDefinition:
     execution_path: Path
     execution: dict[str, Any]
     metadata: dict[str, Any]
+    testbed_id: str = "water_treatment"
 
 
 @dataclass

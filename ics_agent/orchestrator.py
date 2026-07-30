@@ -20,6 +20,7 @@ from .metrics import compute_metrics
 from .paths import REPO_ROOT, portable_path, results_root
 from .reporting import write_json, write_run_bundle
 from .scenarios import ScenarioCatalog
+from .testbeds import normalize_testbed_id
 from .types import RunBundle, ScenarioDefinition
 from .utils import load_yaml, stable_hash, utc_now
 
@@ -50,8 +51,14 @@ def canonical_action_name(action: dict[str, Any] | str) -> str:
 
 
 class ExperimentOrchestrator:
-    def __init__(self, catalog: ScenarioCatalog | None = None) -> None:
-        self.catalog = catalog or ScenarioCatalog()
+    def __init__(
+        self,
+        catalog: ScenarioCatalog | None = None,
+        *,
+        testbed_id: str | None = None,
+    ) -> None:
+        self.default_testbed_id = normalize_testbed_id(testbed_id)
+        self.catalog = catalog or ScenarioCatalog(testbed_id=self.default_testbed_id)
         self._current_reproducibility: dict[str, Any] = {}
         raw_profiles = load_config("agent_profiles.yaml").get("profiles", {})
         overlay_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
@@ -505,7 +512,15 @@ class ExperimentOrchestrator:
         )
 
         experiment_name = str(config["experiment_name"])
-        scenarios = self.catalog.resolve_selectors(
+        configured_testbed_id = normalize_testbed_id(
+            config.get("testbed", self.default_testbed_id)
+        )
+        catalog = (
+            self.catalog
+            if self.catalog.testbed_id == configured_testbed_id
+            else ScenarioCatalog(testbed_id=configured_testbed_id)
+        )
+        scenarios = catalog.resolve_selectors(
             list(config.get("scenario_selectors", []))
         )
         if not scenarios:

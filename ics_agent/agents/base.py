@@ -18,6 +18,8 @@ class RoleAgent(ABC):
     def reset(self, scenario: ScenarioDefinition) -> None:
         self._state = {
             "scenario_id": scenario.catalog_id,
+            "testbed_id": getattr(scenario, "testbed_id", None)
+            or scenario.metadata.get("testbed_id", "water_treatment"),
             "emitted_notes": set(),
             "triggered_rules": set(),
             "cursor": 0,

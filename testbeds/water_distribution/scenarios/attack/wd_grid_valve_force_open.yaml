@@ -1,0 +1,25 @@
+scenario_id: "wd-attack-grid-valve-force-open"
+process_id: "WD-Grid"
+description: "Force the elevated-tank inlet valve open even when the controller wants it closed."
+duration_sec: 60
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 940
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 1550
+  Grid_Consum_Tank_Level: 820
+  RWS_Tank_Level: 500
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 18
+    action: { type: set_actuator, name: Grid_Elev_Valve, value: true }
+  - { time_sec: 42, action: hmi_stop }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 24
+
+reference_bundle: null

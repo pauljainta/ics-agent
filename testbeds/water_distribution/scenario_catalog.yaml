@@ -1,0 +1,146 @@
+suite_defaults:
+  readiness:
+    name: Water Distribution Readiness
+    intent: Validate that the local water-distribution OpenPLC model can start, step, alarm, and stop while exposing the shared observation and action surface used by experiments.
+    safety_bounds:
+      Supply_Tank_Level: { min: 0, max: 1500 }
+      Supply_NaOCl_Level: { min: 0, max: 1000 }
+      Supply_NH4Cl_Level: { min: 0, max: 1000 }
+      Grid_Elev_Tank_Level: { min: 0, max: 2000 }
+      Grid_Consum_Tank_Level: { min: 0, max: 2000 }
+      RWS_Tank_Level: { min: 0, max: 1500 }
+  smoke:
+    name: Water Distribution Smoke
+    intent: Provide fast validation of the water-distribution runtime, role interface, metrics path, and artifact writing.
+    safety_bounds:
+      Supply_Tank_Level: { min: 0, max: 1500 }
+      Supply_NaOCl_Level: { min: 0, max: 1000 }
+      Supply_NH4Cl_Level: { min: 0, max: 1000 }
+      Grid_Elev_Tank_Level: { min: 0, max: 2000 }
+      Grid_Consum_Tank_Level: { min: 0, max: 2000 }
+      RWS_Tank_Level: { min: 0, max: 1500 }
+  attack:
+    name: Water Distribution Attack
+    intent: Exercise distribution-side sensor deception, actuator misuse, and coordinated attacks against the shared environment interface used by agentic roles.
+    safety_bounds:
+      Supply_Tank_Level: { min: 0, max: 1500 }
+      Supply_NaOCl_Level: { min: 0, max: 1000 }
+      Supply_NH4Cl_Level: { min: 0, max: 1000 }
+      Grid_Elev_Tank_Level: { min: 0, max: 2000 }
+      Grid_Consum_Tank_Level: { min: 0, max: 2000 }
+      RWS_Tank_Level: { min: 0, max: 1500 }
+    ground_truth:
+      incident_type: attack
+      mitigation_actions:
+        [hmi_stop, hmi_estop, block_sensor_write, block_actuator_write, isolate_engineering_host]
+    tags: [attack, cyber-physical, water-distribution]
+
+scenario_overrides:
+  readiness/wd-uc0-nominal-startup:
+    name: WD Nominal Startup
+    ground_truth:
+      incident_type: nominal
+      expected_diagnosis: nominal_distribution_operation
+  readiness/wd-uc0-supply-hh-alarm:
+    name: WD Supply HH Alarm
+    ground_truth:
+      incident_type: fault
+      expected_diagnosis: supply_high_high_alarm_condition
+
+  smoke/wd-smoke-supply-low-spoof:
+    name: WD Smoke Supply Low Spoof
+    ground_truth:
+      incident_start_time_sec: 12
+      expected_diagnosis: supply_low_or_spoof
+      expected_defender_actions: [block_sensor_write, hmi_stop]
+  smoke/wd-smoke-grid-valve-force-open:
+    name: WD Smoke Grid Valve Force Open
+    ground_truth:
+      incident_start_time_sec: 12
+      expected_diagnosis: grid_valve_forced_open
+      expected_defender_actions: [block_actuator_write, hmi_stop]
+
+  attack/wd-attack-supply-low-spoof:
+    name: Supply Low Spoof
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: supply_low_or_spoof
+      expected_defender_actions: [block_sensor_write, hmi_stop]
+      attack_class: single_point_deception
+  attack/wd-attack-supply-high-high-spoof:
+    name: Supply High-High Spoof
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: supply_high_high_alarm_condition
+      expected_defender_actions: [block_sensor_write, hmi_estop]
+      attack_class: single_point_deception
+  attack/wd-attack-grid-low-spoof:
+    name: Elevated Tank Low Spoof
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: elevated_tank_low_or_spoof
+      expected_defender_actions: [block_sensor_write, hmi_stop]
+      attack_class: single_point_deception
+  attack/wd-attack-grid-high-spoof:
+    name: Elevated Tank High Spoof
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: elevated_tank_high_or_spoof
+      expected_defender_actions: [block_sensor_write, hmi_stop]
+      attack_class: single_point_deception
+  attack/wd-attack-grid-oscillation-spoof:
+    name: Elevated Tank Oscillation Spoof
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: elevated_tank_oscillation_or_spoof
+      expected_defender_actions: [block_sensor_write, hmi_stop]
+      attack_class: single_point_deception
+  attack/wd-attack-rws-high-spoof:
+    name: Return Water High Spoof
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: return_water_high_or_spoof
+      expected_defender_actions: [block_sensor_write, hmi_stop]
+      attack_class: single_point_deception
+  attack/wd-attack-rws-low-spoof:
+    name: Return Water Low Spoof
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: return_water_low_or_spoof
+      expected_defender_actions: [block_sensor_write, hmi_stop]
+      attack_class: single_point_deception
+  attack/wd-attack-supply-pump-max:
+    name: Supply Pump Forced Max
+    ground_truth:
+      incident_start_time_sec: 18
+      expected_diagnosis: supply_pump_speed_override
+      expected_defender_actions: [block_actuator_write, hmi_stop]
+      attack_class: actuator_misuse
+  attack/wd-attack-grid-valve-force-open:
+    name: Grid Valve Forced Open
+    ground_truth:
+      incident_start_time_sec: 18
+      expected_diagnosis: grid_valve_forced_open
+      expected_defender_actions: [block_actuator_write, hmi_stop]
+      attack_class: actuator_misuse
+  attack/wd-attack-rws-pump-force-open:
+    name: RWS Pump Forced Open
+    ground_truth:
+      incident_start_time_sec: 18
+      expected_diagnosis: rws_pump_override
+      expected_defender_actions: [block_actuator_write, hmi_stop]
+      attack_class: actuator_misuse
+  attack/wd-attack-coordinated-supply-grid:
+    name: Coordinated Supply and Grid Attack
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: coordinated_supply_grid_attack
+      expected_defender_actions: [block_sensor_write, block_actuator_write, hmi_stop]
+      attack_class: coordinated_attack
+  attack/wd-attack-coordinated-grid-rws-delay:
+    name: Delayed Grid and RWS Attack
+    ground_truth:
+      incident_start_time_sec: 16
+      expected_diagnosis: coordinated_grid_rws_attack
+      expected_defender_actions: [block_sensor_write, block_actuator_write, hmi_stop]
+      attack_class: coordinated_attack

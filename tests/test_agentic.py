@@ -9,6 +9,7 @@ from ics_agent.mitre import (
     OPTIONB_STAGE_PATH,
     optionb_mitre_context,
 )
+from ics_agent.agents.agentic import CachedQwenDecisionEngine
 from ics_agent.orchestrator import ExperimentOrchestrator
 
 
@@ -56,3 +57,31 @@ def test_configure_reproducibility_keeps_seeded_run_metadata(monkeypatch) -> Non
     assert payload["pythonhashseed"] == "20260623"
     assert payload["suite_decoding"]
     assert payload["experiment_config_path"] == "/tmp/concrete-containment.yaml"
+
+
+def test_parse_output_recovers_truncated_json_value() -> None:
+    raw = (
+        '{"summary":"Stop process","candidate_id":"{\\"type\\":\\"hmi_stop\\"}",'
+        '"confidence":0.85,"diagnosis":"supply_overflow_risk'
+    )
+
+    payload = CachedQwenDecisionEngine._parse_output(raw)
+
+    assert payload is not None
+    assert payload["summary"] == "Stop process"
+    assert payload["candidate_id"] == '{"type":"hmi_stop"}'
+    assert payload["diagnosis"] == "supply_overflow_risk"
+
+
+def test_parse_output_recovers_after_truncated_trailing_field() -> None:
+    raw = (
+        '{"summary":"Observe jump","candidate_id":null,"confidence":0.52,'
+        '"diagnosis":"sensor_or_process_jump","labels'
+    )
+
+    payload = CachedQwenDecisionEngine._parse_output(raw)
+
+    assert payload is not None
+    assert payload["summary"] == "Observe jump"
+    assert payload["candidate_id"] is None
+    assert payload["diagnosis"] == "sensor_or_process_jump"

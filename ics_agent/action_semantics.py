@@ -7,6 +7,7 @@ RUNTIME_ENFORCED_CONTAINMENT_ACTION_TYPES = {
     "isolate_engineering_host",
     "disable_hmi_session",
     "block_sensor_write",
+    "block_actuator_write",
     "block_process2_manual_path",
     "quarantine_signal_source",
 }
@@ -35,6 +36,8 @@ def attacker_surface(action: dict[str, Any] | str | None) -> str:
     current_type = str(normalized.get("type", ""))
     if current_type == "set_sensor":
         return "sensor_write_path"
+    if current_type == "set_actuator":
+        return "actuator_write_path"
     if current_type in {"select_process", "set_manual_valve"}:
         return "process2_manual_path"
     if current_type in {"hmi_start", "hmi_stop", "hmi_estop"}:
@@ -86,6 +89,8 @@ def containment_surfaces(action: dict[str, Any] | str | None) -> list[str]:
         return ["hmi_session"]
     if current_type in {"block_sensor_write", "quarantine_signal_source"}:
         return ["sensor_write_path"]
+    if current_type == "block_actuator_write":
+        return ["actuator_write_path"]
     if current_type == "block_process2_manual_path" or is_process2_deselect_action(
         normalized
     ):
@@ -123,6 +128,8 @@ def action_matches_expected(
         return True
     if current_type in {"block_sensor_write", "quarantine_signal_source"}:
         return bool(expected.intersection({"hmi_stop", "hmi_estop"}))
+    if current_type == "block_actuator_write":
+        return bool(expected.intersection({"hmi_stop", "hmi_estop"}))
     if current_type == "block_process2_manual_path":
         return bool(expected.intersection({"select_process", "hmi_stop"}))
     if current_type == "disable_hmi_session":
@@ -133,6 +140,7 @@ def action_matches_expected(
                 {
                     "disable_hmi_session",
                     "block_sensor_write",
+                    "block_actuator_write",
                     "block_process2_manual_path",
                     "hmi_stop",
                     "hmi_estop",

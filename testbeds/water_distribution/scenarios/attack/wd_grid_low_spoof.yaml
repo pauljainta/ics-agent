@@ -1,0 +1,25 @@
+scenario_id: "wd-attack-grid-low-spoof"
+process_id: "WD-Grid"
+description: "Spoof the elevated tank low so the controller keeps the grid fill path open."
+duration_sec: 58
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 920
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 940
+  Grid_Consum_Tank_Level: 820
+  RWS_Tank_Level: 500
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 16
+    action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 220 }
+  - { time_sec: 40, action: hmi_stop }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 24
+
+reference_bundle: null

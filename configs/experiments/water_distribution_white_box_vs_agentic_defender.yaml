@@ -1,0 +1,58 @@
+experiment_name: water_distribution_openplc
+experiment_id: water_distribution_white_box_vs_agentic_defender
+testbed: water_distribution
+scenario_selectors:
+  - attack/*
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 20260730
+results_root: ../../../Artifact/Results
+environment:
+  testbed: water_distribution
+  backend: auto
+  loop_sleep_sec: 0.01
+conditions:
+  - name: white_box_attacker__agentic_defender
+    profiles:
+      attacker: white_box_attacker
+      defender: agentic_defender
+      observer: scripted_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/attacker_manual.md
+          - testbeds/water_distribution/docs/process-models/wd-supply-line.md
+          - testbeds/water_distribution/openplc/configs/openplc_map.yaml
+        abort_on_backend_error: false
+        action_cooldown_sec: 2.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0
+        llm:
+          backend: qwen_langchain
+          prompt_file: testbeds/water_distribution/prompts/white_box_attacker.md
+          use_langgraph: false
+          allow_langchain_fallback: false
+          max_new_tokens: 64
+      defender:
+        allowed_action_types:
+          [hmi_stop, hmi_estop, disable_hmi_session, isolate_engineering_host, block_sensor_write, block_actuator_write, quarantine_signal_source, noop]
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/defender_manual.md
+        abort_on_backend_error: false
+        action_cooldown_sec: 2.0
+        note_cooldown_sec: 12.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0
+        llm:
+          backend: qwen_langchain
+          prompt_file: testbeds/water_distribution/prompts/defender.md
+          use_langgraph: false
+          allow_langchain_fallback: false
+          max_new_tokens: 48

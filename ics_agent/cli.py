@@ -10,7 +10,7 @@ from .scenarios import ScenarioCatalog
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="ICS water-treatment experiment runner"
+        description="ICS experiment runner"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -18,9 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
         "validate", help="Validate scenario catalog and agent profiles"
     )
     validate_parser.add_argument("--catalog", default="scenario_catalog.yaml")
+    validate_parser.add_argument("--testbed", default="water_treatment")
 
     list_parser = sub.add_parser("list-scenarios", help="List known scenarios")
     list_parser.add_argument("--catalog", default="scenario_catalog.yaml")
+    list_parser.add_argument("--testbed", default="water_treatment")
 
     run_parser = sub.add_parser("run", help="Run an experiment config")
     run_parser.add_argument(
@@ -35,9 +37,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "validate":
-        orchestrator = ExperimentOrchestrator()
+        orchestrator = ExperimentOrchestrator(testbed_id=args.testbed)
         runtime = orchestrator.validate_runtime()
-        catalog = ScenarioCatalog(args.catalog)
+        catalog = ScenarioCatalog(args.catalog, testbed_id=args.testbed)
         payload = {
             "validated": True,
             "scenario_count": len(catalog.list()),
@@ -50,7 +52,7 @@ def main() -> int:
         return 0
 
     if args.command == "list-scenarios":
-        catalog = ScenarioCatalog(args.catalog)
+        catalog = ScenarioCatalog(args.catalog, testbed_id=args.testbed)
         payload = [
             {
                 "catalog_id": scenario.catalog_id,

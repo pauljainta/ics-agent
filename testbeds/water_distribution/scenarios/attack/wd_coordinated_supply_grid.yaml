@@ -1,0 +1,27 @@
+scenario_id: "wd-attack-coordinated-supply-grid"
+process_id: "WD-Coordinated"
+description: "Coordinate a supply-side low spoof with a forced-open grid valve to amplify fill and transfer imbalance."
+duration_sec: 68
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 900
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 980
+  Grid_Consum_Tank_Level: 840
+  RWS_Tank_Level: 520
+
+timeline:
+  - { time_sec: 5, action: hmi_start }
+  - time_sec: 16
+    action: { type: set_sensor, name: Supply_Tank_Level, value: 250 }
+  - time_sec: 24
+    action: { type: set_actuator, name: Grid_Elev_Valve, value: true }
+  - { time_sec: 48, action: hmi_stop }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 28
+
+reference_bundle: null
