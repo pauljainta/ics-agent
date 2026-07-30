@@ -207,6 +207,7 @@ def _write_json(handler: BaseHTTPRequestHandler, code: int, payload: dict[str, A
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Remote ICS role runtime service")
+    parser.add_argument("--testbed", default="water_treatment")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=18600)
     parser.add_argument("--controller-host", default="198.18.4.10")
@@ -218,10 +219,12 @@ def main() -> int:
 
     service = RemoteRoleService(
         {
+            "testbed": args.testbed,
             "backend": "auto",
             "keep_running": True,
             "start_bridge": False,
             "build_if_missing": False,
+            "use_remote_modbus": str(args.testbed).strip() == "water_distribution",
             "controller_host": args.controller_host,
             "controller_port": args.controller_port,
             "simulator_host": args.simulator_host,

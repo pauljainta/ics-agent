@@ -27,7 +27,7 @@ from .action_semantics import (
 )
 from .paths import OPENPLC_SUPPORT_DIR, OPENPLC_SUPPORT_SCRIPTS, REPO_ROOT, WORKSPACE_ROOT
 from .remote_roles import RemoteRoleAgentProxy
-from .testbeds import normalize_testbed_id
+from .testbeds import get_testbed_spec, normalize_testbed_id
 from .utils import stable_hash, utc_now
 
 
@@ -195,6 +195,8 @@ class _SphereOpenPLCBackend:
         self.config = config
         self.keep_running = bool(config.get("keep_running", False))
         self.started = False
+        self.testbed_id = normalize_testbed_id(config.get("testbed"))
+        self.testbed_spec = get_testbed_spec(self.testbed_id)
 
         self.experiment_ref = str(
             config.get("experiment", "openplcwater.lgarcia")
@@ -311,13 +313,23 @@ class _SphereOpenPLCBackend:
         self.remote_service_state_dir = str(
             config.get("remote_service_state_dir", "~/distributed_state")
         )
-        self._default_initial_conditions = {
-            "RW_Tank_Level": 600,
-            "UF_UFFT_Tank_Level": 400,
-            "ChemTreat_NaCl_Level": 800,
-            "ChemTreat_NaOCl_Level": 800,
-            "ChemTreat_HCl_Level": 800,
-        }
+        if self.testbed_id == "water_distribution":
+            self._default_initial_conditions = {
+                "Supply_Tank_Level": 1000,
+                "Supply_NaOCl_Level": 800,
+                "Supply_NH4Cl_Level": 800,
+                "Grid_Elev_Tank_Level": 1200,
+                "Grid_Consum_Tank_Level": 1000,
+                "RWS_Tank_Level": 500,
+            }
+        else:
+            self._default_initial_conditions = {
+                "RW_Tank_Level": 600,
+                "UF_UFFT_Tank_Level": 400,
+                "ChemTreat_NaCl_Level": 800,
+                "ChemTreat_NaOCl_Level": 800,
+                "ChemTreat_HCl_Level": 800,
+            }
         initial_conditions = config.get("initial_conditions") or {}
         self.initial_conditions = {
             **self._default_initial_conditions,
@@ -548,8 +560,11 @@ class _SphereOpenPLCBackend:
             xdc=self._xdc_ref,
             xdc_host=self._xdc_host,
         )
-
-        self._ensure_remote_packages("controller", ["python3-pymodbus", "python3-yaml"])
+        if self.testbed_id == "water_distribution":
+            for target in ("controller", "simulator"):
+                self._ensure_remote_packages(target, ["python3-pymodbus", "python3-yaml"])
+        else:
+            self._ensure_remote_packages("controller", ["python3-pymodbus", "python3-yaml"])
         for target in sorted(set(self.remote_role_hosts.values())):
             self._ensure_remote_packages(target, ["python3-psutil", "python3-yaml"])
 
@@ -562,7 +577,10 @@ class _SphereOpenPLCBackend:
             if not self._remote_port_listening(target, port, retries=2)
         ]
         if stage_targets:
-            self._stage_remote_runtime(stage_targets)
+            if self.testbed_id == "water_distribution":
+                self._stage_remote_role_workspace(stage_targets)
+            else:
+                self._stage_remote_runtime(stage_targets)
             self._phase_event(
                 "phase_a",
                 "process_runtime_staged",
@@ -676,10 +694,12 @@ class _SphereOpenPLCBackend:
         local_backend = _normalized_backend_name(self.config.get("local_backend", "auto"))
         return {
             **self.config,
+            "testbed": self.testbed_id,
             "backend": local_backend,
             "keep_running": True,
             "start_bridge": False,
             "build_if_missing": False,
+            "use_remote_modbus": self.testbed_id == "water_distribution",
             "controller_host": "127.0.0.1",
             "controller_port": self.controller_forward_port,
             "simulator_host": "127.0.0.1",
@@ -1245,6 +1265,8 @@ class _SphereOpenPLCBackend:
                     "python3",
                     "-m",
                     "ics_agent.remote_service",
+                    "--testbed",
+                    self.testbed_id,
                     "--listen-host",
                     "127.0.0.1",
                     "--listen-port",
@@ -1406,6 +1428,13 @@ class _SphereOpenPLCBackend:
         if self._remote_port_listening(target, port):
             self._record_remote_pid_if_missing(target, pid_name, port)
             return
+        if self.testbed_id == "water_distribution":
+            self._ensure_remote_water_distribution_process(
+                target,
+                port,
+                initial_conditions=initial_conditions,
+            )
+            return
         command = [
             "python3",
             "native_plc_runtime.py",
@@ -1455,6 +1484,87 @@ class _SphereOpenPLCBackend:
             "    proc = subprocess.Popen(\n"
             "        spec['command'],\n"
             "        cwd=runtime_dir,\n"
+            "        stdin=subprocess.DEVNULL,\n"
+            "        stdout=log_handle,\n"
+            "        stderr=subprocess.STDOUT,\n"
+            "        start_new_session=True,\n"
+            "    )\n"
+            "pid_path = os.path.join(state_dir, spec['role'] + '.pid')\n"
+            "pathlib.Path(pid_path).write_text(str(proc.pid))\n"
+            "PY"
+        )
+        self._ssh_checked(target, remote_command)
+        deadline = time.time() + self.remote_start_timeout_sec
+        while time.time() < deadline:
+            if self._remote_port_listening(target, port):
+                return
+            time.sleep(0.25)
+        raise EnvironmentError(
+            f"remote {pid_name} runtime on `{target}` did not begin listening on port {port}"
+        )
+
+    def _ensure_remote_water_distribution_process(
+        self,
+        target: str,
+        port: int,
+        *,
+        initial_conditions: dict[str, int] | None,
+    ) -> None:
+        pid_name = "controller" if target == "controller" else "simulator"
+        command = [
+            "python3",
+            "-m",
+            "ics_agent.water_distribution_remote_runtime",
+            "--role",
+            pid_name,
+            "--host",
+            self.remote_bind_host,
+            "--port",
+            str(port),
+            "--scan-ms",
+            str(
+                self.remote_controller_scan_ms
+                if pid_name == "controller"
+                else self.remote_simulator_scan_ms
+            ),
+        ]
+        if pid_name == "simulator":
+            command.extend(
+                [
+                    "--initial-conditions",
+                    json.dumps(initial_conditions or self.initial_conditions, sort_keys=True),
+                ]
+            )
+        launcher_spec = json.dumps(
+            {
+                "command": command,
+                "role": pid_name,
+                "workspace_dir": self.remote_workspace_dir,
+                "state_dir": self.remote_state_dir,
+            },
+            sort_keys=True,
+        )
+        launcher_spec_literal = json.dumps(launcher_spec)
+        remote_command = (
+            "python3 - <<'PY'\n"
+            "import json\n"
+            "import os\n"
+            "import pathlib\n"
+            "import subprocess\n"
+            f"spec = json.loads({launcher_spec_literal})\n"
+            "workspace_dir = os.path.expanduser(spec['workspace_dir'])\n"
+            "state_dir = os.path.expanduser(spec['state_dir'])\n"
+            "cwd = os.path.join(workspace_dir, 'ics-agent')\n"
+            "pathlib.Path(cwd).mkdir(parents=True, exist_ok=True)\n"
+            "pathlib.Path(state_dir).mkdir(parents=True, exist_ok=True)\n"
+            "log_path = os.path.join(state_dir, spec['role'] + '.log')\n"
+            "env = dict(os.environ)\n"
+            "env['PYTHONPATH'] = os.path.join(workspace_dir, 'ics-agent')\n"
+            "with open(log_path, 'ab') as log_handle:\n"
+            "    proc = subprocess.Popen(\n"
+            "        spec['command'],\n"
+            "        cwd=cwd,\n"
+            "        env=env,\n"
             "        stdin=subprocess.DEVNULL,\n"
             "        stdout=log_handle,\n"
             "        stderr=subprocess.STDOUT,\n"
@@ -1528,11 +1638,12 @@ class _SphereOpenPLCBackend:
 
     def _start_bridge(self) -> None:
         log_path = self.logs_dir / "modbus_bridge.log"
+        bridge_script = self.testbed_spec.support_root / "scripts" / "modbus_bridge.py"
         with log_path.open("w") as handle:
             process = subprocess.Popen(
                 [
                     sys.executable,
-                    str(OPENPLC_SUPPORT_SCRIPTS / "modbus_bridge.py"),
+                    str(bridge_script),
                     "--controller",
                     f"127.0.0.1:{self.controller_forward_port}",
                     "--simulator",
@@ -1759,6 +1870,11 @@ class _SphereOpenPLCBackend:
 
     def _remote_runtime_pattern(self, role: str, port: int) -> str:
         bind_host_pattern = re.escape(self.remote_bind_host)
+        if self.testbed_id == "water_distribution":
+            return (
+                rf"^python3 -m ics_agent\.water_distribution_remote_runtime --role {role} "
+                rf"--host {bind_host_pattern} --port {port}( |$)"
+            )
         return (
             rf"^python3 native_plc_runtime\.py --role {role} --host {bind_host_pattern} "
             rf"--port {port}( |$)"
@@ -1946,6 +2062,7 @@ class OpenPLCEnvironment:
                 simulator_host=cfg.get("simulator_host", "127.0.0.1"),
                 simulator_port=cfg.get("simulator_port") or None,
                 unit_id=int(cfg.get("unit_id", 1)),
+                use_remote_modbus=bool(cfg.get("use_remote_modbus", False)),
             )
         else:
             scripts_path = str(OPENPLC_SUPPORT_SCRIPTS)

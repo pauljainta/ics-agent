@@ -14,7 +14,7 @@ environment:
   backend: sphere_openplc
   merge_server: merge.example.invalid
   experiment: openplcwater.lgarcia
-  realization: example-realization-01
+  realization: example-realization-02
   revision: ac79757fe0d3f8e98bbfa43a303fee121b88be05
   xdc: example-xdc-04
   keep_running: true

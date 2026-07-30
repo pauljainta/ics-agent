@@ -1,11 +1,11 @@
-deployment_name: example-realization-01
+deployment_name: example-realization-02
 kind: sphere_openplc_testbed
-status: portal_validation_failed_name_regex
+status: ready_for_portal_validation
 notes:
-  - The canonical SPHERE-facing deployment identity for this repo is `example-realization-01`.
+  - The canonical SPHERE-facing deployment identity for the live portal path is `example-realization-02`.
   - Local assets for controller ST, simulator ST, OpenPLC map, bridge script, and scenarios live entirely under `ics-agent/testbeds/water_distribution`.
   - On 2026-07-30, `mrg realize example-realization-01.openplcwater.lgarcia revision ac79757fe0d3f8e98bbfa43a303fee121b88be05` failed because MergeTB rejected underscores in the realization id.
-  - The repo-side deployment path is wired, but the exact required canonical name is currently incompatible with the portal realization-name regex `^[a-z][a-z0-9]{0,62}$`.
+  - The active portal-facing path now uses the underscore-free canonical identity `example-realization-02`.
 assets:
   controller_st: testbeds/water_distribution/openplc/st/wd_controller.st
   simulator_st: testbeds/water_distribution/openplc/st/wd_simulator.st

@@ -60,6 +60,23 @@ FIELD_GROUPS = {
     ],
 }
 
+LEVEL_REGISTER_MAP = {name: address for name, address in FIELD_GROUPS["levels"]}
+STATUS_COIL_MAP = {name: address for name, address in FIELD_GROUPS["status"]}
+COMMAND_COIL_MAP = {name: address for name, address in FIELD_GROUPS["commands"]}
+STATE_COIL_MAP = {name: address for name, address in FIELD_GROUPS["states"]}
+ALARM_COIL_MAP = {name: address for name, address in FIELD_GROUPS["alarms"]}
+HMI_COIL_MAP = {name: address for name, address in FIELD_GROUPS["hmi"]}
+PROCESS_CONTROL_REGISTER_MAP = {
+    name: address for name, address in FIELD_GROUPS["process_controls"]
+}
+ACTUATOR_FIELD_MAP = {
+    "Supply_Pump_Speed": ("register", PROCESS_CONTROL_REGISTER_MAP["Supply_Pump_Speed_Cmd"]),
+    "RWS_Pump_Speed": ("register", PROCESS_CONTROL_REGISTER_MAP["RWS_Pump_Speed_Cmd"]),
+    "Supply_Tank_Valve": ("coil", COMMAND_COIL_MAP["Supply_Tank_Valve_Cmd"]),
+    "Grid_Elev_Valve": ("coil", COMMAND_COIL_MAP["Grid_Elev_Valve_Cmd"]),
+    "RWS_Tank_Valve": ("coil", COMMAND_COIL_MAP["RWS_Tank_Valve_Cmd"]),
+}
+
 
 DEFAULT_LEVELS = {
     "Supply_Tank_Level": 1000.0,
@@ -71,6 +88,33 @@ DEFAULT_LEVELS = {
 }
 
 VALID_SENSOR_FIELDS = set(DEFAULT_LEVELS) | {"Supply_Pump_Flow"}
+RUNTIME_RESET_COIL = 2
+SIMULATOR_LEVEL_SEED_FIELDS = tuple(DEFAULT_LEVELS)
+SIMULATOR_LEVEL_SEED_REGISTER_MAP = {
+    name: 1200 + index for index, name in enumerate(SIMULATOR_LEVEL_SEED_FIELDS)
+}
+SIMULATOR_LEVEL_APPLY_REGISTER_MAP = {
+    name: 1210 + index for index, name in enumerate(SIMULATOR_LEVEL_SEED_FIELDS)
+}
+SENSOR_OVERRIDE_VALUE_REGISTER_MAP = {
+    name: 1300 + index for index, (name, _) in enumerate(FIELD_GROUPS["levels"])
+}
+SENSOR_OVERRIDE_ENABLE_REGISTER_MAP = {
+    name: 1310 + index for index, (name, _) in enumerate(FIELD_GROUPS["levels"])
+}
+ACTUATOR_OVERRIDE_FIELDS = (
+    "Supply_Pump_Speed",
+    "RWS_Pump_Speed",
+    "Supply_Tank_Valve",
+    "Grid_Elev_Valve",
+    "RWS_Tank_Valve",
+)
+ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP = {
+    name: 1400 + index for index, name in enumerate(ACTUATOR_OVERRIDE_FIELDS)
+}
+ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP = {
+    name: 1410 + index for index, name in enumerate(ACTUATOR_OVERRIDE_FIELDS)
+}
 
 
 def state_name(sample: dict[str, Any]) -> str:
@@ -93,9 +137,21 @@ class OpenPLCWaterDistributionTestbed:
         simulator_host: str,
         simulator_port: int | None,
         unit_id: int,
+        use_remote_modbus: bool = False,
     ) -> None:
-        del controller_host, controller_port, simulator_host, simulator_port, unit_id
         self.base_dir = Path(base_dir)
+        self.controller_host = str(controller_host)
+        self.controller_port = int(controller_port) if controller_port is not None else None
+        self.simulator_host = str(simulator_host)
+        self.simulator_port = int(simulator_port) if simulator_port is not None else None
+        self.unit_id = int(unit_id)
+        self._remote_mode = bool(use_remote_modbus)
+        if self._remote_mode and (
+            self.controller_port is None or self.simulator_port is None
+        ):
+            raise TestbedError(
+                "remote Modbus mode requires both controller and simulator ports"
+            )
         self.started = False
         self._dt_sec = 0.1
         self._last_update = time.monotonic()
@@ -110,7 +166,8 @@ class OpenPLCWaterDistributionTestbed:
         self._supply_pump_latched = False
         self._grid_valve_latched = False
         self._rws_pump_latched = False
-        self.reset(DEFAULT_LEVELS)
+        if not self._remote_mode:
+            self.reset(DEFAULT_LEVELS)
 
     def ensure_stack(
         self,
@@ -119,6 +176,24 @@ class OpenPLCWaterDistributionTestbed:
         timeout_sec: float,
         start_bridge: bool,
     ) -> dict[str, Any]:
+        if self._remote_mode:
+            del build_if_missing, timeout_sec, start_bridge
+            with self.clients() as (ctrl, sim):
+                self._read_remote_coils(ctrl, HMI_COIL_MAP["HMI_Start_PB"], 2)
+                self._read_remote_registers(
+                    sim,
+                    LEVEL_REGISTER_MAP["Supply_Tank_Level"],
+                    len(FIELD_GROUPS["levels"]),
+                )
+            self.started = True
+            return {
+                "started": True,
+                "mode": "modbus_remote",
+                "testbed": "water_distribution",
+                "support_root": str(self.base_dir),
+                "controller_endpoint": f"{self.controller_host}:{self.controller_port}",
+                "simulator_endpoint": f"{self.simulator_host}:{self.simulator_port}",
+            }
         del build_if_missing, timeout_sec, start_bridge
         self.started = True
         return {
@@ -134,6 +209,31 @@ class OpenPLCWaterDistributionTestbed:
         *,
         wait_sec: float = 0.0,
     ) -> dict[str, Any]:
+        if self._remote_mode:
+            conditions = {
+                key: int(value)
+                for key, value in {**DEFAULT_LEVELS, **dict(initial_conditions or {})}.items()
+                if key in SIMULATOR_LEVEL_SEED_REGISTER_MAP
+            }
+            with self.clients() as (ctrl, sim):
+                self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, True)
+                time.sleep(0.1)
+                self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, False)
+                for field in FIELD_GROUPS["levels"]:
+                    enable_address = SENSOR_OVERRIDE_ENABLE_REGISTER_MAP[field[0]]
+                    self._write_remote_register(sim, enable_address, 0)
+                for key, value in conditions.items():
+                    value_address = SIMULATOR_LEVEL_SEED_REGISTER_MAP[key]
+                    apply_address = SIMULATOR_LEVEL_APPLY_REGISTER_MAP[key]
+                    self._write_remote_register(
+                        sim, value_address, int(round(float(value)))
+                    )
+                    self._write_remote_register(sim, apply_address, 1)
+            time.sleep(wait_sec)
+            snapshot = self.observe_flat()
+            snapshot["reset"] = True
+            snapshot["reset_conditions"] = dict(conditions)
+            return snapshot
         del wait_sec
         self._sensor_overrides.clear()
         self._actuator_overrides.clear()
@@ -176,15 +276,116 @@ class OpenPLCWaterDistributionTestbed:
         return {"stopped": True}
 
     def _clear_external_controls(self) -> None:
+        if self._remote_mode:
+            return
         self._sensor_overrides.clear()
         self._actuator_overrides.clear()
 
-    def set_levels(self, updates: dict[str, int | float]) -> None:
+    def set_levels(
+        self,
+        updates: dict[str, int | float],
+        *,
+        wait_sec: float = 0.0,
+    ) -> None:
+        if self._remote_mode:
+            with self.clients() as (_, sim):
+                for key, value in updates.items():
+                    value_address = SIMULATOR_LEVEL_SEED_REGISTER_MAP.get(key)
+                    apply_address = SIMULATOR_LEVEL_APPLY_REGISTER_MAP.get(key)
+                    if value_address is None or apply_address is None:
+                        continue
+                    self._write_remote_register(
+                        sim, value_address, int(round(float(value)))
+                    )
+                    self._write_remote_register(sim, apply_address, 1)
+            time.sleep(wait_sec)
+            return
+        del wait_sec
         for key, value in updates.items():
             if key in self._levels:
                 self._levels[key] = float(value)
 
     def observe_flat(self) -> dict[str, Any]:
+        if self._remote_mode:
+            with self.clients() as (ctrl, sim):
+                levels = self._read_remote_registers(
+                    sim,
+                    LEVEL_REGISTER_MAP["Supply_Tank_Level"],
+                    len(FIELD_GROUPS["levels"]),
+                )
+                status = self._read_remote_coils(
+                    sim,
+                    STATUS_COIL_MAP["Supply_Pump_Sts"],
+                    len(FIELD_GROUPS["status"]),
+                )
+                commands = self._read_remote_coils(
+                    ctrl,
+                    COMMAND_COIL_MAP["Supply_Tank_Valve_Cmd"],
+                    len(FIELD_GROUPS["commands"]),
+                )
+                process_controls = self._read_remote_registers(
+                    ctrl,
+                    PROCESS_CONTROL_REGISTER_MAP["Supply_Pump_Speed_Cmd"],
+                    len(FIELD_GROUPS["process_controls"]),
+                )
+                states = self._read_remote_coils(
+                    ctrl,
+                    STATE_COIL_MAP["SYS_IDLE"],
+                    len(FIELD_GROUPS["states"]),
+                )
+                alarms = self._read_remote_coils(
+                    ctrl,
+                    ALARM_COIL_MAP["Alarm_Supply_Tank_HH"],
+                    len(FIELD_GROUPS["alarms"]),
+                )
+                hmi = self._read_remote_coils(
+                    ctrl,
+                    HMI_COIL_MAP["HMI_Start_PB"],
+                    len(FIELD_GROUPS["hmi"]),
+                )
+
+            snapshot = {
+                name: levels[index]
+                for index, (name, _) in enumerate(FIELD_GROUPS["levels"])
+            }
+            snapshot.update(
+                {
+                    name: status[index]
+                    for index, (name, _) in enumerate(FIELD_GROUPS["status"])
+                }
+            )
+            snapshot.update(
+                {
+                    name: commands[index]
+                    for index, (name, _) in enumerate(FIELD_GROUPS["commands"])
+                }
+            )
+            snapshot.update(
+                {
+                    name: process_controls[index]
+                    for index, (name, _) in enumerate(FIELD_GROUPS["process_controls"])
+                }
+            )
+            snapshot.update(
+                {
+                    name: states[index]
+                    for index, (name, _) in enumerate(FIELD_GROUPS["states"])
+                }
+            )
+            snapshot.update(
+                {
+                    name: alarms[index]
+                    for index, (name, _) in enumerate(FIELD_GROUPS["alarms"])
+                }
+            )
+            snapshot.update(
+                {
+                    name: hmi[index]
+                    for index, (name, _) in enumerate(FIELD_GROUPS["hmi"])
+                }
+            )
+            snapshot["STATE_NAME"] = state_name(snapshot)
+            return snapshot
         self._advance()
         return self._snapshot()
 
@@ -206,6 +407,58 @@ class OpenPLCWaterDistributionTestbed:
     def apply_action(self, action: dict[str, Any] | str) -> dict[str, Any]:
         descriptor = {"type": action} if isinstance(action, str) else dict(action)
         action_type = str(descriptor.get("type", "")).strip()
+        if self._remote_mode:
+            if action_type == "noop":
+                return {"state_name": self.observe_flat()["STATE_NAME"]}
+            if action_type == "hmi_start":
+                with self.clients() as (ctrl, _):
+                    self._set_remote_hmi(ctrl, start=True, stop=False)
+                    self._pulse_remote_coil(ctrl, HMI_COIL_MAP["HMI_Start_PB"])
+            elif action_type in {"hmi_stop", "hmi_estop"}:
+                with self.clients() as (ctrl, _):
+                    self._set_remote_hmi(ctrl, start=False, stop=False)
+                    self._pulse_remote_coil(ctrl, HMI_COIL_MAP["HMI_Stop_PB"])
+            elif action_type == "hmi_reset":
+                with self.clients() as (ctrl, _):
+                    self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, True)
+                    time.sleep(0.1)
+                    self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, False)
+            elif action_type == "set_sensor":
+                field = str(descriptor.get("name", "")).strip()
+                if field not in VALID_SENSOR_FIELDS:
+                    raise TestbedError(f"unknown sensor field `{field}`")
+                with self.clients() as (_, sim):
+                    enable_address = SENSOR_OVERRIDE_ENABLE_REGISTER_MAP[field]
+                    if descriptor.get("clear") or descriptor.get("value") is None:
+                        self._write_remote_register(sim, enable_address, 0)
+                    else:
+                        value_address = SENSOR_OVERRIDE_VALUE_REGISTER_MAP[field]
+                        self._write_remote_register(
+                            sim,
+                            value_address,
+                            int(round(float(descriptor["value"]))),
+                        )
+                        self._write_remote_register(sim, enable_address, 1)
+            elif action_type == "set_actuator":
+                field = str(descriptor.get("name", "")).strip()
+                if field not in ACTUATOR_FIELD_MAP:
+                    raise TestbedError(f"unknown actuator field `{field}`")
+                with self.clients() as (ctrl, _):
+                    enable_address = ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP[field]
+                    if descriptor.get("clear") or descriptor.get("value") is None:
+                        self._write_remote_register(ctrl, enable_address, 0)
+                    else:
+                        value_address = ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP[field]
+                        if field.endswith("_Valve"):
+                            value = int(bool(descriptor["value"]))
+                        else:
+                            value = int(round(float(descriptor["value"])))
+                        self._write_remote_register(ctrl, value_address, value)
+                        self._write_remote_register(ctrl, enable_address, 1)
+            else:
+                raise TestbedError(f"unsupported action `{action_type}`")
+            time.sleep(0.2)
+            return {"state_name": self.observe_flat()["STATE_NAME"]}
         self._advance()
         if action_type == "noop":
             return {"state_name": self._state_name}
@@ -769,7 +1022,70 @@ class OpenPLCWaterDistributionTestbed:
 
     @contextmanager
     def clients(self):
+        if self._remote_mode:
+            from pymodbus.client import ModbusTcpClient
+
+            assert self.controller_port is not None
+            assert self.simulator_port is not None
+            ctrl = ModbusTcpClient(
+                self.controller_host, port=self.controller_port, timeout=3
+            )
+            sim = ModbusTcpClient(
+                self.simulator_host, port=self.simulator_port, timeout=3
+            )
+            if not ctrl.connect():
+                raise TestbedError(
+                    f"controller Modbus endpoint is unreachable at {self.controller_host}:{self.controller_port}"
+                )
+            if not sim.connect():
+                ctrl.close()
+                raise TestbedError(
+                    f"simulator Modbus endpoint is unreachable at {self.simulator_host}:{self.simulator_port}"
+                )
+            try:
+                yield ctrl, sim
+            finally:
+                ctrl.close()
+                sim.close()
+            return
         yield _FakeClient(self, plane="controller"), _FakeClient(self, plane="simulator")
+
+    @staticmethod
+    def _response_failed(response: Any) -> bool:
+        return response is None or bool(getattr(response, "isError", lambda: True)())
+
+    def _read_remote_coils(self, client: Any, address: int, count: int) -> list[int]:
+        response = client.read_coils(address=address, count=count)
+        if self._response_failed(response):
+            raise TestbedError(f"failed to read coils {address}-{address + count - 1}")
+        return [1 if bool(bit) else 0 for bit in response.bits[:count]]
+
+    def _read_remote_registers(self, client: Any, address: int, count: int) -> list[int]:
+        response = client.read_holding_registers(address=address, count=count)
+        if self._response_failed(response):
+            raise TestbedError(
+                f"failed to read holding registers {address}-{address + count - 1}"
+            )
+        return [int(value) for value in response.registers[:count]]
+
+    def _write_remote_coil(self, client: Any, address: int, value: bool) -> None:
+        response = client.write_coil(address=address, value=bool(value))
+        if self._response_failed(response):
+            raise TestbedError(f"failed to write coil {address}")
+
+    def _write_remote_register(self, client: Any, address: int, value: int) -> None:
+        response = client.write_register(address=address, value=int(value))
+        if self._response_failed(response):
+            raise TestbedError(f"failed to write holding register {address}")
+
+    def _set_remote_hmi(self, client: Any, *, start: bool, stop: bool) -> None:
+        self._write_remote_coil(client, HMI_COIL_MAP["HMI_Start_PB"], start)
+        self._write_remote_coil(client, HMI_COIL_MAP["HMI_Stop_PB"], stop)
+
+    def _pulse_remote_coil(self, client: Any, address: int) -> None:
+        self._write_remote_coil(client, address, True)
+        time.sleep(0.1)
+        self._write_remote_coil(client, address, False)
 
 
 class _FakeReadResult:
