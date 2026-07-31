@@ -7199,6 +7199,156 @@ class AgenticRoleAgent(RoleAgent):
             reverse=True,
         )
 
+    def _water_distribution_constrained_attack_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        knowledge_mode: str,
+    ) -> list[dict[str, Any]]:
+        scenario = context["scenario"]
+        constraints = dict(scenario.metadata.get("attacker_constraints") or {})
+        if not constraints:
+            return []
+
+        allowed_action_types = {
+            str(item).strip()
+            for item in constraints.get("allowed_action_types", [])
+            if str(item).strip()
+        }
+        pre_attack_action_types = {
+            str(item).strip()
+            for item in constraints.get("pre_attack_allowed_action_types", [])
+            if str(item).strip()
+        }
+        allowed_actuator_names = {
+            str(item).strip()
+            for item in constraints.get("allowed_actuator_names", [])
+            if str(item).strip()
+        }
+        raw_allowed_values = constraints.get("allowed_actuator_values", {})
+        allowed_actuator_values: dict[str, set[str]] = {}
+        if isinstance(raw_allowed_values, dict):
+            for name, values in raw_allowed_values.items():
+                key = str(name).strip()
+                if not key:
+                    continue
+                if isinstance(values, list):
+                    allowed_actuator_values[key] = {
+                        str(item).strip() for item in values if str(item).strip()
+                    }
+        attack_start_time = self._coerce_number(
+            constraints.get("attack_start_time_sec")
+        )
+        if attack_start_time is None:
+            attack_start_time = self._coerce_number(
+                ((scenario.metadata.get("ground_truth") or {}).get("incident_start_time_sec"))
+            )
+        if attack_start_time is None:
+            attack_start_time = 0.0
+
+        base_candidates = build_candidate_actions(
+            role=self.role,
+            allowed_action_types=list(self.profile.get("allowed_action_types", [])),
+            scenario=scenario,
+            observation=context.get("observation", {}),
+            risk_flags=telemetry_summary.get("risk_flags", []),
+            active_alarms=telemetry_summary.get("active_alarms", []),
+            relationship_notes=telemetry_summary.get("relationship_notes", []),
+            recent_alerts=context.get("alerts", [])[-self.alert_window :],
+            recent_actions=context.get("executed_actions", [])[-self.action_window :],
+            incident=None,
+            remaining_playbook=context.get("remaining_playbook", []),
+            now=float(context.get("time_sec", 0.0)),
+            playbook_anticipation_sec=self.playbook_anticipation_sec,
+        )
+
+        now = float(context.get("time_sec", 0.0))
+        filtered: list[dict[str, Any]] = []
+        for candidate in base_candidates:
+            action = normalize_action(candidate.get("action"))
+            if action is None:
+                continue
+            action_type = str(action.get("type", "")).strip()
+            if allowed_action_types and action_type not in allowed_action_types:
+                continue
+            if now < attack_start_time and (
+                pre_attack_action_types and action_type not in pre_attack_action_types
+            ):
+                continue
+            if action_type == "set_actuator" and allowed_actuator_names:
+                actuator_name = str(action.get("name", "")).strip()
+                if actuator_name not in allowed_actuator_names:
+                    continue
+                allowed_values = allowed_actuator_values.get(actuator_name, set())
+                if allowed_values and str(action.get("value")).strip() not in allowed_values:
+                    continue
+
+            priority = int(candidate.get("priority", 0))
+            summary = str(candidate.get("summary", "")).strip()
+            if action_type == "set_actuator":
+                priority += 110
+                if knowledge_mode == "white_box":
+                    priority += 12
+                elif knowledge_mode == "gray_box":
+                    priority += 6
+                if str(action.get("name", "")).strip() in allowed_actuator_names:
+                    priority += 18
+                if self._coerce_number(action.get("value")) == 100.0:
+                    priority += 14
+                else:
+                    priority -= 10
+                summary = (
+                    f"Force `{action.get('name')}` through the actuator write path so the "
+                    "supply pump stays pinned high after the controller would normally relax."
+                )
+            elif action_type == "inspect_surface":
+                priority += 24 if now < attack_start_time else 6
+                summary = (
+                    f"Inspect `{action.get('surface')}` to qualify the supply-side control "
+                    "path before committing to the bounded actuator override."
+                )
+            elif action_type == "noop":
+                priority += 20 if now < attack_start_time else 2
+                if not summary:
+                    summary = "Hold until the supply-pump override window is open."
+            else:
+                priority -= 40
+
+            filtered.append(
+                {
+                    **candidate,
+                    "action": action,
+                    "summary": summary,
+                    "priority": priority,
+                    "source": f"{knowledge_mode}_water_distribution_constraint",
+                }
+            )
+
+        if not filtered:
+            noop_candidate = self._noop_candidate(
+                "Hold until the supply-pump override window is open."
+            )
+            if noop_candidate is not None:
+                filtered.append(
+                    {
+                        **noop_candidate,
+                        "priority": 24 if now < attack_start_time else 4,
+                        "source": f"{knowledge_mode}_water_distribution_constraint",
+                    }
+                )
+
+        return sorted(
+            filtered,
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                item["id"],
+            ),
+            reverse=True,
+        )
+
     def _white_box_attacker_candidates(
         self,
         *,
@@ -7206,6 +7356,19 @@ class AgenticRoleAgent(RoleAgent):
         telemetry_summary: dict[str, Any],
         structured_memory: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        scenario = context["scenario"]
+        if (
+            getattr(scenario, "testbed_id", "")
+            == "water_distribution"
+            and scenario.metadata.get("attacker_constraints")
+        ):
+            return self._water_distribution_constrained_attack_candidates(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                structured_memory=structured_memory,
+                knowledge_mode="white_box",
+            )
+
         allowed = set(self.profile.get("allowed_action_types", []))
         observation = context.get("observation", {})
         state_name = str(observation.get("STATE_NAME", "")).upper()
@@ -7654,6 +7817,19 @@ class AgenticRoleAgent(RoleAgent):
         telemetry_summary: dict[str, Any],
         structured_memory: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        scenario = context["scenario"]
+        if (
+            getattr(scenario, "testbed_id", "")
+            == "water_distribution"
+            and scenario.metadata.get("attacker_constraints")
+        ):
+            return self._water_distribution_constrained_attack_candidates(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                structured_memory=structured_memory,
+                knowledge_mode="gray_box",
+            )
+
         allowed = set(self.profile.get("allowed_action_types", []))
         observation = context.get("observation", {})
         now = float(context.get("time_sec", 0.0))

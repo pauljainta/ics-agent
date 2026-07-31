@@ -147,6 +147,16 @@ def _parse_args() -> argparse.Namespace:
         "config",
         help="Experiment config path, typically under configs/experiments/.",
     )
+    parser.add_argument(
+        "--scenario-selector",
+        dest="scenario_selectors",
+        action="append",
+        default=[],
+        help=(
+            "Override the config scenario selectors. Repeat the flag to pass "
+            "multiple selectors."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -185,7 +195,7 @@ def _artifact_cleanup_status() -> list[dict[str, str]]:
             "path": portable_path(repo_scenarios_dir),
             "status": "kept" if repo_scenarios_dir.exists() else "missing",
             "reason": (
-                "The 18-scenario suite now resolves from repo-local scenarios."
+                "The selected attack suite now resolves from repo-local scenarios."
                 if repo_scenarios_dir.exists()
                 else "Repo-local scenarios unexpectedly missing."
             ),
@@ -333,12 +343,15 @@ def _git_commit(path: Path) -> str | None:
 
 def _run_logged(command: list[str], log_path: Path) -> dict[str, Any]:
     started = utc_now()
+    env = os.environ.copy()
+    if len(command) >= 3 and command[1:3] == ["-m", "pytest"]:
+        env.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
     completed = subprocess.run(
         command,
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
-        env=os.environ.copy(),
+        env=env,
     )
     payload = {
         "command": command,
@@ -958,7 +971,7 @@ def _write_final_report(
         "",
         "- Staged Option B path: local orchestrator -> access -> engineering -> plant runtime.",
         f"- Attacker/defender pair run in this pass: `{condition_summary['condition_name']}`.",
-        "- Suite size: `18` attack scenarios.",
+        f"- Suite size: `{attack_metrics.get('attack_run_count', 0)}` attack scenarios.",
         "- Trajectory diversity: not computed in this pass.",
         "",
         "## Saved Metrics",
@@ -1033,13 +1046,18 @@ def main() -> int:
         args = _parse_args()
         config = load_config(args.config)
         require_fields(config, ["experiment_name", "scenario_selectors"], ctx="experiment config")
-        orchestrator = ExperimentOrchestrator()
-        scenarios = list(
-            orchestrator.catalog.resolve_selectors(list(config.get("scenario_selectors", [])))
+        orchestrator = ExperimentOrchestrator(
+            testbed_id=str(config.get("testbed", "water_treatment"))
         )
-        if len(scenarios) != 18:
+        scenario_selectors = list(args.scenario_selectors) or list(
+            config.get("scenario_selectors", [])
+        )
+        scenarios = list(
+            orchestrator.catalog.resolve_selectors(scenario_selectors)
+        )
+        if not scenarios:
             raise RuntimeError(
-                f"expected 18 attack scenarios, found {len(scenarios)} in {CONFIG_PATH}"
+                f"expected at least one attack scenario, found {len(scenarios)} in {Path(config['_path']).resolve()}"
             )
         if not all(scenario.suite == "attack" for scenario in scenarios):
             raise RuntimeError("non-attack scenario slipped into the MITRE agentic attack suite")
