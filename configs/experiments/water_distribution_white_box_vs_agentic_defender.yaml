@@ -44,15 +44,19 @@ conditions:
           - testbeds/water_distribution/docs/process-models/wd-supply-line.md
           - testbeds/water_distribution/openplc/configs/openplc_map.yaml
         abort_on_backend_error: false
-        action_cooldown_sec: 2.0
-        reasoning_cooldown_sec: 12.0
-        reasoning_refresh_sec: 18.0
+        action_cooldown_sec: 0.5
+        note_cooldown_sec: 2.0
+        reasoning_cooldown_sec: 1.0
+        reasoning_refresh_sec: 2.0
+        memory:
+          attacker_candidate_window: 8
         llm:
-          backend: qwen_langchain
+          backend: qwen_langgraph
           prompt_file: testbeds/water_distribution/prompts/white_box_attacker.md
-          use_langgraph: false
-          allow_langchain_fallback: false
-          max_new_tokens: 64
+          use_langgraph: true
+          strict_backend: true
+          allow_langchain_fallback: true
+          max_new_tokens: 160
       defender:
         allowed_action_types:
           [hmi_stop, hmi_estop, disable_hmi_session, isolate_engineering_host, block_sensor_write, block_actuator_write, quarantine_signal_source, noop]

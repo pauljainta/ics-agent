@@ -157,6 +157,173 @@ def test_supply_pump_max_scenario_constrains_agentic_attacker_to_actuator_path()
     assert {float(item.get("value", 0.0)) for item in actuator_candidates} == {100.0}
 
 
+def test_water_distribution_white_box_candidates_include_grid_actuator_override() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("attack/wd-attack-grid-valve-force-open")
+
+    agent = AgenticRoleAgent(
+        "white_box_attacker",
+        {
+            "role": "attacker",
+            "family": "agentic",
+            "mode": "online",
+            "policy": "agentic",
+            "knowledge_mode": "white_box",
+            "allowed_action_types": [
+                "inspect_surface",
+                "hmi_start",
+                "hmi_stop",
+                "hmi_estop",
+                "set_sensor",
+                "set_actuator",
+                "noop",
+            ],
+        },
+    )
+    agent.reset(scenario)
+
+    context = {
+        "scenario": scenario,
+        "observation": {
+            "STATE_NAME": "RUNNING",
+            "Supply_Tank_Level": 940.0,
+            "Supply_Pump_Flow": 150.0,
+            "Supply_NaOCl_Level": 800.0,
+            "Supply_NH4Cl_Level": 800.0,
+            "Grid_Elev_Tank_Level": 1550.0,
+            "Grid_Consum_Tank_Level": 820.0,
+            "RWS_Tank_Level": 500.0,
+            "Supply_Pump_Sts": 1.0,
+            "Supply_Tank_Valve_Sts": 1.0,
+            "Grid_Elev_Valve_Sts": 0.0,
+            "RWS_Pump_Sts": 0.0,
+            "RWS_Tank_Valve_Sts": 0.0,
+            "Alarm_Supply_Tank_HH": 0.0,
+        },
+        "executed_actions": [],
+        "alerts": [],
+        "remaining_playbook": [],
+        "time_sec": 18.0,
+    }
+    telemetry_summary = {
+        "risk_flags": [],
+        "active_alarms": [],
+        "relationship_notes": [],
+    }
+    structured_memory = agent._white_box_attacker_memory(
+        context=context,
+        observation=context["observation"],
+        telemetry_summary=telemetry_summary,
+        recent_actions=[],
+        recent_alerts=[],
+        recent_action_effects=[],
+    )
+
+    candidates = agent._white_box_attacker_candidates(
+        context=context,
+        telemetry_summary=telemetry_summary,
+        structured_memory=structured_memory,
+    )
+
+    actuator_candidates = [
+        item.get("action") or {}
+        for item in candidates
+        if (item.get("action") or {}).get("type") == "set_actuator"
+    ]
+
+    assert actuator_candidates
+    assert {
+        (str(item.get("name")), item.get("value"))
+        for item in actuator_candidates
+    } >= {("Grid_Elev_Valve", True)}
+
+
+def test_water_distribution_white_box_system_knowledge_uses_distribution_topology() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("attack/wd-attack-supply-low-spoof")
+
+    agent = AgenticRoleAgent(
+        "white_box_attacker",
+        {
+            "role": "attacker",
+            "family": "agentic",
+            "mode": "online",
+            "policy": "agentic",
+            "knowledge_mode": "white_box",
+            "allowed_action_types": [
+                "inspect_surface",
+                "hmi_start",
+                "hmi_stop",
+                "hmi_estop",
+                "set_sensor",
+                "set_actuator",
+                "noop",
+            ],
+        },
+    )
+    agent.reset(scenario)
+
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "Supply_Tank_Level": 860.0,
+        "Supply_Pump_Flow": 150.0,
+        "Supply_NaOCl_Level": 800.0,
+        "Supply_NH4Cl_Level": 800.0,
+        "Grid_Elev_Tank_Level": 940.0,
+        "Grid_Consum_Tank_Level": 860.0,
+        "RWS_Tank_Level": 500.0,
+        "Supply_Pump_Sts": 1.0,
+        "Supply_Tank_Valve_Sts": 1.0,
+        "Grid_Elev_Valve_Sts": 1.0,
+        "RWS_Pump_Sts": 0.0,
+        "RWS_Tank_Valve_Sts": 0.0,
+        "Alarm_Supply_Tank_HH": 0.0,
+    }
+    telemetry_summary = {
+        "risk_flags": [],
+        "active_alarms": [],
+        "relationship_notes": [],
+    }
+    structured_memory = agent._white_box_attacker_memory(
+        context={
+            "scenario": scenario,
+            "observation": observation,
+            "executed_actions": [],
+            "alerts": [],
+            "remaining_playbook": [],
+            "time_sec": 16.0,
+        },
+        observation=observation,
+        telemetry_summary=telemetry_summary,
+        recent_actions=[],
+        recent_alerts=[],
+        recent_action_effects=[],
+    )
+
+    system_knowledge = agent._white_box_attacker_system_knowledge(
+        scenario=scenario,
+        observation=observation,
+        telemetry_summary=telemetry_summary,
+        structured_memory=structured_memory,
+        defender_reasoning=None,
+        mitre_context=None,
+    )
+
+    process_assets = {
+        item["asset"] for item in system_knowledge["topology"]["process_paths"]
+    }
+    surfaces = {
+        item["surface"] for item in system_knowledge["topology"]["surface_relationships"]
+    }
+
+    assert {"WD-Supply", "WD-Grid", "WD-RWS"} <= process_assets
+    assert {"sensor_write_path", "actuator_write_path"} <= surfaces
+    assert (
+        system_knowledge["control_semantics"]["set_actuator"]
+        == "Forces a bounded pump or valve command through the actuator write path."
+    )
+
+
 def test_supply_pump_max_scenario_starts_immediately_and_stays_nominal_pre_attack() -> None:
     catalog = ScenarioCatalog(testbed_id="water_distribution")
     scenario = catalog.get("attack/wd-attack-supply-pump-max")

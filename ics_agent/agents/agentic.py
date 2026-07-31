@@ -2908,6 +2908,7 @@ class AgenticRoleAgent(RoleAgent):
             },
         )
         prior_surfaces = self._white_box_surface_priors(
+            scenario=context["scenario"],
             observation=observation,
             telemetry_summary=telemetry_summary,
             safety_bounds=dict(context["scenario"].metadata.get("safety_bounds", {})),
@@ -2985,13 +2986,170 @@ class AgenticRoleAgent(RoleAgent):
         ).strip()
         return state
 
-    def _white_box_surface_priors(
+    @staticmethod
+    def _is_water_distribution_scenario(scenario: Any) -> bool:
+        return (
+            str(
+                getattr(scenario, "testbed_id", None)
+                or (getattr(scenario, "metadata", {}) or {}).get("testbed_id", "")
+            ).strip()
+            == "water_distribution"
+        )
+
+    def _water_distribution_white_box_surface_priors(
         self,
         *,
+        scenario: Any,
         observation: dict[str, Any],
         telemetry_summary: dict[str, Any],
         safety_bounds: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        del safety_bounds
+        process_id = str((getattr(scenario, "execution", {}) or {}).get("process_id") or "")
+        state_name = str(observation.get("STATE_NAME", "")).upper()
+        active_alarms = set(
+            str(item) for item in telemetry_summary.get("active_alarms", [])
+        )
+        relationship_notes = set(
+            str(item) for item in telemetry_summary.get("relationship_notes", [])
+        )
+        risk_flags = set(str(item) for item in telemetry_summary.get("risk_flags", []))
+
+        if process_id == "WD-Supply":
+            sensor_fields = ["Supply_Tank_Level"]
+            actuator_chain = [("Supply_Pump_Speed", 100)]
+        elif process_id == "WD-Grid":
+            sensor_fields = ["Grid_Elev_Tank_Level"]
+            actuator_chain = [("Grid_Elev_Valve", True)]
+        elif process_id == "WD-RWS":
+            sensor_fields = ["RWS_Tank_Level"]
+            actuator_chain = [("RWS_Pump_Speed", 100), ("RWS_Tank_Valve", True)]
+        else:
+            sensor_fields = [
+                "Supply_Tank_Level",
+                "Grid_Elev_Tank_Level",
+                "RWS_Tank_Level",
+            ]
+            actuator_chain = [
+                ("Grid_Elev_Valve", True),
+                ("RWS_Pump_Speed", 100),
+                ("RWS_Tank_Valve", True),
+                ("Supply_Pump_Speed", 100),
+            ]
+
+        preferred_sensor = next(
+            (field for field in sensor_fields if field in observation),
+            None,
+        )
+        preferred_actuator = actuator_chain[0][0] if actuator_chain else None
+
+        scores = {
+            "sensor_manipulation": 0.0,
+            "availability_disruption": 0.0,
+        }
+        basis: dict[str, list[str]] = {surface: [] for surface in scores}
+        hints: dict[str, dict[str, Any]] = {
+            "sensor_manipulation": {
+                "surface_label": "sensor_write_path",
+                "estimated_steps_to_effect": 2,
+                "preferred_target": preferred_sensor,
+                "preferred_direction": "either",
+                "preferred_value": None,
+                "immediate_impact": False,
+            },
+            "availability_disruption": {
+                "surface_label": "actuator_write_path",
+                "estimated_steps_to_effect": 2,
+                "preferred_target": preferred_actuator,
+                "preferred_direction": "assertive",
+                "preferred_value": actuator_chain[0][1] if actuator_chain else None,
+                "immediate_impact": False,
+            },
+        }
+
+        if preferred_sensor:
+            scores["sensor_manipulation"] += 2.0
+            basis["sensor_manipulation"].append(f"preferred_sensor={preferred_sensor}")
+            if state_name in {"RUNNING", "STARTING"}:
+                scores["sensor_manipulation"] += 0.45
+                hints["sensor_manipulation"]["estimated_steps_to_effect"] = 1
+                hints["sensor_manipulation"]["immediate_impact"] = True
+            if "sensor_or_process_jump" in risk_flags:
+                scores["sensor_manipulation"] += 0.4
+                basis["sensor_manipulation"].append("sensor_or_process_jump")
+            if any(note.startswith("abrupt_change:") for note in relationship_notes):
+                scores["sensor_manipulation"] += 0.3
+                basis["sensor_manipulation"].append("abrupt_change")
+            if active_alarms:
+                scores["sensor_manipulation"] += 0.2
+                basis["sensor_manipulation"].append(next(iter(sorted(active_alarms))))
+
+        if preferred_actuator:
+            scores["availability_disruption"] += 1.95
+            basis["availability_disruption"].append(
+                f"preferred_actuator={preferred_actuator}"
+            )
+            if state_name in {"RUNNING", "STARTING"}:
+                scores["availability_disruption"] += 0.55
+                hints["availability_disruption"]["estimated_steps_to_effect"] = 1
+                hints["availability_disruption"]["immediate_impact"] = True
+            if "command_status_divergence" in risk_flags:
+                scores["availability_disruption"] += 0.55
+                basis["availability_disruption"].append("command_status_divergence")
+            mismatch = next(
+                (
+                    note
+                    for note in sorted(relationship_notes)
+                    if note.startswith("command_status_mismatch:")
+                ),
+                None,
+            )
+            if mismatch:
+                scores["availability_disruption"] += 0.25
+                basis["availability_disruption"].append(mismatch)
+
+        ranked: list[dict[str, Any]] = []
+        for surface, score in sorted(
+            scores.items(),
+            key=lambda item: (item[1], item[0]),
+            reverse=True,
+        ):
+            if score <= 0:
+                continue
+            confidence = round(min(0.83, 0.34 + (score * 0.12)), 2)
+            ranked.append(
+                {
+                    "surface": surface,
+                    "surface_label": hints[surface]["surface_label"],
+                    "confidence": confidence,
+                    "basis": basis[surface][:4],
+                    "estimated_steps_to_effect": int(
+                        hints[surface]["estimated_steps_to_effect"] or 2
+                    ),
+                    "preferred_target": hints[surface]["preferred_target"],
+                    "preferred_direction": hints[surface]["preferred_direction"],
+                    "preferred_value": hints[surface]["preferred_value"],
+                    "preferred_chemical": None,
+                    "immediate_impact": bool(hints[surface]["immediate_impact"]),
+                }
+            )
+        return ranked
+
+    def _white_box_surface_priors(
+        self,
+        *,
+        scenario: Any,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        safety_bounds: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if self._is_water_distribution_scenario(scenario):
+            return self._water_distribution_white_box_surface_priors(
+                scenario=scenario,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                safety_bounds=safety_bounds,
+            )
         state_name = str(observation.get("STATE_NAME", "")).upper()
         relationship_notes = set(
             str(item) for item in telemetry_summary.get("relationship_notes", [])
@@ -3177,6 +3335,154 @@ class AgenticRoleAgent(RoleAgent):
             )
         return ranked
 
+    def _water_distribution_white_box_system_knowledge(
+        self,
+        *,
+        scenario: Any,
+        observation: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        failed_checks: list[str],
+        mitre_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        surface_priors = list(structured_memory.get("white_box_surface_priors", []))
+        return {
+            "knowledge_regime": "white_box",
+            "topology": {
+                "staged_path": list(
+                    (mitre_context or {}).get(
+                        "staged_path",
+                        [
+                            "local_orchestrator",
+                            "access",
+                            "engineering",
+                            "plant_runtime",
+                        ],
+                    )
+                ),
+                "phase_model": None
+                if mitre_context is None
+                else mitre_context.get("phase_model"),
+                "process_paths": [
+                    {
+                        "asset": "WD-Supply",
+                        "role": "supply_storage_and_refill",
+                        "signals": [
+                            "Supply_Tank_Level",
+                            "Supply_Pump_Flow",
+                            "Supply_NaOCl_Level",
+                            "Supply_NH4Cl_Level",
+                            "Alarm_Supply_Tank_HH",
+                        ],
+                        "controls": ["hmi_start", "hmi_stop", "hmi_estop", "set_sensor", "set_actuator"],
+                    },
+                    {
+                        "asset": "WD-Grid",
+                        "role": "elevated_distribution_buffer",
+                        "signals": [
+                            "Grid_Elev_Tank_Level",
+                            "Grid_Consum_Tank_Level",
+                            "Grid_Elev_Valve_Cmd",
+                            "Grid_Elev_Valve_Sts",
+                        ],
+                        "controls": ["set_sensor", "set_actuator"],
+                    },
+                    {
+                        "asset": "WD-RWS",
+                        "role": "return_water_recirculation",
+                        "signals": [
+                            "RWS_Tank_Level",
+                            "RWS_Pump_Speed_Cmd",
+                            "RWS_Pump_Sts",
+                            "RWS_Tank_Valve_Cmd",
+                            "RWS_Tank_Valve_Sts",
+                        ],
+                        "controls": ["set_sensor", "set_actuator"],
+                    },
+                ],
+                "surface_relationships": [
+                    {
+                        "surface": "sensor_write_path",
+                        "maps_to": "sensor_manipulation",
+                        "signals": [
+                            "Supply_Tank_Level",
+                            "Grid_Elev_Tank_Level",
+                            "Grid_Consum_Tank_Level",
+                            "RWS_Tank_Level",
+                            "Alarm_Supply_Tank_HH",
+                        ],
+                    },
+                    {
+                        "surface": "actuator_write_path",
+                        "maps_to": "availability_disruption",
+                        "signals": [
+                            "Supply_Pump_Speed",
+                            "Grid_Elev_Valve",
+                            "RWS_Pump_Speed",
+                            "RWS_Tank_Valve",
+                        ],
+                    },
+                    {
+                        "surface": "supply/grid/return control planes",
+                        "maps_to": "inspect_surface",
+                        "signals": [
+                            "supply_control_plane",
+                            "grid_control_plane",
+                            "return_control_plane",
+                        ],
+                    },
+                ],
+            },
+            "asset_metadata": {
+                "suite": scenario.suite,
+                "state_name": observation.get("STATE_NAME"),
+                "process_id": (getattr(scenario, "execution", {}) or {}).get("process_id"),
+                "supply_pump_running": bool(self._is_active_flag(observation.get("Supply_Pump_Sts"))),
+                "grid_valve_open": bool(self._is_active_flag(observation.get("Grid_Elev_Valve_Sts"))),
+                "return_pump_running": bool(self._is_active_flag(observation.get("RWS_Pump_Sts"))),
+            },
+            "control_semantics": {
+                "hmi_start": "Starts the shared WD-UC0 process when permissives allow.",
+                "hmi_stop": "Stops WD-UC0 in a controlled way.",
+                "hmi_estop": "Forces immediate WD-UC0 stop.",
+                "set_sensor": "Forces a bounded distribution telemetry value through the sensor write path.",
+                "set_actuator": "Forces a bounded pump or valve command through the actuator write path.",
+                "inspect_surface": "Reads bounded discovery information from a labeled distribution surface.",
+            },
+            "safety_envelope": dict(scenario.metadata.get("safety_bounds", {})),
+            "process_context": {
+                "active_alarms": list(telemetry_summary.get("active_alarms", []))[:4],
+                "risk_flags": list(telemetry_summary.get("risk_flags", []))[:6],
+                "relationship_notes": list(telemetry_summary.get("relationship_notes", []))[
+                    :8
+                ],
+                "preferred_surface_order": [
+                    str(item.get("surface_label") or item.get("surface"))
+                    for item in surface_priors
+                    if str(item.get("surface_label") or item.get("surface", "")).strip()
+                ],
+                "surface_leverage_hints": [
+                    {
+                        "surface": str(item.get("surface_label") or item.get("surface")),
+                        "confidence": item.get("confidence"),
+                        "estimated_steps_to_effect": item.get(
+                            "estimated_steps_to_effect"
+                        ),
+                        "preferred_target": item.get("preferred_target"),
+                        "preferred_direction": item.get("preferred_direction"),
+                        "preferred_value": item.get("preferred_value"),
+                        "immediate_impact": item.get("immediate_impact"),
+                    }
+                    for item in surface_priors[:3]
+                ],
+            },
+            "control_logic_summary": {
+                "failed_checks": failed_checks,
+                "failed_check_count": len(failed_checks),
+                "immediate_attention_required": bool(failed_checks),
+            },
+        }
+
     def _white_box_attacker_system_knowledge(
         self,
         *,
@@ -3195,6 +3501,15 @@ class AgenticRoleAgent(RoleAgent):
             for item in control_logic_checks.get("checks", [])
             if item.get("status") == "failed" and item.get("id")
         ][:4]
+        if self._is_water_distribution_scenario(scenario):
+            return self._water_distribution_white_box_system_knowledge(
+                scenario=scenario,
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                structured_memory=structured_memory,
+                failed_checks=failed_checks,
+                mitre_context=mitre_context,
+            )
         surface_priors = list(structured_memory.get("white_box_surface_priors", []))
         return {
             "knowledge_regime": "white_box",
@@ -7357,16 +7672,18 @@ class AgenticRoleAgent(RoleAgent):
         structured_memory: dict[str, Any],
     ) -> list[dict[str, Any]]:
         scenario = context["scenario"]
-        if (
-            getattr(scenario, "testbed_id", "")
-            == "water_distribution"
-            and scenario.metadata.get("attacker_constraints")
-        ):
-            return self._water_distribution_constrained_attack_candidates(
+        if self._is_water_distribution_scenario(scenario):
+            if scenario.metadata.get("attacker_constraints"):
+                return self._water_distribution_constrained_attack_candidates(
+                    context=context,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=structured_memory,
+                    knowledge_mode="white_box",
+                )
+            return self._water_distribution_white_box_attacker_candidates(
                 context=context,
                 telemetry_summary=telemetry_summary,
                 structured_memory=structured_memory,
-                knowledge_mode="white_box",
             )
 
         allowed = set(self.profile.get("allowed_action_types", []))
@@ -7809,6 +8126,295 @@ class AgenticRoleAgent(RoleAgent):
         if hold is not None:
             selected.append(hold)
         return selected
+
+    def _water_distribution_white_box_attacker_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        scenario = context["scenario"]
+        observation = context.get("observation", {})
+        allowed = set(self.profile.get("allowed_action_types", []))
+        state_name = str(observation.get("STATE_NAME", "")).upper()
+        plant_running = state_name in {"RUNNING", "STARTING"}
+        process_id = str((getattr(scenario, "execution", {}) or {}).get("process_id") or "")
+        safety_bounds = dict(scenario.metadata.get("safety_bounds", {}))
+        direct_commit = bool(structured_memory.get("white_box_direct_commit"))
+        current_phase = str(structured_memory.get("current_phase", "probing"))
+        prior_actions = {
+            action_key(action)
+            for item in context.get("executed_actions", [])
+            if item.get("role") == "attacker"
+            for action in [normalize_action(item.get("action"))]
+            if action is not None
+        }
+        surface_priors = list(structured_memory.get("white_box_surface_priors", []))
+        sensor_prior = next(
+            (
+                item
+                for item in surface_priors
+                if str(item.get("surface", "")) == "sensor_manipulation"
+            ),
+            {},
+        )
+        actuator_prior = next(
+            (
+                item
+                for item in surface_priors
+                if str(item.get("surface", "")) == "availability_disruption"
+            ),
+            {},
+        )
+        preferred_sensor = str(sensor_prior.get("preferred_target") or "").strip() or None
+        preferred_actuator = (
+            str(actuator_prior.get("preferred_target") or "").strip() or None
+        )
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            summary: str,
+            action: dict[str, Any] | str | None,
+            *,
+            priority: int,
+            surface: str,
+            category: str,
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", ""))
+            if action_type not in allowed:
+                return
+            if action_type not in {"set_sensor", "set_actuator"} and self._action_satisfied(
+                normalized,
+                observation=observation,
+            ):
+                return
+            payload = {
+                "id": action_key(normalized),
+                "summary": summary,
+                "action": normalized,
+                "source": "white_box_distribution",
+                "priority": int(priority),
+                "surface": surface,
+                "category": category,
+            }
+            existing = candidates_by_id.get(payload["id"])
+            if existing is None or int(payload["priority"]) > int(
+                existing.get("priority", 0)
+            ):
+                candidates_by_id[payload["id"]] = payload
+
+        def base_priority(category: str, *, offset: int = 0) -> int:
+            base = {
+                "support": 206,
+                "exploit": 198,
+                "sustain": 204,
+                "escalate": 194,
+                "recon": 146,
+                "fallback": 166,
+                "hold": 18,
+            }.get(category, 180)
+            if direct_commit and category in {"support", "exploit", "sustain", "escalate"}:
+                base += 8
+            if current_phase in {"initial_observation", "reconnaissance"} and category == "recon":
+                base += 6
+            return base + offset
+
+        def sensor_summary(field_name: str, direction: str, *, sustain: bool) -> str:
+            effects = {
+                ("Supply_Tank_Level", "low"): "keep the controller demanding excess supply refill.",
+                ("Supply_Tank_Level", "high"): "suppress refill demand or trip the supply high-high path.",
+                ("Grid_Elev_Tank_Level", "low"): "hold the grid fill path open longer than the process warrants.",
+                ("Grid_Elev_Tank_Level", "high"): "close the grid fill path early and starve normal refill.",
+                ("RWS_Tank_Level", "low"): "hold the return path out of service while supply support decays.",
+                ("RWS_Tank_Level", "high"): "latch the return path on longer than the process warrants.",
+            }
+            stance = "Sustain" if sustain else "Drive"
+            return (
+                f"{stance} `{field_name}` {direction} through the sensor write path to "
+                f"{effects.get((field_name, direction), 'pressure the controller with a stronger bounded spoof.')}"
+            )
+
+        def actuator_summary(actuator_name: str, *, sustain: bool) -> str:
+            effects = {
+                "Supply_Pump_Speed": "keep transfer pinned high after the controller would normally relax.",
+                "Grid_Elev_Valve": "hold the elevated-grid fill path open regardless of controller intent.",
+                "RWS_Pump_Speed": "force recirculation on even when the controller would leave it idle.",
+                "RWS_Tank_Valve": "sustain return-water flow through the bounded actuator path.",
+            }
+            stance = "Sustain" if sustain else "Force"
+            return (
+                f"{stance} `{actuator_name}` through the actuator write path to "
+                f"{effects.get(actuator_name, 'assert a direct bounded physical control effect.')}"
+            )
+
+        primary_process_id = "WD-UC0"
+        if not plant_running and "hmi_start" in allowed:
+            add_candidate(
+                "Start WD-UC0 so the chosen white-box sensor or actuator path produces real process effect.",
+                {"type": "hmi_start", "process_id": primary_process_id},
+                priority=base_priority("support", offset=10),
+                surface="availability_disruption",
+                category="support",
+            )
+
+        if process_id == "WD-Supply":
+            sensor_fields = ["Supply_Tank_Level"]
+            actuator_specs = [("Supply_Pump_Speed", 100)]
+            recon_surfaces = [
+                "sensor_write_path",
+                "actuator_write_path",
+                "supply_control_plane",
+            ]
+        elif process_id == "WD-Grid":
+            sensor_fields = ["Grid_Elev_Tank_Level"]
+            actuator_specs = [("Grid_Elev_Valve", True)]
+            recon_surfaces = [
+                "sensor_write_path",
+                "actuator_write_path",
+                "grid_control_plane",
+            ]
+        elif process_id == "WD-RWS":
+            sensor_fields = ["RWS_Tank_Level"]
+            actuator_specs = [("RWS_Pump_Speed", 100), ("RWS_Tank_Valve", True)]
+            recon_surfaces = [
+                "sensor_write_path",
+                "actuator_write_path",
+                "return_control_plane",
+            ]
+        else:
+            sensor_fields = [
+                "Supply_Tank_Level",
+                "Grid_Elev_Tank_Level",
+                "RWS_Tank_Level",
+            ]
+            actuator_specs = [
+                ("Grid_Elev_Valve", True),
+                ("RWS_Pump_Speed", 100),
+                ("RWS_Tank_Valve", True),
+                ("Supply_Pump_Speed", 100),
+            ]
+            recon_surfaces = [
+                "sensor_write_path",
+                "actuator_write_path",
+                "grid_control_plane",
+                "return_control_plane",
+            ]
+
+        for index, field_name in enumerate(sensor_fields):
+            bounds = dict(safety_bounds.get(field_name, {}))
+            minimum = self._coerce_number(bounds.get("min"))
+            maximum = self._coerce_number(bounds.get("max"))
+            if minimum is None or maximum is None or maximum <= minimum:
+                continue
+            span = max(1.0, maximum - minimum)
+            low_value = int(round(minimum + (span * 0.11)))
+            high_value = int(round(minimum + (span * 0.93)))
+            for direction, value, category, direction_bonus in (
+                ("low", low_value, "exploit", 8),
+                ("high", high_value, "escalate", 6),
+            ):
+                action = {"type": "set_sensor", "name": field_name, "value": value}
+                repeated = action_key(action) in prior_actions
+                resolved_category = "sustain" if repeated else category
+                offset = -(index * 8) + direction_bonus
+                if preferred_sensor and field_name == preferred_sensor:
+                    offset += 10
+                if direction == "high" and field_name == "Supply_Tank_Level":
+                    offset += 2
+                add_candidate(
+                    sensor_summary(field_name, direction, sustain=repeated),
+                    action,
+                    priority=base_priority(resolved_category, offset=offset),
+                    surface="sensor_manipulation",
+                    category=resolved_category,
+                )
+
+        for index, (actuator_name, value) in enumerate(actuator_specs):
+            action = {"type": "set_actuator", "name": actuator_name, "value": value}
+            repeated = action_key(action) in prior_actions
+            resolved_category = "sustain" if repeated else ("exploit" if index == 0 else "escalate")
+            offset = -(index * 6) + (8 if plant_running else -10)
+            if preferred_actuator and actuator_name == preferred_actuator:
+                offset += 10
+            add_candidate(
+                actuator_summary(actuator_name, sustain=repeated),
+                action,
+                priority=base_priority(resolved_category, offset=offset),
+                surface="availability_disruption",
+                category=resolved_category,
+            )
+
+        if plant_running and "hmi_stop" in allowed:
+            add_candidate(
+                "Stop WD-UC0 only as a bounded fallback if the faster sensor and actuator paths are blocked.",
+                {"type": "hmi_stop", "process_id": primary_process_id},
+                priority=base_priority("fallback", offset=-8),
+                surface="availability_disruption",
+                category="fallback",
+            )
+        if plant_running and "hmi_estop" in allowed:
+            add_candidate(
+                "Escalate to estop only if a direct availability hit is the shortest remaining bounded impact path.",
+                {"type": "hmi_estop", "process_id": primary_process_id},
+                priority=base_priority("fallback", offset=-2),
+                surface="availability_disruption",
+                category="fallback",
+            )
+
+        if "inspect_surface" in allowed:
+            allow_recon = not prior_actions or current_phase in {
+                "initial_observation",
+                "reconnaissance",
+                "reorient",
+            }
+            if allow_recon:
+                for index, surface_name in enumerate(recon_surfaces[:3]):
+                    add_candidate(
+                        f"Inspect `{surface_name}` once to confirm the fastest bounded distribution leverage path.",
+                        {"type": "inspect_surface", "surface": surface_name},
+                        priority=base_priority("recon", offset=-(index * 8)),
+                        surface="sensor_manipulation",
+                        category="recon",
+                    )
+
+        noop_candidate = self._noop_candidate(
+            "Hold only if every bounded supply, grid, and return-water exploit path is currently blocked."
+        )
+        if noop_candidate is not None:
+            noop_candidate["priority"] = base_priority("hold")
+            noop_candidate["surface"] = "availability_disruption"
+            noop_candidate["category"] = "hold"
+            candidates_by_id.setdefault(noop_candidate["id"], noop_candidate)
+
+        ranked = sorted(
+            candidates_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                item["id"],
+            ),
+            reverse=True,
+        )
+        actionable = [
+            item
+            for item in ranked
+            if normalize_action(item.get("action")) != {"type": "noop"}
+        ][:8]
+        hold = next(
+            (
+                item
+                for item in ranked
+                if normalize_action(item.get("action")) == {"type": "noop"}
+            ),
+            None,
+        )
+        if hold is not None:
+            actionable.append(hold)
+        return actionable
 
     def _gray_box_attacker_candidates(
         self,
@@ -8532,6 +9138,9 @@ class AgenticRoleAgent(RoleAgent):
                         f"Drive `{field_name}` above its known `{int(ceiling)}` max immediately."
                     )
             return f"Bias `{field_name}` harder to pressure the shortest sensor path."
+        if action_type == "set_actuator":
+            actuator_name = str(action.get("name", "actuator"))
+            return f"Force `{actuator_name}` through the bounded actuator write path now."
         if action_type == "select_process":
             return "Commit to the Process 2 manual path instead of rediscovering it."
         if action_type == "set_manual_valve":
@@ -8556,6 +9165,8 @@ class AgenticRoleAgent(RoleAgent):
             return "process2_manual_path"
         if action_type == "set_sensor":
             return "sensor_manipulation"
+        if action_type == "set_actuator":
+            return "availability_disruption"
         if action_type in {"hmi_start", "hmi_stop", "hmi_estop"}:
             return "availability_disruption"
         return "unknown"
