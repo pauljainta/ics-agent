@@ -4,7 +4,7 @@
 
 This note describes the self-contained water-distribution OpenPLC testbed now
 hosted inside `ics-agent`, the control surfaces exposed to the shared
-experiment framework, and the `12`-scenario attack suite used for the current
+experiment framework, and the `11`-scenario attack suite used for the current
 attacker-versus-defender studies.
 
 The live execution path for this use case is intentionally local to
@@ -192,24 +192,20 @@ behavior and safety impact, not only by authored timeline completion.
 
 ### Actuator misuse
 
-8. `wd-attack-supply-pump-max`
-   Override the supply pump speed path toward maximum output to drive excess
-   transfer into the distribution chain.
-
-9. `wd-attack-grid-valve-force-open`
+8. `wd-attack-grid-valve-force-open`
    Force the elevated-grid valve open regardless of controller intent.
 
-10. `wd-attack-rws-pump-force-open`
+9. `wd-attack-rws-pump-force-open`
     Force the return-water pump path on to change supply-side replenishment
     without a matching process trigger.
 
 ### Coordinated / delayed-impact attacks
 
-11. `wd-attack-coordinated-supply-grid`
+10. `wd-attack-coordinated-supply-grid`
     Combine supply-side sensor deception with a grid-side actuator effect so
     the controller and physical process diverge at the same time.
 
-12. `wd-attack-coordinated-grid-rws-delay`
+11. `wd-attack-coordinated-grid-rws-delay`
     Stage a grid-side distortion first and then use the return-water path for a
     delayed secondary effect that is harder to attribute from one signal alone.
 
@@ -224,7 +220,6 @@ behavior and safety impact, not only by authored timeline completion.
   `wd-attack-rws-high-spoof`,
   `wd-attack-rws-low-spoof`
 - actuator misuse:
-  `wd-attack-supply-pump-max`,
   `wd-attack-grid-valve-force-open`,
   `wd-attack-rws-pump-force-open`
 - coordinated attacks:

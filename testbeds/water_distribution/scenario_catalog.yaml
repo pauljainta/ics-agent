@@ -109,27 +109,6 @@ scenario_overrides:
       expected_diagnosis: return_water_low_or_spoof
       expected_defender_actions: [block_sensor_write, hmi_stop]
       attack_class: single_point_deception
-  attack/wd-attack-supply-pump-max:
-    name: Supply Pump Forced Max
-    attacker_actions:
-      - Qualify the supply-side actuator path before attempting manipulation.
-      - Force the supply pump speed through the actuator write path rather than telemetry spoofing.
-      - Keep the attack bounded to the authored supply-pump override path.
-    role_bindings:
-      operator: [0, 2]
-      attacker: [1]
-    attacker_constraints:
-      attack_start_time_sec: 12
-      allowed_action_types: [inspect_surface, set_actuator, noop]
-      pre_attack_allowed_action_types: [inspect_surface, noop]
-      allowed_actuator_names: [Supply_Pump_Speed]
-      allowed_actuator_values:
-        Supply_Pump_Speed: [100]
-    ground_truth:
-      incident_start_time_sec: 12
-      expected_diagnosis: supply_pump_speed_override
-      expected_defender_actions: [block_actuator_write, hmi_stop]
-      attack_class: actuator_misuse
   attack/wd-attack-grid-valve-force-open:
     name: Grid Valve Forced Open
     ground_truth:
