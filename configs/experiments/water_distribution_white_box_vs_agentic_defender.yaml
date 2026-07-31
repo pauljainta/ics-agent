@@ -6,7 +6,7 @@ scenario_selectors:
 resume: true
 use_canonical_result_root: true
 reproducibility:
-  seed: 20260730
+  seed: 20260623
 results_root: ../../../Artifact/Results
 environment:
   testbed: water_distribution
@@ -37,11 +37,17 @@ conditions:
       offline_analysis: scripted_offline_analyst
     profile_overrides:
       attacker:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged stronger white-box attacker for water distribution
         allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
         knowledge_files:
           - testbeds/water_distribution/knowledge/shared_testbed_manual.md
           - testbeds/water_distribution/knowledge/attacker_manual.md
           - testbeds/water_distribution/docs/process-models/wd-supply-line.md
+          - testbeds/water_distribution/docs/process-models/wd-distribution-grid.md
+          - testbeds/water_distribution/docs/process-models/wd-return-water.md
           - testbeds/water_distribution/openplc/configs/openplc_map.yaml
         abort_on_backend_error: false
         action_cooldown_sec: 0.5

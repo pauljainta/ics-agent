@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.environment import OpenPLCEnvironment
+from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
 from ics_agent.testbeds.water_distribution import OpenPLCWaterDistributionTestbed
 
@@ -378,3 +381,110 @@ def test_water_distribution_clamps_oversized_sensor_and_actuator_overrides() -> 
 
     assert testbed._sensor_overrides["Supply_Tank_Level"] == 1500.0
     assert testbed._actuator_overrides["Supply_Pump_Speed"] == 100.0
+
+
+def test_distribution_white_box_config_matches_treatment_strength_knobs() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    treatment_config = yaml.safe_load(
+        (
+            repo_root
+            / "configs/experiments/sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml"
+        ).read_text()
+    )
+    distribution_config = yaml.safe_load(
+        (
+            repo_root
+            / "configs/experiments/water_distribution_white_box_vs_agentic_defender.yaml"
+        ).read_text()
+    )
+    attack_families_config = yaml.safe_load(
+        (
+            repo_root
+            / "configs/experiments/water_distribution_attack_families.yaml"
+        ).read_text()
+    )
+    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
+
+    treatment_attacker = orchestrator._effective_condition_profiles(
+        profiles=treatment_config["conditions"][0]["profiles"],
+        profile_overrides=treatment_config["conditions"][0]["profile_overrides"],
+    )["attacker"]
+    distribution_attacker = orchestrator._effective_condition_profiles(
+        profiles=distribution_config["conditions"][0]["profiles"],
+        profile_overrides=distribution_config["conditions"][0]["profile_overrides"],
+    )["attacker"]
+    attack_families_attacker = orchestrator._effective_condition_profiles(
+        profiles=attack_families_config["conditions"][2]["profiles"],
+        profile_overrides=attack_families_config["conditions"][2]["profile_overrides"],
+    )["attacker"]
+
+    assert distribution_config["reproducibility"]["seed"] == treatment_config["reproducibility"][
+        "seed"
+    ]
+    assert distribution_attacker["behavior_model"]["id"] == treatment_attacker[
+        "behavior_model"
+    ]["id"]
+    assert distribution_attacker["behavior_model"]["policy"] == treatment_attacker[
+        "behavior_model"
+    ]["policy"]
+    assert distribution_attacker["action_cooldown_sec"] == treatment_attacker[
+        "action_cooldown_sec"
+    ]
+    assert distribution_attacker["note_cooldown_sec"] == treatment_attacker[
+        "note_cooldown_sec"
+    ]
+    assert distribution_attacker["reasoning_cooldown_sec"] == treatment_attacker[
+        "reasoning_cooldown_sec"
+    ]
+    assert distribution_attacker["reasoning_refresh_sec"] == treatment_attacker[
+        "reasoning_refresh_sec"
+    ]
+    assert distribution_attacker["memory"]["attacker_candidate_window"] == treatment_attacker[
+        "memory"
+    ]["attacker_candidate_window"]
+    for key in (
+        "backend",
+        "use_langgraph",
+        "strict_backend",
+        "allow_langchain_fallback",
+        "max_new_tokens",
+    ):
+        assert distribution_attacker["llm"][key] == treatment_attacker["llm"][key]
+        assert attack_families_attacker["llm"][key] == distribution_attacker["llm"][key]
+    for key in (
+        "action_cooldown_sec",
+        "note_cooldown_sec",
+        "reasoning_cooldown_sec",
+        "reasoning_refresh_sec",
+        "memory",
+    ):
+        assert attack_families_attacker[key] == distribution_attacker[key]
+    assert attack_families_attacker["behavior_model"]["id"] == distribution_attacker[
+        "behavior_model"
+    ]["id"]
+    assert attack_families_attacker["behavior_model"]["policy"] == distribution_attacker[
+        "behavior_model"
+    ]["policy"]
+
+    assert {
+        "testbeds/water_distribution/docs/process-models/wd-supply-line.md",
+        "testbeds/water_distribution/docs/process-models/wd-distribution-grid.md",
+        "testbeds/water_distribution/docs/process-models/wd-return-water.md",
+    } <= set(distribution_attacker["knowledge_files"])
+
+
+def test_distribution_white_box_prompt_uses_treatment_staged_wording() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_text = (
+        repo_root / "testbeds/water_distribution/prompts/white_box_attacker.md"
+    ).read_text()
+
+    assert "abstract MITRE ATT&CK for ICS inspired staged-entry model" in prompt_text
+    assert (
+        "The staged path is mandatory context: local orchestrator -> access -> engineering -> plant runtime."
+        in prompt_text
+    )
+    assert (
+        "Follow the staged chain in order: staged entry context, discovery, process understanding, control-path qualification, then manipulation and impact."
+        in prompt_text
+    )
