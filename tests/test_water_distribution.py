@@ -188,3 +188,26 @@ def test_supply_pump_max_scenario_starts_immediately_and_stays_nominal_pre_attac
             break
 
     assert pre_attack_alarm is False
+
+
+def test_water_distribution_clamps_oversized_sensor_and_actuator_overrides() -> None:
+    testbed = OpenPLCWaterDistributionTestbed(
+        base_dir=Path("."),
+        controller_host="localhost",
+        controller_port=None,
+        simulator_host="localhost",
+        simulator_port=None,
+        unit_id=1,
+        use_remote_modbus=False,
+    )
+    testbed.reset()
+
+    testbed.apply_action(
+        {"type": "set_sensor", "name": "Supply_Tank_Level", "value": 70575}
+    )
+    testbed.apply_action(
+        {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 500}
+    )
+
+    assert testbed._sensor_overrides["Supply_Tank_Level"] == 1500.0
+    assert testbed._actuator_overrides["Supply_Pump_Speed"] == 100.0

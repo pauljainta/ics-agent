@@ -285,6 +285,7 @@ def _configure_runtime_paths(
     *,
     config_path: Path,
     experiment_root: Path,
+    condition_root: Path,
     attacker_profile_id: str,
     attacker_knowledge_mode: str,
 ) -> None:
@@ -308,7 +309,7 @@ def _configure_runtime_paths(
     global ATTACKER_KNOWLEDGE_MODE
 
     CONFIG_PATH = config_path.resolve()
-    RESULTS_ROOT = experiment_root.resolve()
+    RESULTS_ROOT = condition_root.resolve()
     PROGRESS_ROOT = RESULTS_ROOT / "_progress"
     PHASE_STATUS_PATH = PROGRESS_ROOT / "phase_status.json"
     RUN_MANIFEST_PATH = PROGRESS_ROOT / "run_manifest.json"
@@ -1092,9 +1093,11 @@ def main() -> int:
             base_dir=results_base_dir,
         )
         experiment_root = resolved_results_root / str(config.get("experiment_name"))
+        condition_root = experiment_root / condition_name
         _configure_runtime_paths(
             config_path=Path(config["_path"]),
             experiment_root=experiment_root,
+            condition_root=condition_root,
             attacker_profile_id=attacker_profile_id,
             attacker_knowledge_mode=attacker_knowledge_mode,
         )
@@ -1107,7 +1110,6 @@ def main() -> int:
             error=None,
         )
         _ensure_env_defaults()
-        condition_root = experiment_root / condition_name
         expected_environment = _expected_environment(config)
 
         completed_runs = _load_completed_runs()

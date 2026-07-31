@@ -77,6 +77,21 @@ ACTUATOR_FIELD_MAP = {
     "RWS_Tank_Valve": ("coil", COMMAND_COIL_MAP["RWS_Tank_Valve_Cmd"]),
 }
 
+SENSOR_FIELD_BOUNDS = {
+    "Supply_Tank_Level": (0.0, 1500.0),
+    "Supply_Pump_Flow": (0.0, 200.0),
+    "Supply_NaOCl_Level": (0.0, 1000.0),
+    "Supply_NH4Cl_Level": (0.0, 1000.0),
+    "Grid_Elev_Tank_Level": (0.0, 2000.0),
+    "Grid_Consum_Tank_Level": (0.0, 2000.0),
+    "RWS_Tank_Level": (0.0, 1500.0),
+}
+
+NUMERIC_ACTUATOR_BOUNDS = {
+    "Supply_Pump_Speed": (0.0, 100.0),
+    "RWS_Pump_Speed": (0.0, 100.0),
+}
+
 
 DEFAULT_LEVELS = {
     "Supply_Tank_Level": 1000.0,
@@ -115,6 +130,16 @@ ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP = {
 ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP = {
     name: 1410 + index for index, name in enumerate(ACTUATOR_OVERRIDE_FIELDS)
 }
+
+
+def normalize_sensor_override_value(field: str, value: Any) -> int:
+    minimum, maximum = SENSOR_FIELD_BOUNDS.get(field, (0.0, 65535.0))
+    return int(round(_clamp(float(value), minimum, maximum)))
+
+
+def normalize_numeric_actuator_override_value(field: str, value: Any) -> int:
+    minimum, maximum = NUMERIC_ACTUATOR_BOUNDS.get(field, (0.0, 65535.0))
+    return int(round(_clamp(float(value), minimum, maximum)))
 
 
 def state_name(sample: dict[str, Any]) -> str:
@@ -436,7 +461,7 @@ class OpenPLCWaterDistributionTestbed:
                         self._write_remote_register(
                             sim,
                             value_address,
-                            int(round(float(descriptor["value"]))),
+                            normalize_sensor_override_value(field, descriptor["value"]),
                         )
                         self._write_remote_register(sim, enable_address, 1)
             elif action_type == "set_actuator":
@@ -452,7 +477,10 @@ class OpenPLCWaterDistributionTestbed:
                         if field.endswith("_Valve"):
                             value = int(bool(descriptor["value"]))
                         else:
-                            value = int(round(float(descriptor["value"])))
+                            value = normalize_numeric_actuator_override_value(
+                                field,
+                                descriptor["value"],
+                            )
                         self._write_remote_register(ctrl, value_address, value)
                         self._write_remote_register(ctrl, enable_address, 1)
             else:
@@ -482,7 +510,9 @@ class OpenPLCWaterDistributionTestbed:
             if descriptor.get("clear") or descriptor.get("value") is None:
                 self._sensor_overrides.pop(field, None)
             else:
-                self._sensor_overrides[field] = float(descriptor["value"])
+                self._sensor_overrides[field] = float(
+                    normalize_sensor_override_value(field, descriptor["value"])
+                )
             return {"state_name": self._state_name}
         if action_type == "set_actuator":
             field = str(descriptor.get("name", "")).strip()
@@ -501,7 +531,9 @@ class OpenPLCWaterDistributionTestbed:
                 if field.endswith("_Valve"):
                     self._actuator_overrides[field] = bool(value)
                 else:
-                    self._actuator_overrides[field] = float(value)
+                    self._actuator_overrides[field] = float(
+                        normalize_numeric_actuator_override_value(field, value)
+                    )
             return {"state_name": self._state_name}
         raise TestbedError(f"unsupported action `{action_type}`")
 

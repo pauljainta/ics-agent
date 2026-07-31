@@ -2258,7 +2258,8 @@ class OpenPLCEnvironment:
                         "count": 1,
                         "values": {
                             "RW_Pump_Speed_Cmd": ctrl.read_holding_registers(
-                                100, 1
+                                address=100,
+                                count=1,
                             ).registers[0]
                         },
                     },
@@ -2327,7 +2328,7 @@ class OpenPLCEnvironment:
         fields = self._testbed_module.FIELD_GROUPS[group_name]
         start_address = int(fields[0][1])
         count = len(fields)
-        bits = client.read_coils(start_address, count).bits[:count]
+        bits = client.read_coils(address=start_address, count=count).bits[:count]
         return {
             "plane": "controller",
             "kind": "coils",
@@ -2342,7 +2343,10 @@ class OpenPLCEnvironment:
         fields = self._testbed_module.FIELD_GROUPS[group_name]
         start_address = int(fields[0][1])
         count = len(fields)
-        registers = client.read_holding_registers(start_address, count).registers
+        registers = client.read_holding_registers(
+            address=start_address,
+            count=count,
+        ).registers
         return {
             "plane": "simulator",
             "kind": "holding_registers",
@@ -2362,7 +2366,7 @@ class OpenPLCEnvironment:
         fields: tuple[tuple[str, int], ...],
     ) -> dict[str, Any]:
         values = {
-            name: client.read_holding_registers(address, 1).registers[0]
+            name: client.read_holding_registers(address=address, count=1).registers[0]
             for name, address in fields
         }
         addresses = [address for _, address in fields]
@@ -2378,7 +2382,7 @@ class OpenPLCEnvironment:
         fields = self._testbed_module.FIELD_GROUPS["states"]
         start_address = int(fields[0][1])
         count = len(fields)
-        bits = ctrl.read_coils(start_address, count).bits[:count]
+        bits = ctrl.read_coils(address=start_address, count=count).bits[:count]
         sample = {
             name: 1 if bits[index] else 0 for index, (name, _) in enumerate(fields)
         }
