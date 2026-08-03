@@ -11,6 +11,48 @@ from ics_agent.scenarios import ScenarioCatalog
 from ics_agent.testbeds.water_distribution import OpenPLCWaterDistributionTestbed
 
 
+def _distribution_defender_agent() -> AgenticRoleAgent:
+    return AgenticRoleAgent(
+        "agentic_defender",
+        {
+            "role": "defender",
+            "family": "agentic",
+            "mode": "online",
+            "policy": "agentic",
+            "allowed_action_types": [
+                "hmi_stop",
+                "hmi_estop",
+                "disable_hmi_session",
+                "isolate_engineering_host",
+                "block_sensor_write",
+                "block_actuator_write",
+                "quarantine_signal_source",
+                "noop",
+            ],
+        },
+    )
+
+
+def _distribution_observation(**overrides: float | str) -> dict[str, float | str]:
+    observation: dict[str, float | str] = {
+        "STATE_NAME": "RUNNING",
+        "Supply_Tank_Level": 920.0,
+        "Grid_Elev_Tank_Level": 1200.0,
+        "Grid_Consum_Tank_Level": 780.0,
+        "RWS_Tank_Level": 540.0,
+        "Supply_Pump_Sts": 1.0,
+        "Supply_Tank_Valve_Cmd": 1.0,
+        "Supply_Tank_Valve_Sts": 1.0,
+        "Grid_Elev_Valve_Cmd": 0.0,
+        "Grid_Elev_Valve_Sts": 0.0,
+        "RWS_Tank_Valve_Cmd": 0.0,
+        "RWS_Tank_Valve_Sts": 0.0,
+        "Alarm_Supply_Tank_HH": 0.0,
+    }
+    observation.update(overrides)
+    return observation
+
+
 def test_water_distribution_catalog_loads_local_attack_suite() -> None:
     catalog = ScenarioCatalog(testbed_id="water_distribution")
 
@@ -64,6 +106,110 @@ def test_water_distribution_environment_uses_local_testbed_and_actuator_containm
     ]
     assert blocked["blocked_by_runtime_containment"] is True
     assert blocked["blocked_surface"] == "actuator_write_path"
+
+
+def test_water_distribution_defender_hides_passive_recon_history() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("attack/wd-attack-supply-low-spoof")
+    agent = _distribution_defender_agent()
+    agent.reset(scenario)
+
+    observation = _distribution_observation()
+    context = {
+        "scenario": scenario,
+        "observation": observation,
+        "observations": [observation],
+        "executed_actions": [
+            {
+                "role": "attacker",
+                "time_sec": 4.0,
+                "action": {"type": "inspect_surface", "surface": "alarm_bits"},
+                "result": {
+                    "category": "reconnaissance",
+                    "surface": "alarm_bits",
+                    "summary": "alarm_bits readback: bounded_readback_captured",
+                    "findings": ["bounded_readback_captured"],
+                },
+            }
+        ],
+        "decisions": [
+            {
+                "role": "attacker",
+                "decision_type": "action",
+                "summary": "Inspect alarm bits to gauge defender-visible pressure.",
+                "time_sec": 4.0,
+                "action": {"type": "inspect_surface", "surface": "alarm_bits"},
+                "metadata": {"mitre_phase": "discovery"},
+            },
+            {
+                "role": "observer",
+                "decision_type": "alert",
+                "summary": "Observer recognized staged qualification of a process-facing control path.",
+                "time_sec": 5.0,
+                "diagnosis": "availability_disruption",
+                "metadata": {"mitre_phase": "discovery_recognition"},
+            },
+        ],
+        "alerts": [
+            {
+                "role": "observer",
+                "summary": "Observer recognized staged qualification of a process-facing control path.",
+                "time_sec": 5.0,
+                "diagnosis": "availability_disruption",
+                "metadata": {"mitre_phase": "discovery_recognition"},
+            }
+        ],
+        "playbooks": {},
+        "time_sec": 6.0,
+    }
+
+    built = agent._build_online_context(context)
+
+    assert built["recent_actions"] == []
+    assert built["recent_decisions"] == []
+    assert built["recent_alerts"] == []
+    assert built["recent_action_effects"] == []
+    assert built["incident"]["type"] == "none"
+    assert built["decision_epoch"]["action_count"] == 0
+    assert {str((item.get("action") or {}).get("type")) for item in built["candidate_actions"]} == {
+        "noop"
+    }
+
+
+def test_water_distribution_defender_keeps_visible_modifying_attack_evidence() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("attack/wd-attack-grid-valve-force-open")
+    agent = _distribution_defender_agent()
+    agent.reset(scenario)
+
+    previous_observation = _distribution_observation()
+    observation = _distribution_observation(Grid_Elev_Valve_Sts=1.0)
+    context = {
+        "scenario": scenario,
+        "observation": observation,
+        "observations": [previous_observation, observation],
+        "executed_actions": [
+            {
+                "role": "attacker",
+                "time_sec": 4.0,
+                "action": {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": True},
+                "result": {"status": "applied"},
+            }
+        ],
+        "decisions": [],
+        "alerts": [],
+        "playbooks": {},
+        "time_sec": 6.0,
+    }
+
+    built = agent._build_online_context(context)
+
+    assert [item["action"]["type"] for item in built["recent_actions"]] == ["set_actuator"]
+    assert [item["action_type"] for item in built["recent_action_effects"]] == ["set_actuator"]
+    assert "command_status_divergence" in built["risk_flags"]
+    assert "block_actuator_write" in {
+        str((item.get("action") or {}).get("type")) for item in built["candidate_actions"]
+    }
 
 
 def test_water_distribution_white_box_candidates_include_grid_actuator_override() -> None:

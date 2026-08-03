@@ -933,9 +933,10 @@ class AgenticRoleAgent(RoleAgent):
         gray_box = self._is_gray_box_attacker()
         white_box = self._is_white_box_attacker()
         black_box = self._is_black_box_attacker()
-        raw_recent_actions = context.get("executed_actions", [])[-self.action_window :]
-        raw_recent_decisions = context.get("decisions", [])[-self.decision_window :]
-        raw_recent_alerts = context.get("alerts", [])[-self.alert_window :]
+        history_context = self._defender_visible_runtime_history(context)
+        raw_recent_actions = history_context.get("executed_actions", [])[-self.action_window :]
+        raw_recent_decisions = history_context.get("decisions", [])[-self.decision_window :]
+        raw_recent_alerts = history_context.get("alerts", [])[-self.alert_window :]
         observation = context["observation"]
         recent_observations = [
             self._compact_observation(item)
@@ -993,7 +994,7 @@ class AgenticRoleAgent(RoleAgent):
             )
             recent_alerts = self._visible_recent_alerts(raw_recent_alerts, now=now)
         compact_observation = self._compact_observation(observation)
-        remaining_playbook = self._remaining_playbook(context)
+        remaining_playbook = self._remaining_playbook(history_context)
         visible_remaining_playbook = (
             [] if (gray_box or white_box or black_box) else remaining_playbook
         )
@@ -1018,21 +1019,21 @@ class AgenticRoleAgent(RoleAgent):
                 recent_actions=recent_actions,
             )
         defender_reasoning = self._defender_reasoning_context(
-            context=context,
+            context=history_context,
             observation=observation,
             telemetry_summary=telemetry_summary,
             recent_actions=memory_recent_actions,
             recent_alerts=recent_alerts,
         )
         internal_incident = self._incident_context(
-            context=context,
+            context=history_context,
             telemetry_summary=telemetry_summary,
             defender_reasoning=defender_reasoning,
         )
         system_knowledge = None
         if black_box:
             internal_structured_memory = self._gray_box_attacker_memory(
-                context=context,
+                context=history_context,
                 observation=observation,
                 telemetry_summary=telemetry_summary,
                 recent_actions=memory_recent_actions,
@@ -1047,7 +1048,7 @@ class AgenticRoleAgent(RoleAgent):
             structured_prior_knowledge = None
             incident = None
             internal_mitre_context = self._optionb_mitre_context(
-                context=context,
+                context=history_context,
                 telemetry_summary=telemetry_summary,
                 incident=internal_incident,
                 structured_memory=internal_structured_memory,
@@ -1056,7 +1057,7 @@ class AgenticRoleAgent(RoleAgent):
                 internal_mitre_context
             )
             candidate_actions = self._black_box_candidate_actions(
-                context=context,
+                context=history_context,
                 telemetry_summary=telemetry_summary,
                 structured_memory=internal_structured_memory,
                 mitre_context=internal_mitre_context,
@@ -1068,7 +1069,7 @@ class AgenticRoleAgent(RoleAgent):
             ]
         elif white_box:
             internal_structured_memory = self._white_box_attacker_memory(
-                context=context,
+                context=history_context,
                 observation=observation,
                 telemetry_summary=telemetry_summary,
                 recent_actions=memory_recent_actions,
@@ -1078,7 +1079,7 @@ class AgenticRoleAgent(RoleAgent):
             structured_memory = self._visible_memory(internal_structured_memory)
             structured_prior_knowledge = None
             mitre_context = self._optionb_mitre_context(
-                context=context,
+                context=history_context,
                 telemetry_summary=telemetry_summary,
                 incident=internal_incident,
                 structured_memory=internal_structured_memory,
@@ -1092,7 +1093,7 @@ class AgenticRoleAgent(RoleAgent):
                 mitre_context=mitre_context,
             )
             candidate_actions = self._candidate_actions(
-                context,
+                history_context,
                 visible_remaining_playbook,
                 telemetry_summary=telemetry_summary,
                 incident=None,
@@ -1104,7 +1105,7 @@ class AgenticRoleAgent(RoleAgent):
             incident = None
         else:
             structured_memory = self._role_memory_context(
-                context=context,
+                context=history_context,
                 scenario=scenario,
                 observation=observation,
                 telemetry_summary=telemetry_summary,
@@ -1124,13 +1125,13 @@ class AgenticRoleAgent(RoleAgent):
                 recent_alerts=recent_alerts,
             )
             mitre_context = self._optionb_mitre_context(
-                context=context,
+                context=history_context,
                 telemetry_summary=telemetry_summary,
                 incident=internal_incident,
                 structured_memory=structured_memory,
             )
             candidate_actions = self._candidate_actions(
-                context,
+                history_context,
                 visible_remaining_playbook,
                 telemetry_summary=telemetry_summary,
                 incident=internal_incident,
@@ -1262,9 +1263,9 @@ class AgenticRoleAgent(RoleAgent):
             "staged_path": [] if mitre_context is None else mitre_context.get("staged_path", []),
             "decision_epoch": {
                 "observation_count": len(context.get("observations", [])),
-                "action_count": len(context.get("executed_actions", [])),
-                "decision_count": len(context.get("decisions", [])),
-                "alert_count": len(context.get("alerts", [])),
+                "action_count": len(history_context.get("executed_actions", [])),
+                "decision_count": len(history_context.get("decisions", [])),
+                "alert_count": len(history_context.get("alerts", [])),
             },
             "candidate_actions": candidate_actions,
             "remaining_playbook": visible_remaining_playbook,
@@ -1272,6 +1273,58 @@ class AgenticRoleAgent(RoleAgent):
             "role_constraints": role_constraints,
             "expected_outcomes": expected_outcomes,
             "safety_bounds": safety_bounds,
+        }
+
+    def _defender_visible_runtime_history(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._uses_water_distribution_defender_recon_filter():
+            return context
+        sanitized = dict(context)
+        sanitized["executed_actions"] = [
+            item
+            for item in context.get("executed_actions", []) or []
+            if not self._is_invisible_passive_recon_action(item)
+        ]
+        sanitized["decisions"] = [
+            item
+            for item in context.get("decisions", []) or []
+            if not self._is_invisible_defender_history_decision(item)
+        ]
+        sanitized["alerts"] = [
+            item
+            for item in context.get("alerts", []) or []
+            if not self._is_invisible_defender_history_decision(item)
+        ]
+        return sanitized
+
+    def _uses_water_distribution_defender_recon_filter(self) -> bool:
+        return self.role == "defender" and self._state.get("testbed_id") == "water_distribution"
+
+    @staticmethod
+    def _is_invisible_passive_recon_action(item: Any) -> bool:
+        if not isinstance(item, dict) or str(item.get("role")) != "attacker":
+            return False
+        action = normalize_action(item.get("action"))
+        return str((action or {}).get("type", "")).strip() == "inspect_surface"
+
+    @staticmethod
+    def _mitre_phase(item: Any) -> str:
+        if not isinstance(item, dict):
+            return ""
+        return str((item.get("metadata") or {}).get("mitre_phase", "")).strip()
+
+    @classmethod
+    def _is_invisible_defender_history_decision(cls, item: Any) -> bool:
+        if not isinstance(item, dict):
+            return False
+        role = str(item.get("role", "")).strip()
+        if role == "attacker":
+            return True
+        return role in {"observer", "defender"} and cls._mitre_phase(item) in {
+            "access_presence_suspicion",
+            "discovery_recognition",
         }
 
     def _build_offline_context(self, context: dict[str, Any]) -> dict[str, Any]:
