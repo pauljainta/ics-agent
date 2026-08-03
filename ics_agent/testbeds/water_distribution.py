@@ -133,8 +133,10 @@ ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP = {
 
 
 def normalize_sensor_override_value(field: str, value: Any) -> int:
-    minimum, maximum = SENSOR_FIELD_BOUNDS.get(field, (0.0, 65535.0))
-    return int(round(_clamp(float(value), minimum, maximum)))
+    # White-box sensor overrides can intentionally exceed nominal process bounds;
+    # only clamp them to the 16-bit register space used by the runtime.
+    del field
+    return int(round(_clamp(float(value), 0.0, 65535.0)))
 
 
 def normalize_numeric_actuator_override_value(field: str, value: Any) -> int:

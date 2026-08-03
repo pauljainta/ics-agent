@@ -3057,7 +3057,6 @@ class AgenticRoleAgent(RoleAgent):
         telemetry_summary: dict[str, Any],
         safety_bounds: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        del safety_bounds
         process_id = str((getattr(scenario, "execution", {}) or {}).get("process_id") or "")
         state_name = str(observation.get("STATE_NAME", "")).upper()
         active_alarms = set(
@@ -3067,21 +3066,27 @@ class AgenticRoleAgent(RoleAgent):
             str(item) for item in telemetry_summary.get("relationship_notes", [])
         )
         risk_flags = set(str(item) for item in telemetry_summary.get("risk_flags", []))
+        sensor_profiles = dict(
+            self._white_box_sensor_breach_profiles(
+                observation=observation,
+                safety_bounds=safety_bounds,
+            )
+        )
 
         if process_id == "WD-Supply":
-            sensor_fields = ["Supply_Tank_Level"]
+            sensor_targets = [("Supply_Tank_Level", "high")]
             actuator_chain = [("Supply_Pump_Speed", 100)]
         elif process_id == "WD-Grid":
-            sensor_fields = ["Grid_Elev_Tank_Level"]
+            sensor_targets = [("Grid_Elev_Tank_Level", "low")]
             actuator_chain = [("Grid_Elev_Valve", True)]
         elif process_id == "WD-RWS":
-            sensor_fields = ["RWS_Tank_Level"]
+            sensor_targets = [("RWS_Tank_Level", "high")]
             actuator_chain = [("RWS_Pump_Speed", 100), ("RWS_Tank_Valve", True)]
         else:
-            sensor_fields = [
-                "Supply_Tank_Level",
-                "Grid_Elev_Tank_Level",
-                "RWS_Tank_Level",
+            sensor_targets = [
+                ("Supply_Tank_Level", "high"),
+                ("Grid_Elev_Tank_Level", "low"),
+                ("RWS_Tank_Level", "high"),
             ]
             actuator_chain = [
                 ("Grid_Elev_Valve", True),
@@ -3090,11 +3095,49 @@ class AgenticRoleAgent(RoleAgent):
                 ("Supply_Pump_Speed", 100),
             ]
 
-        preferred_sensor = next(
-            (field for field in sensor_fields if field in observation),
-            None,
+        preferred_sensor, preferred_direction = next(
+            (
+                (field, direction)
+                for field, direction in sensor_targets
+                if field in observation and field in sensor_profiles
+            ),
+            (None, None),
         )
-        preferred_actuator = actuator_chain[0][0] if actuator_chain else None
+        alternate_direction = (
+            "low"
+            if preferred_direction == "high"
+            else "high"
+            if preferred_direction == "low"
+            else None
+        )
+        preferred_profile = dict(sensor_profiles.get(str(preferred_sensor), {}))
+        preferred_ceiling = int(
+            preferred_profile.get("ceiling", preferred_profile.get("high_breach", 0)) or 0
+        )
+        preferred_value = None
+        alternate_value = None
+        breach_capable = False
+        if preferred_sensor and preferred_profile:
+            if preferred_direction == "high":
+                preferred_value = int(
+                    preferred_profile.get(
+                        "high_breach",
+                        preferred_profile.get("high_alarm", preferred_ceiling),
+                    )
+                )
+                alternate_value = int(preferred_profile.get("low_floor", 0) or 0)
+                breach_capable = preferred_value > preferred_ceiling
+            elif preferred_direction == "low":
+                preferred_value = int(preferred_profile.get("low_floor", 0) or 0)
+                alternate_value = int(
+                    preferred_profile.get(
+                        "high_breach",
+                        preferred_profile.get("high_alarm", preferred_ceiling),
+                    )
+                )
+                breach_capable = alternate_value > preferred_ceiling
+
+        preferred_actuator = next((name for name, _ in actuator_chain if name), None)
 
         scores = {
             "sensor_manipulation": 0.0,
@@ -3106,8 +3149,11 @@ class AgenticRoleAgent(RoleAgent):
                 "surface_label": "sensor_write_path",
                 "estimated_steps_to_effect": 2,
                 "preferred_target": preferred_sensor,
-                "preferred_direction": "either",
-                "preferred_value": None,
+                "preferred_direction": preferred_direction,
+                "preferred_value": preferred_value,
+                "alternate_direction": alternate_direction,
+                "alternate_value": alternate_value,
+                "breach_capable": breach_capable,
                 "immediate_impact": False,
             },
             "availability_disruption": {
@@ -3116,34 +3162,50 @@ class AgenticRoleAgent(RoleAgent):
                 "preferred_target": preferred_actuator,
                 "preferred_direction": "assertive",
                 "preferred_value": actuator_chain[0][1] if actuator_chain else None,
+                "alternate_direction": None,
+                "alternate_value": None,
+                "breach_capable": False,
                 "immediate_impact": False,
             },
         }
 
         if preferred_sensor:
-            scores["sensor_manipulation"] += 2.0
+            scores["sensor_manipulation"] += 2.2
             basis["sensor_manipulation"].append(f"preferred_sensor={preferred_sensor}")
+            if preferred_direction:
+                basis["sensor_manipulation"].append(f"direction={preferred_direction}")
+            if preferred_value is not None:
+                basis["sensor_manipulation"].append(f"value={preferred_value}")
+            if breach_capable:
+                scores["sensor_manipulation"] += 1.15
+                basis["sensor_manipulation"].append("breach_capable")
+            elif preferred_direction == "low":
+                scores["sensor_manipulation"] += 0.55
+                basis["sensor_manipulation"].append("lowest_reachable_value")
             if state_name in {"RUNNING", "STARTING"}:
-                scores["sensor_manipulation"] += 0.45
+                scores["sensor_manipulation"] += 0.55
                 hints["sensor_manipulation"]["estimated_steps_to_effect"] = 1
                 hints["sensor_manipulation"]["immediate_impact"] = True
             if "sensor_or_process_jump" in risk_flags:
-                scores["sensor_manipulation"] += 0.4
+                scores["sensor_manipulation"] += 0.45
                 basis["sensor_manipulation"].append("sensor_or_process_jump")
             if any(note.startswith("abrupt_change:") for note in relationship_notes):
-                scores["sensor_manipulation"] += 0.3
+                scores["sensor_manipulation"] += 0.35
                 basis["sensor_manipulation"].append("abrupt_change")
             if active_alarms:
-                scores["sensor_manipulation"] += 0.2
+                scores["sensor_manipulation"] += 0.25
                 basis["sensor_manipulation"].append(next(iter(sorted(active_alarms))))
 
         if preferred_actuator:
-            scores["availability_disruption"] += 1.95
+            scores["availability_disruption"] += 2.05
             basis["availability_disruption"].append(
                 f"preferred_actuator={preferred_actuator}"
             )
+            if len(actuator_chain) > 1:
+                scores["availability_disruption"] += 0.25
+                basis["availability_disruption"].append("paired_actuator_chain")
             if state_name in {"RUNNING", "STARTING"}:
-                scores["availability_disruption"] += 0.55
+                scores["availability_disruption"] += 0.65
                 hints["availability_disruption"]["estimated_steps_to_effect"] = 1
                 hints["availability_disruption"]["immediate_impact"] = True
             if "command_status_divergence" in risk_flags:
@@ -3169,7 +3231,11 @@ class AgenticRoleAgent(RoleAgent):
         ):
             if score <= 0:
                 continue
-            confidence = round(min(0.83, 0.34 + (score * 0.12)), 2)
+            step_bonus = max(
+                0.0,
+                (4 - float(hints[surface].get("estimated_steps_to_effect", 4))) * 0.08,
+            )
+            confidence = round(min(0.95, 0.26 + (score * 0.16) + step_bonus), 2)
             ranked.append(
                 {
                     "surface": surface,
@@ -3182,7 +3248,10 @@ class AgenticRoleAgent(RoleAgent):
                     "preferred_target": hints[surface]["preferred_target"],
                     "preferred_direction": hints[surface]["preferred_direction"],
                     "preferred_value": hints[surface]["preferred_value"],
+                    "alternate_direction": hints[surface]["alternate_direction"],
+                    "alternate_value": hints[surface]["alternate_value"],
                     "preferred_chemical": None,
+                    "breach_capable": bool(hints[surface]["breach_capable"]),
                     "immediate_impact": bool(hints[surface]["immediate_impact"]),
                 }
             )
@@ -3498,7 +3567,7 @@ class AgenticRoleAgent(RoleAgent):
                 "hmi_start": "Starts the shared WD-UC0 process when permissives allow.",
                 "hmi_stop": "Stops WD-UC0 in a controlled way.",
                 "hmi_estop": "Forces immediate WD-UC0 stop.",
-                "set_sensor": "Forces a bounded distribution telemetry value through the sensor write path.",
+                "set_sensor": "Forces a distribution telemetry override through the sensor write path, including breach-capable values above a published safety max when the runtime permits.",
                 "set_actuator": "Forces a bounded pump or valve command through the actuator write path.",
                 "inspect_surface": "Reads bounded discovery information from a labeled distribution surface.",
             },
@@ -3524,6 +3593,9 @@ class AgenticRoleAgent(RoleAgent):
                         "preferred_target": item.get("preferred_target"),
                         "preferred_direction": item.get("preferred_direction"),
                         "preferred_value": item.get("preferred_value"),
+                        "alternate_direction": item.get("alternate_direction"),
+                        "alternate_value": item.get("alternate_value"),
+                        "breach_capable": bool(item.get("breach_capable")),
                         "immediate_impact": item.get("immediate_impact"),
                     }
                     for item in surface_priors[:3]
@@ -8194,8 +8266,26 @@ class AgenticRoleAgent(RoleAgent):
         plant_running = state_name in {"RUNNING", "STARTING"}
         process_id = str((getattr(scenario, "execution", {}) or {}).get("process_id") or "")
         safety_bounds = dict(scenario.metadata.get("safety_bounds", {}))
+        sensor_profiles = dict(
+            self._white_box_sensor_breach_profiles(
+                observation=observation,
+                safety_bounds=safety_bounds,
+            )
+        )
         direct_commit = bool(structured_memory.get("white_box_direct_commit"))
         current_phase = str(structured_memory.get("current_phase", "probing"))
+        detection_pressure = str(
+            ((structured_memory.get("simple_precondition_state") or {}).get("defender_attention"))
+            or structured_memory.get("detection_pressure", "low")
+        ).lower()
+        memory_state = self._state.setdefault("role_memory", {})
+        surface_state = memory_state.get("_surface_state", {})
+        commitment = dict(memory_state.get("_exploit_commitment") or {})
+        committed_surface = str(
+            commitment.get("surface")
+            or structured_memory.get("best_known_attack_surface")
+            or "unknown"
+        )
         prior_actions = {
             action_key(action)
             for item in context.get("executed_actions", [])
@@ -8204,6 +8294,54 @@ class AgenticRoleAgent(RoleAgent):
             if action is not None
         }
         surface_priors = list(structured_memory.get("white_box_surface_priors", []))
+        observed_effect_map = {
+            str(item.get("surface")): float(item.get("score", 0.0) or 0.0)
+            for item in structured_memory.get("observed_effect_map", [])
+            if str(item.get("surface", "")).strip()
+        }
+        surface_bias: dict[str, float] = {}
+        focus_surfaces: list[str] = []
+        for item in surface_priors:
+            surface = str(item.get("surface") or "").strip()
+            if not surface:
+                continue
+            confidence = float(item.get("confidence", 0.0) or 0.0)
+            steps = int(item.get("estimated_steps_to_effect", 3) or 3)
+            bias = confidence * 34.0
+            bias += max(0.0, (4 - steps) * 16.0)
+            if item.get("immediate_impact"):
+                bias += 18.0
+            if item.get("breach_capable"):
+                bias += 10.0
+            bias += observed_effect_map.get(surface, 0.0) * 8.0
+            surface_bias[surface] = round(bias, 3)
+            if surface not in focus_surfaces:
+                focus_surfaces.append(surface)
+        for surface in (
+            committed_surface,
+            str(structured_memory.get("best_known_attack_surface") or "unknown"),
+            "sensor_manipulation",
+            "availability_disruption",
+        ):
+            if surface and surface != "unknown" and surface not in focus_surfaces:
+                focus_surfaces.append(surface)
+        focus_surfaces.sort(
+            key=lambda surface: (
+                float(surface_bias.get(surface, 0.0)),
+                float(observed_effect_map.get(surface, 0.0)),
+                surface == committed_surface,
+                surface,
+            ),
+            reverse=True,
+        )
+        if committed_surface in focus_surfaces:
+            focus_surfaces.remove(committed_surface)
+            focus_surfaces.insert(0, committed_surface)
+        top_surface = (
+            focus_surfaces[0]
+            if focus_surfaces
+            else str((surface_priors[0] or {}).get("surface") or "sensor_manipulation")
+        )
         sensor_prior = next(
             (
                 item
@@ -8221,9 +8359,18 @@ class AgenticRoleAgent(RoleAgent):
             {},
         )
         preferred_sensor = str(sensor_prior.get("preferred_target") or "").strip() or None
+        preferred_direction = (
+            str(sensor_prior.get("preferred_direction") or "").strip().lower() or None
+        )
+        preferred_sensor_value = self._coerce_number(sensor_prior.get("preferred_value"))
+        alternate_direction = (
+            str(sensor_prior.get("alternate_direction") or "").strip().lower() or None
+        )
+        alternate_sensor_value = self._coerce_number(sensor_prior.get("alternate_value"))
         preferred_actuator = (
             str(actuator_prior.get("preferred_target") or "").strip() or None
         )
+        sensor_surface_state = dict(surface_state.get("sensor_manipulation", {}))
         candidates_by_id: dict[str, dict[str, Any]] = {}
 
         def add_candidate(
@@ -8260,23 +8407,34 @@ class AgenticRoleAgent(RoleAgent):
             ):
                 candidates_by_id[payload["id"]] = payload
 
-        def base_priority(category: str, *, offset: int = 0) -> int:
+        def surface_priority(surface: str, *, category: str, offset: int = 0) -> int:
             base = {
-                "support": 206,
-                "exploit": 198,
-                "sustain": 204,
-                "escalate": 194,
-                "recon": 146,
-                "fallback": 166,
-                "hold": 18,
-            }.get(category, 180)
-            if direct_commit and category in {"support", "exploit", "sustain", "escalate"}:
+                "support": 154,
+                "exploit": 168,
+                "sustain": 172,
+                "escalate": 178,
+                "recon": 96,
+                "fallback": 142,
+                "hold": 16,
+            }.get(category, 140)
+            base += int(round(surface_bias.get(surface, 0.0)))
+            if direct_commit and surface == top_surface and category != "recon":
                 base += 8
+            if committed_surface != "unknown" and surface == committed_surface:
+                base += 4
+            if detection_pressure == "high" and category == "recon":
+                base -= 8
             if current_phase in {"initial_observation", "reconnaissance"} and category == "recon":
                 base += 6
             return base + offset
 
-        def sensor_summary(field_name: str, direction: str, *, sustain: bool) -> str:
+        def sensor_summary(
+            field_name: str,
+            direction: str,
+            value: int,
+            *,
+            sustain: bool,
+        ) -> str:
             effects = {
                 ("Supply_Tank_Level", "low"): "keep the controller demanding excess supply refill.",
                 ("Supply_Tank_Level", "high"): "suppress refill demand or trip the supply high-high path.",
@@ -8285,7 +8443,22 @@ class AgenticRoleAgent(RoleAgent):
                 ("RWS_Tank_Level", "low"): "hold the return path out of service while supply support decays.",
                 ("RWS_Tank_Level", "high"): "latch the return path on longer than the process warrants.",
             }
+            ceiling = self._coerce_number((safety_bounds.get(field_name) or {}).get("max"))
             stance = "Sustain" if sustain else "Drive"
+            if (
+                direction == "high"
+                and ceiling is not None
+                and float(value) > float(ceiling)
+            ):
+                return (
+                    f"{stance} `{field_name}` above its known `{int(ceiling)}` max through the "
+                    f"sensor write path to {effects.get((field_name, direction), 'pressure the controller immediately.')}"
+                )
+            if direction == "low" and value <= 0:
+                return (
+                    f"{stance} `{field_name}` to the lowest reachable sensor value through the "
+                    f"sensor write path to {effects.get((field_name, direction), 'pressure the controller immediately.')}"
+                )
             return (
                 f"{stance} `{field_name}` {direction} through the sensor write path to "
                 f"{effects.get((field_name, direction), 'pressure the controller with a stronger bounded spoof.')}"
@@ -8309,13 +8482,13 @@ class AgenticRoleAgent(RoleAgent):
             add_candidate(
                 "Start WD-UC0 so the chosen white-box sensor or actuator path produces real process effect.",
                 {"type": "hmi_start", "process_id": primary_process_id},
-                priority=base_priority("support", offset=10),
+                priority=surface_priority(top_surface, category="support", offset=10),
                 surface="availability_disruption",
                 category="support",
             )
 
         if process_id == "WD-Supply":
-            sensor_fields = ["Supply_Tank_Level"]
+            sensor_targets = [("Supply_Tank_Level", "high")]
             actuator_specs = [("Supply_Pump_Speed", 100)]
             recon_surfaces = [
                 "sensor_write_path",
@@ -8323,7 +8496,7 @@ class AgenticRoleAgent(RoleAgent):
                 "supply_control_plane",
             ]
         elif process_id == "WD-Grid":
-            sensor_fields = ["Grid_Elev_Tank_Level"]
+            sensor_targets = [("Grid_Elev_Tank_Level", "low")]
             actuator_specs = [("Grid_Elev_Valve", True)]
             recon_surfaces = [
                 "sensor_write_path",
@@ -8331,7 +8504,7 @@ class AgenticRoleAgent(RoleAgent):
                 "grid_control_plane",
             ]
         elif process_id == "WD-RWS":
-            sensor_fields = ["RWS_Tank_Level"]
+            sensor_targets = [("RWS_Tank_Level", "high")]
             actuator_specs = [("RWS_Pump_Speed", 100), ("RWS_Tank_Valve", True)]
             recon_surfaces = [
                 "sensor_write_path",
@@ -8339,10 +8512,10 @@ class AgenticRoleAgent(RoleAgent):
                 "return_control_plane",
             ]
         else:
-            sensor_fields = [
-                "Supply_Tank_Level",
-                "Grid_Elev_Tank_Level",
-                "RWS_Tank_Level",
+            sensor_targets = [
+                ("Supply_Tank_Level", "high"),
+                ("Grid_Elev_Tank_Level", "low"),
+                ("RWS_Tank_Level", "high"),
             ]
             actuator_specs = [
                 ("Grid_Elev_Valve", True),
@@ -8357,19 +8530,45 @@ class AgenticRoleAgent(RoleAgent):
                 "return_control_plane",
             ]
 
-        for index, field_name in enumerate(sensor_fields):
-            bounds = dict(safety_bounds.get(field_name, {}))
-            minimum = self._coerce_number(bounds.get("min"))
-            maximum = self._coerce_number(bounds.get("max"))
-            if minimum is None or maximum is None or maximum <= minimum:
+        for index, (field_name, primary_direction) in enumerate(sensor_targets):
+            profile = dict(sensor_profiles.get(field_name, {}))
+            if not profile:
                 continue
-            span = max(1.0, maximum - minimum)
-            low_value = int(round(minimum + (span * 0.11)))
-            high_value = int(round(minimum + (span * 0.93)))
-            for direction, value, category, direction_bonus in (
-                ("low", low_value, "exploit", 8),
-                ("high", high_value, "escalate", 6),
+            low_value = int(profile.get("low_floor", 0) or 0)
+            high_breach = int(profile.get("high_breach", profile.get("ceiling", 0)) or 0)
+            high_extreme = int(profile.get("high_extreme", high_breach) or high_breach)
+            direction_values = {
+                "low": low_value,
+                "high": high_breach,
+            }
+            primary_value = direction_values[primary_direction]
+            secondary_direction = "low" if primary_direction == "high" else "high"
+            secondary_value = direction_values[secondary_direction]
+            if preferred_sensor == field_name:
+                if preferred_direction in direction_values and preferred_sensor_value is not None:
+                    primary_direction = preferred_direction
+                    primary_value = int(round(preferred_sensor_value))
+                if (
+                    alternate_direction in direction_values
+                    and alternate_sensor_value is not None
+                ):
+                    secondary_direction = alternate_direction
+                    secondary_value = int(round(alternate_sensor_value))
+
+            sensor_candidates: list[tuple[str, int, str, int]] = [
+                (primary_direction, primary_value, "exploit", 12),
+                (secondary_direction, secondary_value, "escalate", 4),
+            ]
+            if primary_direction == "high" and high_extreme != primary_value:
+                sensor_candidates.insert(1, ("high", high_extreme, "escalate", 8))
+            elif (
+                secondary_direction == "high"
+                and high_extreme != secondary_value
+                and high_extreme != primary_value
             ):
+                sensor_candidates.append(("high", high_extreme, "escalate", 2))
+
+            for direction, value, category, direction_bonus in sensor_candidates:
                 action = {"type": "set_sensor", "name": field_name, "value": value}
                 repeated = action_key(action) in prior_actions
                 resolved_category = "sustain" if repeated else category
@@ -8379,24 +8578,74 @@ class AgenticRoleAgent(RoleAgent):
                 if direction == "high" and field_name == "Supply_Tank_Level":
                     offset += 2
                 add_candidate(
-                    sensor_summary(field_name, direction, sustain=repeated),
+                    sensor_summary(field_name, direction, value, sustain=repeated),
                     action,
-                    priority=base_priority(resolved_category, offset=offset),
+                    priority=surface_priority(
+                        "sensor_manipulation",
+                        category=resolved_category,
+                        offset=offset,
+                    ),
                     surface="sensor_manipulation",
                     category=resolved_category,
                 )
 
+        last_sensor_value = self._coerce_number(sensor_surface_state.get("last_value"))
+        last_sensor_target = str(sensor_surface_state.get("preferred_target") or "").strip()
+        last_sensor_ceiling = self._coerce_number(
+            (safety_bounds.get(last_sensor_target) or {}).get("max")
+        )
+        if (
+            last_sensor_target
+            and last_sensor_value is not None
+            and (
+                (last_sensor_ceiling is not None and last_sensor_value > last_sensor_ceiling)
+                or last_sensor_value <= 0.0
+            )
+        ):
+            sustain_action = {
+                "type": "set_sensor",
+                "name": last_sensor_target,
+                "value": int(round(last_sensor_value)),
+            }
+            add_candidate(
+                sensor_summary(
+                    last_sensor_target,
+                    "high" if last_sensor_ceiling is not None and last_sensor_value > last_sensor_ceiling else "low",
+                    int(round(last_sensor_value)),
+                    sustain=True,
+                ),
+                sustain_action,
+                priority=surface_priority(
+                    "sensor_manipulation",
+                    category="sustain",
+                    offset=16 if last_sensor_target == preferred_sensor else 8,
+                ),
+                surface="sensor_manipulation",
+                category="sustain",
+            )
+
         for index, (actuator_name, value) in enumerate(actuator_specs):
             action = {"type": "set_actuator", "name": actuator_name, "value": value}
             repeated = action_key(action) in prior_actions
-            resolved_category = "sustain" if repeated else ("exploit" if index == 0 else "escalate")
+            if repeated:
+                resolved_category = "sustain"
+            elif index == 0:
+                resolved_category = "exploit"
+            elif len(actuator_specs) > 1 and index == 1:
+                resolved_category = "support"
+            else:
+                resolved_category = "escalate"
             offset = -(index * 6) + (8 if plant_running else -10)
             if preferred_actuator and actuator_name == preferred_actuator:
                 offset += 10
             add_candidate(
                 actuator_summary(actuator_name, sustain=repeated),
                 action,
-                priority=base_priority(resolved_category, offset=offset),
+                priority=surface_priority(
+                    "availability_disruption",
+                    category=resolved_category,
+                    offset=offset,
+                ),
                 surface="availability_disruption",
                 category=resolved_category,
             )
@@ -8405,7 +8654,11 @@ class AgenticRoleAgent(RoleAgent):
             add_candidate(
                 "Stop WD-UC0 only as a bounded fallback if the faster sensor and actuator paths are blocked.",
                 {"type": "hmi_stop", "process_id": primary_process_id},
-                priority=base_priority("fallback", offset=-8),
+                priority=surface_priority(
+                    "availability_disruption",
+                    category="fallback",
+                    offset=-8,
+                ),
                 surface="availability_disruption",
                 category="fallback",
             )
@@ -8413,24 +8666,42 @@ class AgenticRoleAgent(RoleAgent):
             add_candidate(
                 "Escalate to estop only if a direct availability hit is the shortest remaining bounded impact path.",
                 {"type": "hmi_estop", "process_id": primary_process_id},
-                priority=base_priority("fallback", offset=-2),
+                priority=surface_priority(
+                    "availability_disruption",
+                    category="fallback",
+                    offset=-2,
+                ),
                 surface="availability_disruption",
                 category="fallback",
             )
 
         if "inspect_surface" in allowed:
-            allow_recon = not prior_actions or current_phase in {
-                "initial_observation",
-                "reconnaissance",
-                "reorient",
-            }
+            allow_recon = (
+                not direct_commit
+                or not prior_actions
+                or current_phase in {
+                    "initial_observation",
+                    "reconnaissance",
+                    "reorient",
+                }
+            )
             if allow_recon:
-                for index, surface_name in enumerate(recon_surfaces[:3]):
+                for index, surface_name in enumerate(
+                    self._white_box_mitre_recon_surface_order(
+                        recon_surfaces,
+                        structured_memory=structured_memory,
+                        qualification=False,
+                    )[:2]
+                ):
                     add_candidate(
                         f"Inspect `{surface_name}` once to confirm the fastest bounded distribution leverage path.",
                         {"type": "inspect_surface", "surface": surface_name},
-                        priority=base_priority("recon", offset=-(index * 8)),
-                        surface="sensor_manipulation",
+                        priority=surface_priority(
+                            top_surface,
+                            category="recon",
+                            offset=-(index * 8),
+                        ),
+                        surface=top_surface,
                         category="recon",
                     )
 
@@ -8438,8 +8709,8 @@ class AgenticRoleAgent(RoleAgent):
             "Hold only if every bounded supply, grid, and return-water exploit path is currently blocked."
         )
         if noop_candidate is not None:
-            noop_candidate["priority"] = base_priority("hold")
-            noop_candidate["surface"] = "availability_disruption"
+            noop_candidate["priority"] = surface_priority(top_surface, category="hold")
+            noop_candidate["surface"] = top_surface
             noop_candidate["category"] = "hold"
             candidates_by_id.setdefault(noop_candidate["id"], noop_candidate)
 
@@ -9302,6 +9573,7 @@ class AgenticRoleAgent(RoleAgent):
                 (
                     str(field),
                     {
+                        "low_floor": int(round(max(0.0, minimum))),
                         "high_breach": high_breach,
                         "high_extreme": max(high_breach, high_extreme),
                         "high_alarm": int(round(min(maximum, maximum - max(10.0, span * 0.03)))),

@@ -293,6 +293,89 @@ def test_water_distribution_white_box_candidates_include_grid_actuator_override(
     } >= {("Grid_Elev_Valve", True)}
 
 
+def test_water_distribution_white_box_candidates_expose_breach_capable_sensor_values() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("attack/wd-attack-supply-high-high-spoof")
+
+    agent = AgenticRoleAgent(
+        "white_box_attacker",
+        {
+            "role": "attacker",
+            "family": "agentic",
+            "mode": "online",
+            "policy": "agentic",
+            "knowledge_mode": "white_box",
+            "allowed_action_types": [
+                "inspect_surface",
+                "hmi_start",
+                "hmi_stop",
+                "hmi_estop",
+                "set_sensor",
+                "set_actuator",
+                "noop",
+            ],
+        },
+    )
+    agent.reset(scenario)
+
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "Supply_Tank_Level": 940.0,
+        "Supply_Pump_Flow": 150.0,
+        "Supply_NaOCl_Level": 800.0,
+        "Supply_NH4Cl_Level": 800.0,
+        "Grid_Elev_Tank_Level": 1200.0,
+        "Grid_Consum_Tank_Level": 820.0,
+        "RWS_Tank_Level": 500.0,
+        "Supply_Pump_Sts": 1.0,
+        "Supply_Tank_Valve_Sts": 1.0,
+        "Grid_Elev_Valve_Sts": 0.0,
+        "RWS_Pump_Sts": 0.0,
+        "RWS_Tank_Valve_Sts": 0.0,
+        "Alarm_Supply_Tank_HH": 0.0,
+    }
+    telemetry_summary = {
+        "risk_flags": [],
+        "active_alarms": [],
+        "relationship_notes": [],
+    }
+    context = {
+        "scenario": scenario,
+        "observation": observation,
+        "executed_actions": [],
+        "alerts": [],
+        "remaining_playbook": [],
+        "time_sec": 16.0,
+    }
+    structured_memory = agent._white_box_attacker_memory(
+        context=context,
+        observation=observation,
+        telemetry_summary=telemetry_summary,
+        recent_actions=[],
+        recent_alerts=[],
+        recent_action_effects=[],
+    )
+
+    candidates = agent._white_box_attacker_candidates(
+        context=context,
+        telemetry_summary=telemetry_summary,
+        structured_memory=structured_memory,
+    )
+
+    sensor_candidates = [
+        item.get("action") or {}
+        for item in candidates
+        if (item.get("action") or {}).get("type") == "set_sensor"
+    ]
+
+    assert structured_memory["white_box_direct_commit"] is True
+    assert any(
+        str(item.get("name")) == "Supply_Tank_Level"
+        and float(item.get("value", 0.0)) > 1500.0
+        for item in sensor_candidates
+    )
+
+
 def test_water_distribution_white_box_system_knowledge_uses_distribution_topology() -> None:
     catalog = ScenarioCatalog(testbed_id="water_distribution")
     scenario = catalog.get("attack/wd-attack-supply-low-spoof")
@@ -373,13 +456,19 @@ def test_water_distribution_white_box_system_knowledge_uses_distribution_topolog
 
     assert {"WD-Supply", "WD-Grid", "WD-RWS"} <= process_assets
     assert {"sensor_write_path", "actuator_write_path"} <= surfaces
-    assert (
-        system_knowledge["control_semantics"]["set_actuator"]
-        == "Forces a bounded pump or valve command through the actuator write path."
+    assert "breach-capable values above a published safety max" in system_knowledge[
+        "control_semantics"
+    ]["set_sensor"]
+    sensor_hint = next(
+        item
+        for item in system_knowledge["process_context"]["surface_leverage_hints"]
+        if item["surface"] == "sensor_write_path"
     )
+    assert sensor_hint["breach_capable"] is True
+    assert float(sensor_hint["preferred_value"]) > 1500.0
 
 
-def test_water_distribution_clamps_oversized_sensor_and_actuator_overrides() -> None:
+def test_water_distribution_preserves_breach_capable_sensor_overrides_and_clamps_actuators() -> None:
     testbed = OpenPLCWaterDistributionTestbed(
         base_dir=Path("."),
         controller_host="localhost",
@@ -392,14 +481,36 @@ def test_water_distribution_clamps_oversized_sensor_and_actuator_overrides() -> 
     testbed.reset()
 
     testbed.apply_action(
+        {"type": "set_sensor", "name": "Supply_Tank_Level", "value": 1540}
+    )
+    testbed.apply_action(
         {"type": "set_sensor", "name": "Supply_Tank_Level", "value": 70575}
     )
     testbed.apply_action(
         {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 500}
     )
 
-    assert testbed._sensor_overrides["Supply_Tank_Level"] == 1500.0
+    assert testbed._sensor_overrides["Supply_Tank_Level"] == 65535.0
     assert testbed._actuator_overrides["Supply_Pump_Speed"] == 100.0
+
+
+def test_water_distribution_sensor_override_accepts_above_bound_breach_value() -> None:
+    testbed = OpenPLCWaterDistributionTestbed(
+        base_dir=Path("."),
+        controller_host="localhost",
+        controller_port=None,
+        simulator_host="localhost",
+        simulator_port=None,
+        unit_id=1,
+        use_remote_modbus=False,
+    )
+    testbed.reset()
+
+    testbed.apply_action(
+        {"type": "set_sensor", "name": "Supply_Tank_Level", "value": 1540}
+    )
+
+    assert testbed._sensor_overrides["Supply_Tank_Level"] == 1540.0
 
 
 def test_distribution_white_box_config_matches_treatment_strength_knobs() -> None:
@@ -505,5 +616,9 @@ def test_distribution_white_box_prompt_uses_treatment_staged_wording() -> None:
     )
     assert (
         "Follow the staged chain in order: staged entry context, discovery, process understanding, control-path qualification, then manipulation and impact."
+        in prompt_text
+    )
+    assert (
+        "When the candidate list exposes a sensor value above a published safety bound"
         in prompt_text
     )
