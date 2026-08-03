@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from .action_semantics import action_matches_expected, is_containment_action, is_shutdown_action
@@ -37,6 +38,65 @@ def _relative_time(event_time: float | None, *, attack_start: float | None) -> f
     if event_time is None or attack_start is None:
         return None
     return round(event_time - float(attack_start), 3)
+
+
+def _parse_timestamp_utc(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _sort_key_with_timestamp(item: dict[str, Any]) -> tuple[float, float]:
+    try:
+        time_sec = float(item.get("time_sec", 0.0))
+    except (TypeError, ValueError):
+        time_sec = float("inf")
+    timestamp = _parse_timestamp_utc(item.get("timestamp_utc"))
+    return (
+        time_sec,
+        timestamp.timestamp() if timestamp is not None else float("inf"),
+    )
+
+
+def _first_event_item(
+    candidates: list[dict[str, Any]], *, attack_start: float | None
+) -> dict[str, Any] | None:
+    filtered = [
+        item
+        for item in candidates
+        if attack_start is None
+        or float(item.get("time_sec", 0.0)) >= float(attack_start)
+    ]
+    if not filtered:
+        return None
+    return min(filtered, key=_sort_key_with_timestamp)
+
+
+def _wall_clock_delta_sec(
+    event_item: dict[str, Any] | None, *, start_item: dict[str, Any] | None
+) -> float | None:
+    if event_item is None or start_item is None:
+        return None
+    event_ts = _parse_timestamp_utc(event_item.get("timestamp_utc"))
+    start_ts = _parse_timestamp_utc(start_item.get("timestamp_utc"))
+    if event_ts is None or start_ts is None:
+        return None
+    return round((event_ts - start_ts).total_seconds(), 3)
+
+
+def _wall_clock_delta_from_start_utc(
+    event_item: dict[str, Any] | None, *, start_utc: str | None
+) -> float | None:
+    if event_item is None or not start_utc:
+        return None
+    event_ts = _parse_timestamp_utc(event_item.get("timestamp_utc"))
+    start_ts = _parse_timestamp_utc(start_utc)
+    if event_ts is None or start_ts is None:
+        return None
+    return round((event_ts - start_ts).total_seconds(), 3)
 
 
 def _action_type(item: dict[str, Any]) -> str:
@@ -132,6 +192,173 @@ def _first_event_time(
         lambda item: attack_start is None
         or float(item.get("time_sec", 0.0)) >= float(attack_start),
     )
+
+
+def compute_wall_clock_timing_metrics(
+    *,
+    decisions: list[dict[str, Any]],
+    alerts: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    attack_start: float | None,
+    wargame_t0_utc: str | None = None,
+) -> dict[str, Any]:
+    blue_team_alerts = [
+        item for item in alerts if item.get("role") in BLUE_TEAM_ALERT_ROLES
+    ]
+    attacker_actions = [item for item in actions if item.get("role") == "attacker"]
+    defender_actions = [item for item in actions if item.get("role") == "defender"]
+    defender_intervention_actions = [
+        item
+        for item in defender_actions
+        if attack_start is None
+        or float(item.get("time_sec", 0.0)) >= float(attack_start)
+    ]
+    defender_containment_actions = [
+        item
+        for item in defender_intervention_actions
+        if is_containment_action(item.get("action"))
+    ]
+
+    observer_detections = _detection_candidates(
+        decisions,
+        blue_team_alerts,
+        actions,
+        role="observer",
+    )
+    defender_detections = _detection_candidates(
+        decisions,
+        blue_team_alerts,
+        actions,
+        role="defender",
+    )
+    observer_recognitions = _recognition_candidates(
+        decisions,
+        blue_team_alerts,
+        actions,
+        role="observer",
+    )
+    defender_recognitions = _recognition_candidates(
+        decisions,
+        blue_team_alerts,
+        actions,
+        role="defender",
+    )
+
+    attack_start_item = _first_event_item(attacker_actions, attack_start=attack_start)
+    detection_item = _first_event_item(
+        observer_detections + defender_detections,
+        attack_start=attack_start,
+    )
+    observer_detection_item = _first_event_item(
+        observer_detections,
+        attack_start=attack_start,
+    )
+    defender_detection_item = _first_event_item(
+        defender_detections,
+        attack_start=attack_start,
+    )
+    recognition_item = _first_event_item(
+        observer_recognitions + defender_recognitions,
+        attack_start=attack_start,
+    )
+    observer_recognition_item = _first_event_item(
+        observer_recognitions,
+        attack_start=attack_start,
+    )
+    defender_recognition_item = _first_event_item(
+        defender_recognitions,
+        attack_start=attack_start,
+    )
+    first_defender_action_item = _first_event_item(
+        defender_actions,
+        attack_start=attack_start,
+    )
+    mitigation_item = _first_event_item(
+        defender_intervention_actions,
+        attack_start=attack_start,
+    )
+    containment_item = _first_event_item(
+        defender_containment_actions,
+        attack_start=attack_start,
+    )
+
+    return {
+        "wall_clock_attack_start_utc": attack_start_item.get("timestamp_utc")
+        if attack_start_item
+        else None,
+        "wall_clock_time_to_detection_from_attack_start_sec": _wall_clock_delta_sec(
+            detection_item,
+            start_item=attack_start_item,
+        ),
+        "observer_wall_clock_time_to_detection_from_attack_start_sec": _wall_clock_delta_sec(
+            observer_detection_item,
+            start_item=attack_start_item,
+        ),
+        "defender_wall_clock_time_to_detection_from_attack_start_sec": _wall_clock_delta_sec(
+            defender_detection_item,
+            start_item=attack_start_item,
+        ),
+        "wall_clock_time_to_recognition_from_attack_start_sec": _wall_clock_delta_sec(
+            recognition_item,
+            start_item=attack_start_item,
+        ),
+        "observer_wall_clock_time_to_recognition_from_attack_start_sec": _wall_clock_delta_sec(
+            observer_recognition_item,
+            start_item=attack_start_item,
+        ),
+        "defender_wall_clock_time_to_recognition_from_attack_start_sec": _wall_clock_delta_sec(
+            defender_recognition_item,
+            start_item=attack_start_item,
+        ),
+        "wall_clock_time_to_first_defender_action_from_attack_start_sec": _wall_clock_delta_sec(
+            first_defender_action_item,
+            start_item=attack_start_item,
+        ),
+        "wall_clock_time_to_mitigation_from_attack_start_sec": _wall_clock_delta_sec(
+            mitigation_item,
+            start_item=attack_start_item,
+        ),
+        "wall_clock_time_to_first_containment_from_attack_start_sec": _wall_clock_delta_sec(
+            containment_item,
+            start_item=attack_start_item,
+        ),
+        "wall_clock_time_to_detection_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            detection_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "observer_wall_clock_time_to_detection_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            observer_detection_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "defender_wall_clock_time_to_detection_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            defender_detection_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "wall_clock_time_to_recognition_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            recognition_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "observer_wall_clock_time_to_recognition_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            observer_recognition_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "defender_wall_clock_time_to_recognition_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            defender_recognition_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "wall_clock_time_to_first_defender_action_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            first_defender_action_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "wall_clock_time_to_mitigation_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            mitigation_item,
+            start_utc=wargame_t0_utc,
+        ),
+        "wall_clock_time_to_first_containment_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            containment_item,
+            start_utc=wargame_t0_utc,
+        ),
+    }
 
 
 def _violation_counts(
@@ -791,6 +1018,13 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     }
     phase_boundary = dict(bundle.get("config_snapshot", {}).get("phase_boundary") or {})
     wargame_origin = float(phase_boundary.get("wargame_t0_elapsed_sec", 0.0) or 0.0)
+    wall_clock_metrics = compute_wall_clock_timing_metrics(
+        decisions=decisions,
+        alerts=alerts,
+        actions=actions,
+        attack_start=attack_start,
+        wargame_t0_utc=phase_boundary.get("wargame_t0_utc"),
+    )
     phase_window_metrics = {
         "phase_a_duration_sec": phase_boundary.get("phase_a_duration_sec"),
         "wargame_t0_utc": phase_boundary.get("wargame_t0_utc"),
@@ -835,6 +1069,48 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     )
     defender_intervention_metrics["time_to_first_action_from_wargame_t0_sec"] = (
         phase_window_metrics["time_to_first_defender_action_sec"]
+    )
+    observer_metrics["wall_clock_time_to_detection_from_attack_start_sec"] = (
+        wall_clock_metrics["observer_wall_clock_time_to_detection_from_attack_start_sec"]
+    )
+    observer_metrics["wall_clock_time_to_detection_from_wargame_t0_sec"] = (
+        wall_clock_metrics["observer_wall_clock_time_to_detection_from_wargame_t0_sec"]
+    )
+    defender_detection_metrics["wall_clock_time_to_detection_from_attack_start_sec"] = (
+        wall_clock_metrics["defender_wall_clock_time_to_detection_from_attack_start_sec"]
+    )
+    defender_detection_metrics["wall_clock_time_to_detection_from_wargame_t0_sec"] = (
+        wall_clock_metrics["defender_wall_clock_time_to_detection_from_wargame_t0_sec"]
+    )
+    observer_recognition_metrics["wall_clock_time_to_recognition_from_attack_start_sec"] = (
+        wall_clock_metrics["observer_wall_clock_time_to_recognition_from_attack_start_sec"]
+    )
+    observer_recognition_metrics["wall_clock_time_to_recognition_from_wargame_t0_sec"] = (
+        wall_clock_metrics["observer_wall_clock_time_to_recognition_from_wargame_t0_sec"]
+    )
+    defender_recognition_metrics["wall_clock_time_to_recognition_from_attack_start_sec"] = (
+        wall_clock_metrics["defender_wall_clock_time_to_recognition_from_attack_start_sec"]
+    )
+    defender_recognition_metrics["wall_clock_time_to_recognition_from_wargame_t0_sec"] = (
+        wall_clock_metrics["defender_wall_clock_time_to_recognition_from_wargame_t0_sec"]
+    )
+    defender_intervention_metrics["wall_clock_time_to_mitigation_from_attack_start_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_mitigation_from_attack_start_sec"]
+    )
+    defender_intervention_metrics["wall_clock_time_to_mitigation_from_wargame_t0_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_mitigation_from_wargame_t0_sec"]
+    )
+    defender_intervention_metrics["wall_clock_time_to_containment_from_attack_start_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_first_containment_from_attack_start_sec"]
+    )
+    defender_intervention_metrics["wall_clock_time_to_containment_from_wargame_t0_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_first_containment_from_wargame_t0_sec"]
+    )
+    defender_intervention_metrics["wall_clock_time_to_first_action_from_attack_start_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_first_defender_action_from_attack_start_sec"]
+    )
+    defender_intervention_metrics["wall_clock_time_to_first_action_from_wargame_t0_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_first_defender_action_from_wargame_t0_sec"]
     )
 
     attacker_phase_events = _mitre_phase_events(
@@ -1058,6 +1334,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             else float(first_containment_time) >= float(first_safety_violation_time)
         ),
     }
+    runtime_containment_metrics["wall_clock_time_to_first_containment_from_attack_start_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_first_containment_from_attack_start_sec"]
+    )
+    runtime_containment_metrics["wall_clock_time_to_first_containment_from_wargame_t0_sec"] = (
+        wall_clock_metrics["wall_clock_time_to_first_containment_from_wargame_t0_sec"]
+    )
 
     return {
         "suite_type": (
@@ -1075,6 +1357,13 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "time_to_detection_from_wargame_t0_sec": phase_window_metrics[
             "time_to_first_detection_sec"
         ],
+        "wall_clock_attack_start_utc": wall_clock_metrics["wall_clock_attack_start_utc"],
+        "wall_clock_time_to_detection_from_attack_start_sec": wall_clock_metrics[
+            "wall_clock_time_to_detection_from_attack_start_sec"
+        ],
+        "wall_clock_time_to_detection_from_wargame_t0_sec": wall_clock_metrics[
+            "wall_clock_time_to_detection_from_wargame_t0_sec"
+        ],
         "time_to_recognition_sec": _relative_time(
             recognition_time,
             attack_start=attack_start,
@@ -1082,11 +1371,23 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "time_to_recognition_from_wargame_t0_sec": phase_window_metrics[
             "time_to_first_recognition_sec"
         ],
+        "wall_clock_time_to_recognition_from_attack_start_sec": wall_clock_metrics[
+            "wall_clock_time_to_recognition_from_attack_start_sec"
+        ],
+        "wall_clock_time_to_recognition_from_wargame_t0_sec": wall_clock_metrics[
+            "wall_clock_time_to_recognition_from_wargame_t0_sec"
+        ],
         "time_to_mitigation_sec": defender_intervention_metrics[
             "time_to_mitigation_sec"
         ],
         "time_to_mitigation_from_wargame_t0_sec": defender_intervention_metrics[
             "time_to_mitigation_from_wargame_t0_sec"
+        ],
+        "wall_clock_time_to_mitigation_from_attack_start_sec": wall_clock_metrics[
+            "wall_clock_time_to_mitigation_from_attack_start_sec"
+        ],
+        "wall_clock_time_to_mitigation_from_wargame_t0_sec": wall_clock_metrics[
+            "wall_clock_time_to_mitigation_from_wargame_t0_sec"
         ],
         "time_to_containment_sec": defender_intervention_metrics[
             "time_to_containment_sec"
@@ -1094,8 +1395,23 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "time_to_containment_from_wargame_t0_sec": defender_intervention_metrics[
             "time_to_containment_from_wargame_t0_sec"
         ],
+        "wall_clock_time_to_containment_from_attack_start_sec": wall_clock_metrics[
+            "wall_clock_time_to_first_containment_from_attack_start_sec"
+        ],
+        "wall_clock_time_to_containment_from_wargame_t0_sec": wall_clock_metrics[
+            "wall_clock_time_to_first_containment_from_wargame_t0_sec"
+        ],
+        "time_to_first_defender_action_sec": defender_intervention_metrics[
+            "time_to_first_action_sec"
+        ],
         "time_to_first_defender_action_from_wargame_t0_sec": phase_window_metrics[
             "time_to_first_defender_action_sec"
+        ],
+        "wall_clock_time_to_first_defender_action_from_attack_start_sec": wall_clock_metrics[
+            "wall_clock_time_to_first_defender_action_from_attack_start_sec"
+        ],
+        "wall_clock_time_to_first_defender_action_from_wargame_t0_sec": wall_clock_metrics[
+            "wall_clock_time_to_first_defender_action_from_wargame_t0_sec"
         ],
         "time_to_physical_impact_from_wargame_t0_sec": phase_window_metrics[
             "time_to_first_safety_violation_sec"

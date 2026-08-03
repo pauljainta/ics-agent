@@ -1215,12 +1215,24 @@ class ExperimentOrchestrator:
                 "time_to_detection_from_wargame_t0_sec": run.get("metrics", {})
                 .get("phase_window", {})
                 .get("time_to_first_detection_sec"),
+                "wall_clock_time_to_detection_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_detection_from_attack_start_sec"),
+                "wall_clock_time_to_detection_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_detection_from_wargame_t0_sec"),
                 "time_to_recognition_sec": run.get("metrics", {}).get(
                     "time_to_recognition_sec"
                 ),
                 "time_to_recognition_from_wargame_t0_sec": run.get("metrics", {})
                 .get("phase_window", {})
                 .get("time_to_first_recognition_sec"),
+                "wall_clock_time_to_recognition_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_recognition_from_attack_start_sec"),
+                "wall_clock_time_to_recognition_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_recognition_from_wargame_t0_sec"),
                 "observer_time_to_detection_sec": run.get("metrics", {})
                 .get("observer_detection", {})
                 .get("time_to_detection_sec"),
@@ -1239,6 +1251,12 @@ class ExperimentOrchestrator:
                 "time_to_mitigation_from_wargame_t0_sec": run.get("metrics", {}).get(
                     "time_to_mitigation_from_wargame_t0_sec"
                 ),
+                "wall_clock_time_to_mitigation_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_mitigation_from_attack_start_sec"),
+                "wall_clock_time_to_mitigation_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_mitigation_from_wargame_t0_sec"),
                 "attacker_action_count": run.get("metrics", {}).get(
                     "attacker_action_count"
                 ),
@@ -1342,9 +1360,21 @@ class ExperimentOrchestrator:
                 "time_to_first_defender_action_from_wargame_t0_sec": run.get("metrics", {})
                 .get("phase_window", {})
                 .get("time_to_first_defender_action_sec"),
+                "wall_clock_time_to_first_defender_action_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_first_defender_action_from_attack_start_sec"),
+                "wall_clock_time_to_first_defender_action_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_first_defender_action_from_wargame_t0_sec"),
                 "time_to_first_containment_from_wargame_t0_sec": run.get("metrics", {})
                 .get("phase_window", {})
                 .get("time_to_first_containment_sec"),
+                "wall_clock_time_to_first_containment_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_containment_from_attack_start_sec"),
+                "wall_clock_time_to_first_containment_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_containment_from_wargame_t0_sec"),
                 "mitigation_action_count": run.get("metrics", {})
                 .get("defender_intervention", {})
                 .get("mitigation_action_count"),
@@ -1484,10 +1514,20 @@ class ExperimentOrchestrator:
             if primary_origin == "wargame_t0"
             else "time_to_detection_from_attack_start_sec"
         )
+        primary_wall_clock_detection_metric = (
+            "wall_clock_time_to_detection_from_wargame_t0_sec"
+            if primary_origin == "wargame_t0"
+            else "wall_clock_time_to_detection_from_attack_start_sec"
+        )
         primary_first_action_metric = (
             "time_to_first_defender_action_from_wargame_t0_sec"
             if primary_origin == "wargame_t0"
             else "time_to_first_defender_action_from_attack_start_sec"
+        )
+        primary_wall_clock_first_action_metric = (
+            "wall_clock_time_to_first_defender_action_from_wargame_t0_sec"
+            if primary_origin == "wargame_t0"
+            else "wall_clock_time_to_first_defender_action_from_attack_start_sec"
         )
         primary_impact_metric = (
             "time_to_physical_impact_from_wargame_t0_sec"
@@ -1516,9 +1556,24 @@ class ExperimentOrchestrator:
             "time_to_detection_from_wargame_t0_sec_avg": average(
                 "time_to_detection_from_wargame_t0_sec"
             ),
+            "wall_clock_time_to_detection_sec_avg": average(
+                primary_wall_clock_detection_metric
+            ),
+            "wall_clock_time_to_detection_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_detection_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_detection_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_detection_from_wargame_t0_sec"
+            ),
             "time_to_recognition_sec_avg": average("time_to_recognition_sec"),
             "time_to_recognition_from_wargame_t0_sec_avg": average(
                 "time_to_recognition_from_wargame_t0_sec"
+            ),
+            "wall_clock_time_to_recognition_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_recognition_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_recognition_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_recognition_from_wargame_t0_sec"
             ),
             "observer_time_to_detection_sec_avg": average(
                 "observer_time_to_detection_sec"
@@ -1535,6 +1590,12 @@ class ExperimentOrchestrator:
             "time_to_mitigation_sec_avg": average("time_to_mitigation_sec"),
             "time_to_mitigation_from_wargame_t0_sec_avg": average(
                 "time_to_mitigation_from_wargame_t0_sec"
+            ),
+            "wall_clock_time_to_mitigation_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_mitigation_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_mitigation_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_mitigation_from_wargame_t0_sec"
             ),
             "attacker_action_count_avg": average("attacker_action_count"),
             "attacker_recon_action_count_avg": average(
@@ -1587,8 +1648,23 @@ class ExperimentOrchestrator:
             "time_to_first_defender_action_from_wargame_t0_sec_avg": average(
                 "time_to_first_defender_action_from_wargame_t0_sec"
             ),
+            "wall_clock_time_to_first_defender_action_sec_avg": average(
+                primary_wall_clock_first_action_metric
+            ),
+            "wall_clock_time_to_first_defender_action_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_first_defender_action_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_first_defender_action_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_first_defender_action_from_wargame_t0_sec"
+            ),
             "time_to_first_containment_from_wargame_t0_sec_avg": average(
                 "time_to_first_containment_from_wargame_t0_sec"
+            ),
+            "wall_clock_time_to_first_containment_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_first_containment_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_first_containment_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_first_containment_from_wargame_t0_sec"
             ),
             "mitigation_action_count_avg": average("mitigation_action_count"),
             "containment_action_count_avg": average("containment_action_count"),
