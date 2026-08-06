@@ -373,17 +373,21 @@ class ExperimentOrchestrator:
             llm = profile.get("llm", {})
             if not isinstance(llm, dict):
                 continue
+            model_path = os.environ.get("QWEN_MODEL_PATH", "").strip() or llm.get(
+                "model_id"
+            )
             settings[str(role)] = {
                 "profile_id": str(profile_id),
                 "backend": llm.get("backend"),
                 "framework": llm.get("framework"),
                 "model_id": llm.get("model_id"),
-                "model_path": os.environ.get("QWEN_MODEL_PATH", "").strip()
-                or llm.get("model_id"),
+                "model_path": model_path,
                 "temperature": float(llm.get("temperature", 0.0) or 0.0),
+                "top_p": llm.get("top_p"),
                 "do_sample": float(llm.get("temperature", 0.0) or 0.0) > 0.0,
                 "max_new_tokens": llm.get("max_new_tokens"),
                 "quantization": llm.get("quantization"),
+                "context_limit": self._resolve_context_limit(model_path),
                 "local_files_only": bool(llm.get("local_files_only", True)),
                 "require_cuda": bool(llm.get("require_cuda", True)),
                 "strict_backend": bool(llm.get("strict_backend", True)),
@@ -392,6 +396,26 @@ class ExperimentOrchestrator:
                 ),
             }
         return settings
+
+    @staticmethod
+    def _resolve_context_limit(model_ref: str | os.PathLike[str] | None) -> int | None:
+        if not model_ref:
+            return None
+        config_path = Path(str(model_ref)).expanduser() / "config.json"
+        if not config_path.exists():
+            return None
+        try:
+            payload = json.loads(config_path.read_text())
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        text_config = payload.get("text_config")
+        if isinstance(text_config, dict) and text_config.get("max_position_embeddings") is not None:
+            return int(text_config["max_position_embeddings"])
+        if payload.get("max_position_embeddings") is not None:
+            return int(payload["max_position_embeddings"])
+        return None
 
     def _suite_decoding_settings(
         self,
@@ -1010,6 +1034,7 @@ class ExperimentOrchestrator:
         )
 
         env = OpenPLCEnvironment(config.get("environment", {}))
+        run_started_utc = utc_now()
         started = False
         phase_a_started_monotonic = time.monotonic()
         phase_a_started_utc = utc_now()
@@ -1153,14 +1178,18 @@ class ExperimentOrchestrator:
                 )
 
         bundle.summary = {
+            "experiment_id": experiment_id,
             "run_id": run_id,
             "scenario": scenario.catalog_id,
             "scenario_id": scenario.scenario_id,
             "suite": scenario.suite,
+            "testbed": scenario.testbed_id,
             "condition_name": condition_name,
             "status": bundle.status,
             "passed": bundle.passed,
             "run_dir": portable_path(run_dir),
+            "timestamp_start_utc": run_started_utc,
+            "timestamp_end_utc": utc_now(),
             "errors": bundle.errors,
             "metrics": bundle.metrics,
         }

@@ -11,6 +11,7 @@ from ics_agent.mitre import (
 )
 from ics_agent.agents.agentic import CachedQwenDecisionEngine
 from ics_agent.orchestrator import ExperimentOrchestrator
+from ics_agent.paths import REPO_ROOT
 
 
 def test_optionb_mitre_context_preserves_staged_runtime_model() -> None:
@@ -33,6 +34,10 @@ def test_optionb_mitre_context_preserves_staged_runtime_model() -> None:
 
 def test_configure_reproducibility_keeps_seeded_run_metadata(monkeypatch) -> None:
     monkeypatch.setenv("PYTHONHASHSEED", "20260623")
+    monkeypatch.setenv(
+        "QWEN_MODEL_PATH",
+        str((REPO_ROOT / "models" / "local_models" / "qwen3.5-9b").resolve()),
+    )
     orchestrator = ExperimentOrchestrator()
     payload = orchestrator._configure_reproducibility(
         config={
@@ -57,6 +62,9 @@ def test_configure_reproducibility_keeps_seeded_run_metadata(monkeypatch) -> Non
     assert payload["pythonhashseed"] == "20260623"
     assert payload["suite_decoding"]
     assert payload["experiment_config_path"] == "/tmp/concrete-containment.yaml"
+    attacker_decoding = payload["suite_decoding"]["attacker-gray_box_attacker__defender-agentic_defender__observer-agentic_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-scripted_planner"]["attacker"]
+    assert attacker_decoding["context_limit"] == 262144
+    assert attacker_decoding["top_p"] is None
 
 
 def test_parse_output_recovers_truncated_json_value() -> None:
