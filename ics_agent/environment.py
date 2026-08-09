@@ -71,6 +71,13 @@ def _normalized_backend_name(value: Any) -> str:
     return normalized or "auto"
 
 
+WATER_DISTRIBUTION_INITIAL_STATE_FIELDS = (
+    "Supply_Tank_Level",
+    "Grid_Elev_Tank_Level",
+    "RWS_Tank_Level",
+)
+
+
 @contextmanager
 def _temporary_testbed_backend_mode(requested_backend: str):
     previous = os.environ.get("OPENPLC_TESTBED_BACKEND")
@@ -385,13 +392,25 @@ class _SphereOpenPLCBackend:
             conditions.update({key: int(value) for key, value in initial_conditions.items()})
         self._require_direct_env().clear_runtime_containment()
 
+        reset_snapshot: dict[str, Any] | None = None
         if self.remote_reset_mode == "restart":
             self._restart_remote_runtime(conditions)
         else:
-            self._soft_reset_remote_runtime(conditions)
+            reset_snapshot = self._soft_reset_remote_runtime(conditions)
 
-        snapshot = self._require_direct_env().observe_flat()
+        post_reset_observation, validation = self._validated_reset_observation(
+            conditions,
+            initial_observation=reset_snapshot,
+        )
+        snapshot = dict(post_reset_observation)
+        snapshot["post_reset_observation"] = {
+            key: value
+            for key, value in post_reset_observation.items()
+            if key not in {"reset", "reset_conditions", "warning"}
+        }
         snapshot["reset_conditions"] = conditions
+        if validation is not None:
+            snapshot["initial_state_validation"] = validation
         if conditions != self._default_initial_conditions:
             snapshot["warning"] = (
                 "non-default initial conditions are currently experimental on the "
@@ -436,7 +455,7 @@ class _SphereOpenPLCBackend:
         if self.start_bridge:
             self._start_bridge()
 
-    def _soft_reset_remote_runtime(self, conditions: dict[str, int]) -> None:
+    def _soft_reset_remote_runtime(self, conditions: dict[str, int]) -> dict[str, Any]:
         direct_env = self._require_direct_env()
         testbed = direct_env.testbed
 
@@ -462,11 +481,7 @@ class _SphereOpenPLCBackend:
             )
 
         testbed._clear_external_controls()
-        try:
-            direct_env.act({"type": "hmi_reset", "process_id": "WT-P1"})
-        except EnvironmentError:
-            testbed._clear_external_controls()
-        testbed.set_levels(
+        reset_snapshot = testbed.reset(
             conditions,
             wait_sec=float(self.config.get("soft_reset_level_wait_sec", 1.0)),
         )
@@ -474,6 +489,123 @@ class _SphereOpenPLCBackend:
         time.sleep(float(self.config.get("reset_wait_sec", 1.5)))
         if self.start_bridge:
             self._start_bridge()
+        return reset_snapshot
+
+    @staticmethod
+    def _initial_state_mismatches(
+        observation: dict[str, Any],
+        expected: dict[str, float],
+        *,
+        tolerance: float,
+    ) -> dict[str, dict[str, Any]]:
+        mismatches: dict[str, dict[str, Any]] = {}
+        for field, expected_value in expected.items():
+            observed_raw = observation.get(field)
+            try:
+                observed_value = float(observed_raw)
+            except (TypeError, ValueError):
+                mismatches[field] = {
+                    "expected": expected_value,
+                    "observed": observed_raw,
+                    "difference": None,
+                }
+                continue
+            difference = round(observed_value - expected_value, 3)
+            if abs(difference) > tolerance:
+                mismatches[field] = {
+                    "expected": expected_value,
+                    "observed": observed_value,
+                    "difference": difference,
+                }
+        return mismatches
+
+    @staticmethod
+    def _format_initial_state_validation_error(
+        validation: dict[str, Any],
+    ) -> str:
+        details = []
+        for field, mismatch in (validation.get("mismatches") or {}).items():
+            difference = mismatch.get("difference")
+            if difference is None:
+                details.append(
+                    f"{field}: expected {mismatch.get('expected')}, observed {mismatch.get('observed')}"
+                )
+            else:
+                details.append(
+                    f"{field}: expected {mismatch.get('expected')}, observed {mismatch.get('observed')} (diff {difference})"
+                )
+        detail_text = "; ".join(details) or "no field details captured"
+        return (
+            "water-distribution initial-state validation failed after reset: "
+            f"{detail_text}"
+        )
+
+    def _validated_reset_observation(
+        self,
+        conditions: dict[str, int],
+        *,
+        initial_observation: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        observation = dict(initial_observation or self._require_direct_env().observe_flat())
+        if self.testbed_id != "water_distribution":
+            return observation, None
+
+        configured_fields = self.config.get(
+            "initial_state_validation_fields",
+            WATER_DISTRIBUTION_INITIAL_STATE_FIELDS,
+        )
+        fields = tuple(
+            str(field).strip()
+            for field in configured_fields
+            if str(field).strip() and str(field).strip() in conditions
+        )
+        if not fields:
+            return observation, None
+
+        expected = {field: float(conditions[field]) for field in fields}
+        tolerance = float(self.config.get("initial_state_validation_tolerance", 1.0))
+        poll_sec = max(
+            0.0,
+            float(self.config.get("initial_state_validation_poll_sec", 0.2)),
+        )
+        timeout_sec = max(
+            0.0,
+            float(
+                self.config.get(
+                    "initial_state_validation_timeout_sec",
+                    max(float(self.config.get("reset_wait_sec", 1.5)), 2.0),
+                )
+            ),
+        )
+        deadline = time.monotonic() + timeout_sec
+        mismatches = self._initial_state_mismatches(
+            observation,
+            expected,
+            tolerance=tolerance,
+        )
+        while mismatches and time.monotonic() < deadline:
+            if poll_sec > 0:
+                time.sleep(poll_sec)
+            observation = self._require_direct_env().observe_flat()
+            mismatches = self._initial_state_mismatches(
+                observation,
+                expected,
+                tolerance=tolerance,
+            )
+
+        validation = {
+            "status": "passed" if not mismatches else "failed",
+            "fields": list(fields),
+            "tolerance": tolerance,
+            "expected": expected,
+            "observed": {field: observation.get(field) for field in fields},
+            "mismatches": mismatches,
+        }
+        if mismatches:
+            raise EnvironmentError(
+                self._format_initial_state_validation_error(validation)
+            )
+        return dict(observation), validation
 
     def observe_flat(self) -> dict[str, Any]:
         return self._require_direct_env().observe_flat()

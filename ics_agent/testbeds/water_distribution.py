@@ -69,6 +69,15 @@ HMI_COIL_MAP = {name: address for name, address in FIELD_GROUPS["hmi"]}
 PROCESS_CONTROL_REGISTER_MAP = {
     name: address for name, address in FIELD_GROUPS["process_controls"]
 }
+SIMULATOR_COMMAND_COIL_MAP = {
+    "Supply_Tank_Valve_Cmd": 24,
+    "Grid_Elev_Valve_Cmd": 25,
+    "RWS_Tank_Valve_Cmd": 26,
+}
+SIMULATOR_PROCESS_CONTROL_REGISTER_MAP = {
+    "Supply_Pump_Speed_Cmd": 200,
+    "RWS_Pump_Speed_Cmd": 201,
+}
 ACTUATOR_FIELD_MAP = {
     "Supply_Pump_Speed": ("register", PROCESS_CONTROL_REGISTER_MAP["Supply_Pump_Speed_Cmd"]),
     "RWS_Pump_Speed": ("register", PROCESS_CONTROL_REGISTER_MAP["RWS_Pump_Speed_Cmd"]),
@@ -104,6 +113,7 @@ DEFAULT_LEVELS = {
 
 VALID_SENSOR_FIELDS = set(DEFAULT_LEVELS) | {"Supply_Pump_Flow"}
 RUNTIME_RESET_COIL = 2
+SIMULATOR_RUNTIME_HOLD_COIL = 3
 SIMULATOR_LEVEL_SEED_FIELDS = tuple(DEFAULT_LEVELS)
 SIMULATOR_LEVEL_SEED_REGISTER_MAP = {
     name: 1200 + index for index, name in enumerate(SIMULATOR_LEVEL_SEED_FIELDS)
@@ -246,9 +256,7 @@ class OpenPLCWaterDistributionTestbed:
                 self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, True)
                 time.sleep(0.1)
                 self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, False)
-                for field in FIELD_GROUPS["levels"]:
-                    enable_address = SENSOR_OVERRIDE_ENABLE_REGISTER_MAP[field[0]]
-                    self._write_remote_register(sim, enable_address, 0)
+                self._prime_remote_runtime_reset_state(ctrl, sim)
                 for key, value in conditions.items():
                     value_address = SIMULATOR_LEVEL_SEED_REGISTER_MAP[key]
                     apply_address = SIMULATOR_LEVEL_APPLY_REGISTER_MAP[key]
@@ -304,9 +312,27 @@ class OpenPLCWaterDistributionTestbed:
 
     def _clear_external_controls(self) -> None:
         if self._remote_mode:
+            with self.clients() as (ctrl, sim):
+                self._clear_remote_external_controls(ctrl, sim)
             return
         self._sensor_overrides.clear()
         self._actuator_overrides.clear()
+
+    def _clear_remote_external_controls(self, ctrl: Any, sim: Any) -> None:
+        for field in SENSOR_OVERRIDE_VALUE_REGISTER_MAP:
+            self._write_remote_register(sim, SENSOR_OVERRIDE_ENABLE_REGISTER_MAP[field], 0)
+            self._write_remote_register(sim, SENSOR_OVERRIDE_VALUE_REGISTER_MAP[field], 0)
+        for field in ACTUATOR_OVERRIDE_FIELDS:
+            self._write_remote_register(ctrl, ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP[field], 0)
+            self._write_remote_register(ctrl, ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP[field], 0)
+
+    def _prime_remote_runtime_reset_state(self, ctrl: Any, sim: Any) -> None:
+        self._clear_remote_external_controls(ctrl, sim)
+        self._write_remote_coil(sim, SIMULATOR_RUNTIME_HOLD_COIL, True)
+        for address in SIMULATOR_COMMAND_COIL_MAP.values():
+            self._write_remote_coil(sim, address, False)
+        for address in SIMULATOR_PROCESS_CONTROL_REGISTER_MAP.values():
+            self._write_remote_register(sim, address, 0)
 
     def set_levels(
         self,
@@ -438,18 +464,20 @@ class OpenPLCWaterDistributionTestbed:
             if action_type == "noop":
                 return {"state_name": self.observe_flat()["STATE_NAME"]}
             if action_type == "hmi_start":
-                with self.clients() as (ctrl, _):
+                with self.clients() as (ctrl, sim):
                     self._set_remote_hmi(ctrl, start=True, stop=False)
                     self._pulse_remote_coil(ctrl, HMI_COIL_MAP["HMI_Start_PB"])
+                    self._write_remote_coil(sim, SIMULATOR_RUNTIME_HOLD_COIL, False)
             elif action_type in {"hmi_stop", "hmi_estop"}:
                 with self.clients() as (ctrl, _):
                     self._set_remote_hmi(ctrl, start=False, stop=False)
                     self._pulse_remote_coil(ctrl, HMI_COIL_MAP["HMI_Stop_PB"])
             elif action_type == "hmi_reset":
-                with self.clients() as (ctrl, _):
+                with self.clients() as (ctrl, sim):
                     self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, True)
                     time.sleep(0.1)
                     self._write_remote_coil(ctrl, RUNTIME_RESET_COIL, False)
+                    self._write_remote_coil(sim, SIMULATOR_RUNTIME_HOLD_COIL, True)
             elif action_type == "set_sensor":
                 field = str(descriptor.get("name", "")).strip()
                 if field not in VALID_SENSOR_FIELDS:

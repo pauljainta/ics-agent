@@ -1080,7 +1080,21 @@ class ExperimentOrchestrator:
                                 "runtime_pid": runtime_info.get("pid"),
                             }
                         )
-                env.reset(scenario.execution.get("initial_conditions"))
+                reset_snapshot = env.reset(scenario.execution.get("initial_conditions"))
+                reset_validation = reset_snapshot.get("initial_state_validation")
+                if isinstance(reset_validation, dict) and reset_validation:
+                    bundle.system_events.append(
+                        {
+                            "timestamp_utc": utc_now(),
+                            "time_sec": None,
+                            "event_type": "initial_state_validated",
+                            "phase": "phase_a",
+                            "fields": reset_validation.get("fields", []),
+                            "tolerance": reset_validation.get("tolerance"),
+                            "expected": reset_validation.get("expected", {}),
+                            "observed": reset_validation.get("observed", {}),
+                        }
+                    )
                 phase_a_duration_sec = round(
                     max(0.0, time.monotonic() - phase_a_started_monotonic),
                     3,
@@ -1110,6 +1124,7 @@ class ExperimentOrchestrator:
                     condition,
                     effective_profiles,
                     env,
+                    initial_observation=reset_snapshot.get("post_reset_observation"),
                 )
             else:
                 agents = {
@@ -2100,6 +2115,8 @@ class ExperimentOrchestrator:
         condition: dict[str, str],
         effective_profiles: dict[str, dict[str, Any]] | None,
         env: OpenPLCEnvironment,
+        *,
+        initial_observation: dict[str, Any] | None = None,
     ) -> None:
         poll_interval = float(scenario.execution.get("poll_interval_ms", 500)) / 1000.0
         loop_sleep_sec = float(env.config.get("loop_sleep_sec", poll_interval))
@@ -2108,9 +2125,16 @@ class ExperimentOrchestrator:
         runtime_containment = self._initial_runtime_containment()
         last_state: str | None = None
         elapsed = 0.0
+        pending_initial_observation = (
+            dict(initial_observation) if isinstance(initial_observation, dict) else None
+        )
 
         while elapsed <= duration:
-            observation = env.observe_flat()
+            if pending_initial_observation is not None:
+                observation = dict(pending_initial_observation)
+                pending_initial_observation = None
+            else:
+                observation = env.observe_flat()
             last_state = self._record_observation(
                 bundle,
                 observation,

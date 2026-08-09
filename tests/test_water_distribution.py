@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -8,7 +9,16 @@ from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.environment import OpenPLCEnvironment
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.testbeds.water_distribution import OpenPLCWaterDistributionTestbed
+from ics_agent.testbeds.water_distribution import (
+    ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP,
+    ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP,
+    OpenPLCWaterDistributionTestbed,
+    SENSOR_OVERRIDE_ENABLE_REGISTER_MAP,
+    SENSOR_OVERRIDE_VALUE_REGISTER_MAP,
+    SIMULATOR_COMMAND_COIL_MAP,
+    SIMULATOR_PROCESS_CONTROL_REGISTER_MAP,
+    SIMULATOR_RUNTIME_HOLD_COIL,
+)
 
 
 def _distribution_defender_agent() -> AgenticRoleAgent:
@@ -511,6 +521,104 @@ def test_water_distribution_sensor_override_accepts_above_bound_breach_value() -
     )
 
     assert testbed._sensor_overrides["Supply_Tank_Level"] == 1540.0
+
+
+def test_water_distribution_remote_clear_external_controls_clears_remote_overrides(
+    monkeypatch,
+) -> None:
+    testbed = OpenPLCWaterDistributionTestbed(
+        base_dir=Path("."),
+        controller_host="controller",
+        controller_port=1502,
+        simulator_host="simulator",
+        simulator_port=1503,
+        unit_id=1,
+        use_remote_modbus=True,
+    )
+    writes: list[tuple[str, int, int]] = []
+
+    @contextmanager
+    def fake_clients():
+        yield "ctrl", "sim"
+
+    monkeypatch.setattr(testbed, "clients", fake_clients)
+    monkeypatch.setattr(
+        testbed,
+        "_write_remote_register",
+        lambda client, address, value: writes.append((client, address, value)),
+    )
+
+    testbed._clear_external_controls()
+
+    expected_writes = []
+    for field in SENSOR_OVERRIDE_VALUE_REGISTER_MAP:
+        expected_writes.append(("sim", SENSOR_OVERRIDE_ENABLE_REGISTER_MAP[field], 0))
+        expected_writes.append(("sim", SENSOR_OVERRIDE_VALUE_REGISTER_MAP[field], 0))
+    for field in ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP:
+        expected_writes.append(("ctrl", ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP[field], 0))
+        expected_writes.append(("ctrl", ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP[field], 0))
+
+    assert writes == expected_writes
+
+
+def test_water_distribution_remote_reset_primes_hold_and_zeroes_runtime_inputs(
+    monkeypatch,
+) -> None:
+    testbed = OpenPLCWaterDistributionTestbed(
+        base_dir=Path("."),
+        controller_host="controller",
+        controller_port=1502,
+        simulator_host="simulator",
+        simulator_port=1503,
+        unit_id=1,
+        use_remote_modbus=True,
+    )
+    coil_writes: list[tuple[str, int, bool]] = []
+    register_writes: list[tuple[str, int, int]] = []
+
+    @contextmanager
+    def fake_clients():
+        yield "ctrl", "sim"
+
+    monkeypatch.setattr(testbed, "clients", fake_clients)
+    monkeypatch.setattr(
+        testbed,
+        "_write_remote_coil",
+        lambda client, address, value: coil_writes.append((client, address, bool(value))),
+    )
+    monkeypatch.setattr(
+        testbed,
+        "_write_remote_register",
+        lambda client, address, value: register_writes.append((client, address, int(value))),
+    )
+    monkeypatch.setattr(
+        testbed,
+        "observe_flat",
+        lambda: {
+            "STATE_NAME": "IDLE",
+            "Supply_Tank_Level": 920,
+            "Grid_Elev_Tank_Level": 940,
+            "RWS_Tank_Level": 500,
+        },
+    )
+
+    snapshot = testbed.reset(
+        {
+            "Supply_Tank_Level": 920,
+            "Grid_Elev_Tank_Level": 940,
+            "RWS_Tank_Level": 500,
+        },
+        wait_sec=0.0,
+    )
+
+    assert snapshot["STATE_NAME"] == "IDLE"
+    assert ("ctrl", 2, True) in coil_writes
+    assert ("ctrl", 2, False) in coil_writes
+    assert ("sim", SIMULATOR_RUNTIME_HOLD_COIL, True) in coil_writes
+    for address in SIMULATOR_COMMAND_COIL_MAP.values():
+        assert ("sim", address, False) in coil_writes
+    for address in SIMULATOR_PROCESS_CONTROL_REGISTER_MAP.values():
+        assert ("sim", address, 0) in register_writes
 
 
 def test_distribution_white_box_config_matches_treatment_strength_knobs() -> None:

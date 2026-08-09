@@ -36,6 +36,9 @@ from .testbeds.water_distribution import (
     RUNTIME_RESET_COIL,
     SENSOR_OVERRIDE_ENABLE_REGISTER_MAP,
     SENSOR_OVERRIDE_VALUE_REGISTER_MAP,
+    SIMULATOR_COMMAND_COIL_MAP,
+    SIMULATOR_PROCESS_CONTROL_REGISTER_MAP,
+    SIMULATOR_RUNTIME_HOLD_COIL,
     SIMULATOR_LEVEL_APPLY_REGISTER_MAP,
     SIMULATOR_LEVEL_SEED_REGISTER_MAP,
     STATE_COIL_MAP,
@@ -312,10 +315,12 @@ class SimulatorRuntime(_BaseRuntime):
         self.supply_pump_flow = 0.0
         self._publish_outputs()
 
-    def _apply_level_seed_updates(self) -> None:
+    def _apply_level_seed_updates(self) -> bool:
+        applied = False
         for field, apply_address in SIMULATOR_LEVEL_APPLY_REGISTER_MAP.items():
             if self._read_holding(apply_address) != 1:
                 continue
+            applied = True
             value = float(self._read_holding(SIMULATOR_LEVEL_SEED_REGISTER_MAP[field]))
             if field == "Supply_Tank_Level":
                 self.levels[field] = _clamp(value, 0.0, 1500.0)
@@ -326,6 +331,7 @@ class SimulatorRuntime(_BaseRuntime):
             elif field == "RWS_Tank_Level":
                 self.levels[field] = _clamp(value, 0.0, 1500.0)
             self._write_holding(apply_address, 0)
+        return applied
 
     def _override_level(self, field: str, actual: float) -> int:
         enabled = self._read_holding(SENSOR_OVERRIDE_ENABLE_REGISTER_MAP[field]) == 1
@@ -347,21 +353,53 @@ class SimulatorRuntime(_BaseRuntime):
             [
                 1 if self.supply_pump_flow > 0.1 else 0,
                 1,
-                1 if self._read_coil(24) == 1 and self.supply_pump_flow > 0.1 else 0,
-                1 if self._read_coil(25) == 1 else 0,
-                1 if self._read_holding(201) > 0 and self._read_coil(26) == 1 else 0,
-                1 if self._read_coil(26) == 1 else 0,
+                1
+                if self._read_coil(SIMULATOR_COMMAND_COIL_MAP["Supply_Tank_Valve_Cmd"]) == 1
+                and self.supply_pump_flow > 0.1
+                else 0,
+                1 if self._read_coil(SIMULATOR_COMMAND_COIL_MAP["Grid_Elev_Valve_Cmd"]) == 1 else 0,
+                1
+                if self._read_holding(
+                    SIMULATOR_PROCESS_CONTROL_REGISTER_MAP["RWS_Pump_Speed_Cmd"]
+                ) > 0
+                and self._read_coil(SIMULATOR_COMMAND_COIL_MAP["RWS_Tank_Valve_Cmd"]) == 1
+                else 0,
+                1 if self._read_coil(SIMULATOR_COMMAND_COIL_MAP["RWS_Tank_Valve_Cmd"]) == 1 else 0,
             ],
         )
 
     def _scan_once(self) -> None:
-        self._apply_level_seed_updates()
+        seeded_this_scan = self._apply_level_seed_updates()
+        if seeded_this_scan or self._read_coil(SIMULATOR_RUNTIME_HOLD_COIL) == 1:
+            self.supply_pump_flow = 0.0
+            self._publish_outputs()
+            return
 
-        supply_speed = float(max(0, self._read_holding(200)))
-        rws_speed = float(max(0, self._read_holding(201)))
-        supply_valve_open = self._read_coil(24) == 1
-        grid_valve_open = self._read_coil(25) == 1
-        rws_valve_open = self._read_coil(26) == 1
+        supply_speed = float(
+            max(
+                0,
+                self._read_holding(
+                    SIMULATOR_PROCESS_CONTROL_REGISTER_MAP["Supply_Pump_Speed_Cmd"]
+                ),
+            )
+        )
+        rws_speed = float(
+            max(
+                0,
+                self._read_holding(
+                    SIMULATOR_PROCESS_CONTROL_REGISTER_MAP["RWS_Pump_Speed_Cmd"]
+                ),
+            )
+        )
+        supply_valve_open = self._read_coil(
+            SIMULATOR_COMMAND_COIL_MAP["Supply_Tank_Valve_Cmd"]
+        ) == 1
+        grid_valve_open = self._read_coil(
+            SIMULATOR_COMMAND_COIL_MAP["Grid_Elev_Valve_Cmd"]
+        ) == 1
+        rws_valve_open = self._read_coil(
+            SIMULATOR_COMMAND_COIL_MAP["RWS_Tank_Valve_Cmd"]
+        ) == 1
 
         supply_flow = (supply_speed / 100.0) * 200.0 if supply_valve_open else 0.0
         rws_flow = (rws_speed / 100.0) * 38.0 if rws_valve_open else 0.0

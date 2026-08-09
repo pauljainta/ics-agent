@@ -1551,7 +1551,10 @@ class SeededBackboneRunner:
 
     def _validate_distribution_environment(self) -> None:
         payload = _read_json(self.environment_validation_path, {})
-        if payload.get("status") == "passed":
+        if (
+            payload.get("status") == "passed"
+            and (payload.get("initial_state_validation") or {}).get("status") == "passed"
+        ):
             self._set_phase("validated_distribution_environment", "completed")
             return
         self._set_phase("validated_distribution_environment", "in_progress")
@@ -1585,11 +1588,20 @@ class SeededBackboneRunner:
                         "xdc": backend._xdc_ref,
                     },
                     "reset_state": {
-                        "state_name": reset_snapshot.get("STATE_NAME")
+                            "state_name": reset_snapshot.get("STATE_NAME")
                         or reset_snapshot.get("state_name"),
                     },
+                    "initial_state_validation": reset_snapshot.get(
+                        "initial_state_validation"
+                    ),
+                    "post_reset_observation": reset_snapshot.get(
+                        "post_reset_observation"
+                    ),
                     "local_observation": {
                         "state_name": observation.get("STATE_NAME"),
+                        "Supply_Tank_Level": observation.get("Supply_Tank_Level"),
+                        "Grid_Elev_Tank_Level": observation.get("Grid_Elev_Tank_Level"),
+                        "RWS_Tank_Level": observation.get("RWS_Tank_Level"),
                     },
                     "discovery_surface_sample": discovery.get("reconnaissance", {}),
                 }

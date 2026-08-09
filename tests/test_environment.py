@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import MethodType
+
+import pytest
 
 from ics_agent import environment as environment_module
-from ics_agent.environment import OpenPLCEnvironment
+from ics_agent.environment import EnvironmentError, OpenPLCEnvironment
 
 
 def _fresh_env(fake_openplc) -> OpenPLCEnvironment:
@@ -140,3 +143,129 @@ def test_vendor_openplc_payload_imports_without_workspace_repos(monkeypatch, tmp
     for module in imported.values():
         module_path = Path(module.__file__).resolve()
         assert vendor_scripts in module_path.parents
+
+
+class _FakeDistributionTestbed:
+    def __init__(self, reset_snapshot: dict[str, object]) -> None:
+        self.reset_snapshot = dict(reset_snapshot)
+        self.clear_calls = 0
+        self.reset_calls: list[dict[str, object]] = []
+
+    def _clear_external_controls(self) -> None:
+        self.clear_calls += 1
+
+    def reset(self, initial_conditions=None, *, wait_sec: float) -> dict[str, object]:
+        self.reset_calls.append(
+            {
+                "initial_conditions": dict(initial_conditions or {}),
+                "wait_sec": wait_sec,
+            }
+        )
+        return dict(self.reset_snapshot)
+
+
+class _FakeDistributionDirectEnv:
+    def __init__(
+        self,
+        *,
+        testbed: _FakeDistributionTestbed,
+        observations: list[dict[str, object]],
+    ) -> None:
+        self.testbed = testbed
+        self._observations = [dict(item) for item in observations]
+        self.clear_runtime_containment_calls = 0
+
+    def clear_runtime_containment(self) -> None:
+        self.clear_runtime_containment_calls += 1
+
+    def observe_flat(self) -> dict[str, object]:
+        if len(self._observations) > 1:
+            return self._observations.pop(0)
+        return dict(self._observations[0])
+
+
+def _distribution_backend(
+    fake_direct_env: _FakeDistributionDirectEnv,
+) -> environment_module._SphereOpenPLCBackend:
+    backend = environment_module._SphereOpenPLCBackend(
+        {
+            "testbed": "water_distribution",
+            "backend": "sphere_openplc",
+            "start_bridge": False,
+            "remote_reset_mode": "soft_reseed",
+            "soft_reset_level_wait_sec": 0.0,
+            "reset_wait_sec": 0.0,
+            "initial_state_validation_timeout_sec": 0.0,
+        }
+    )
+    backend._require_direct_env = MethodType(lambda self: fake_direct_env, backend)
+    return backend
+
+
+def test_distribution_backend_reset_uses_testbed_reset_and_records_validation() -> None:
+    expected = {
+        "Supply_Tank_Level": 920.0,
+        "Grid_Elev_Tank_Level": 940.0,
+        "RWS_Tank_Level": 500.0,
+    }
+    reset_snapshot = {
+        "STATE_NAME": "IDLE",
+        "Supply_Tank_Level": 920.0,
+        "Grid_Elev_Tank_Level": 940.0,
+        "Grid_Consum_Tank_Level": 820.0,
+        "RWS_Tank_Level": 500.0,
+    }
+    fake_testbed = _FakeDistributionTestbed(reset_snapshot)
+    fake_direct_env = _FakeDistributionDirectEnv(
+        testbed=fake_testbed,
+        observations=[reset_snapshot],
+    )
+    backend = _distribution_backend(fake_direct_env)
+
+    result = backend.reset({"Supply_Tank_Level": 920, "Grid_Elev_Tank_Level": 940})
+
+    assert fake_direct_env.clear_runtime_containment_calls == 1
+    assert fake_testbed.clear_calls == 2
+    assert len(fake_testbed.reset_calls) == 1
+    assert (
+        fake_testbed.reset_calls[0]["initial_conditions"]["Supply_Tank_Level"] == 920
+    )
+    assert (
+        fake_testbed.reset_calls[0]["initial_conditions"]["Grid_Elev_Tank_Level"] == 940
+    )
+    assert fake_testbed.reset_calls[0]["wait_sec"] == 0.0
+    assert result["post_reset_observation"]["STATE_NAME"] == "IDLE"
+    assert result["initial_state_validation"]["status"] == "passed"
+    assert result["initial_state_validation"]["expected"] == expected
+    assert result["initial_state_validation"]["observed"] == expected
+
+
+def test_distribution_backend_reset_fails_loudly_on_initial_state_mismatch() -> None:
+    reset_snapshot = {
+        "STATE_NAME": "IDLE",
+        "Supply_Tank_Level": 8180.0,
+        "Grid_Elev_Tank_Level": 2200.0,
+        "Grid_Consum_Tank_Level": 920.0,
+        "RWS_Tank_Level": 1650.0,
+    }
+    fake_testbed = _FakeDistributionTestbed(reset_snapshot)
+    fake_direct_env = _FakeDistributionDirectEnv(
+        testbed=fake_testbed,
+        observations=[reset_snapshot],
+    )
+    backend = _distribution_backend(fake_direct_env)
+
+    with pytest.raises(EnvironmentError) as exc_info:
+        backend.reset(
+            {
+                "Supply_Tank_Level": 920,
+                "Grid_Elev_Tank_Level": 940,
+                "RWS_Tank_Level": 500,
+            }
+        )
+
+    message = str(exc_info.value)
+    assert "initial-state validation failed" in message
+    assert "Supply_Tank_Level: expected 920.0, observed 8180.0" in message
+    assert "Grid_Elev_Tank_Level: expected 940.0, observed 2200.0" in message
+    assert "RWS_Tank_Level: expected 500.0, observed 1650.0" in message
