@@ -3236,7 +3236,7 @@ class AgenticRoleAgent(RoleAgent):
         )
         risk_flags = set(str(item) for item in telemetry_summary.get("risk_flags", []))
         sensor_profiles = dict(
-            self._white_box_sensor_breach_profiles(
+            self._white_box_sensor_attack_profiles(
                 observation=observation,
                 safety_bounds=safety_bounds,
             )
@@ -8486,13 +8486,14 @@ class AgenticRoleAgent(RoleAgent):
         state_name = str(observation.get("STATE_NAME", "")).upper()
         plant_running = state_name in {"RUNNING", "STARTING"}
         process_id = str((getattr(scenario, "execution", {}) or {}).get("process_id") or "")
-        safety_bounds = dict(scenario.metadata.get("safety_bounds", {}))
+        safety_bounds = self._white_box_visible_safety_bounds(scenario)
         sensor_profiles = dict(
-            self._white_box_sensor_breach_profiles(
+            self._white_box_sensor_attack_profiles(
                 observation=observation,
                 safety_bounds=safety_bounds,
             )
         )
+        ablation = self._white_box_knowledge_ablation()
         direct_commit = bool(structured_memory.get("white_box_direct_commit"))
         current_phase = str(structured_memory.get("current_phase", "probing"))
         detection_pressure = str(
@@ -8563,6 +8564,11 @@ class AgenticRoleAgent(RoleAgent):
             if focus_surfaces
             else str((surface_priors[0] or {}).get("surface") or "sensor_manipulation")
         )
+        if ablation == "no_surface_priors":
+            direct_commit = False
+            committed_surface = "unknown"
+            focus_surfaces = []
+            top_surface = "unknown"
         sensor_prior = next(
             (
                 item
@@ -8656,6 +8662,17 @@ class AgenticRoleAgent(RoleAgent):
             *,
             sustain: bool,
         ) -> str:
+            stance = "Sustain" if sustain else "Drive"
+            if ablation == "no_control_semantics":
+                return f"{stance} `{field_name}` to a stronger bounded value now."
+            if ablation == "no_surface_priors":
+                if sustain:
+                    return (
+                        f"Sustain `{field_name}` only while live evidence keeps the named path worthwhile."
+                    )
+                return (
+                    f"Push `{field_name}` toward a stronger bounded value only if live evidence keeps it worthwhile."
+                )
             effects = {
                 ("Supply_Tank_Level", "low"): "keep the controller demanding excess supply refill.",
                 ("Supply_Tank_Level", "high"): "suppress refill demand or trip the supply high-high path.",
@@ -8665,7 +8682,6 @@ class AgenticRoleAgent(RoleAgent):
                 ("RWS_Tank_Level", "high"): "latch the return path on longer than the process warrants.",
             }
             ceiling = self._coerce_number((safety_bounds.get(field_name) or {}).get("max"))
-            stance = "Sustain" if sustain else "Drive"
             if (
                 direction == "high"
                 and ceiling is not None
@@ -8681,18 +8697,28 @@ class AgenticRoleAgent(RoleAgent):
                     f"sensor write path to {effects.get((field_name, direction), 'pressure the controller immediately.')}"
                 )
             return (
-                f"{stance} `{field_name}` {direction} through the sensor write path to "
+                f"{stance} `{field_name}` {direction} through the bounded sensor path to "
                 f"{effects.get((field_name, direction), 'pressure the controller with a stronger bounded spoof.')}"
             )
 
         def actuator_summary(actuator_name: str, *, sustain: bool) -> str:
+            stance = "Sustain" if sustain else "Force"
+            if ablation == "no_control_semantics":
+                return f"{stance} `{actuator_name}` through its bounded write path now."
+            if ablation == "no_surface_priors":
+                if sustain:
+                    return (
+                        f"Sustain `{actuator_name}` only while live evidence keeps the named path worthwhile."
+                    )
+                return (
+                    f"Use `{actuator_name}` through the bounded actuator path only if live evidence keeps it worthwhile."
+                )
             effects = {
                 "Supply_Pump_Speed": "keep transfer pinned high after the controller would normally relax.",
                 "Grid_Elev_Valve": "hold the elevated-grid fill path open regardless of controller intent.",
                 "RWS_Pump_Speed": "force recirculation on even when the controller would leave it idle.",
                 "RWS_Tank_Valve": "sustain return-water flow through the bounded actuator path.",
             }
-            stance = "Sustain" if sustain else "Force"
             return (
                 f"{stance} `{actuator_name}` through the actuator write path to "
                 f"{effects.get(actuator_name, 'assert a direct bounded physical control effect.')}"
@@ -8700,15 +8726,48 @@ class AgenticRoleAgent(RoleAgent):
 
         primary_process_id = "WD-UC0"
         if not plant_running and "hmi_start" in allowed:
+            if ablation == "no_control_semantics":
+                start_summary = "Use `hmi_start` through the named bounded action now."
+            elif ablation == "no_surface_priors":
+                start_summary = (
+                    "Use `hmi_start` only if live evidence still supports that named path."
+                )
+            else:
+                start_summary = (
+                    "Start WD-UC0 so the chosen white-box sensor or actuator path produces real process effect."
+                )
             add_candidate(
-                "Start WD-UC0 so the chosen white-box sensor or actuator path produces real process effect.",
+                start_summary,
                 {"type": "hmi_start", "process_id": primary_process_id},
                 priority=surface_priority(top_surface, category="support", offset=10),
                 surface="availability_disruption",
                 category="support",
             )
 
-        if process_id == "WD-Supply":
+        if ablation == "no_surface_priors" or process_id not in {
+            "WD-Supply",
+            "WD-Grid",
+            "WD-RWS",
+        }:
+            sensor_targets = [
+                ("Supply_Tank_Level", "high"),
+                ("Grid_Elev_Tank_Level", "low"),
+                ("RWS_Tank_Level", "high"),
+            ]
+            actuator_specs = [
+                ("Grid_Elev_Valve", True),
+                ("RWS_Pump_Speed", 100),
+                ("RWS_Tank_Valve", True),
+                ("Supply_Pump_Speed", 100),
+            ]
+            recon_surfaces = [
+                "sensor_write_path",
+                "actuator_write_path",
+                "supply_control_plane",
+                "grid_control_plane",
+                "return_control_plane",
+            ]
+        elif process_id == "WD-Supply":
             sensor_targets = [("Supply_Tank_Level", "high")]
             actuator_specs = [("Supply_Pump_Speed", 100)]
             recon_surfaces = [
@@ -8730,24 +8789,6 @@ class AgenticRoleAgent(RoleAgent):
             recon_surfaces = [
                 "sensor_write_path",
                 "actuator_write_path",
-                "return_control_plane",
-            ]
-        else:
-            sensor_targets = [
-                ("Supply_Tank_Level", "high"),
-                ("Grid_Elev_Tank_Level", "low"),
-                ("RWS_Tank_Level", "high"),
-            ]
-            actuator_specs = [
-                ("Grid_Elev_Valve", True),
-                ("RWS_Pump_Speed", 100),
-                ("RWS_Tank_Valve", True),
-                ("Supply_Pump_Speed", 100),
-            ]
-            recon_surfaces = [
-                "sensor_write_path",
-                "actuator_write_path",
-                "grid_control_plane",
                 "return_control_plane",
             ]
 
@@ -8872,8 +8913,18 @@ class AgenticRoleAgent(RoleAgent):
             )
 
         if plant_running and "hmi_stop" in allowed:
+            if ablation == "no_control_semantics":
+                stop_summary = "Use `hmi_stop` through the named bounded action now."
+            elif ablation == "no_surface_priors":
+                stop_summary = (
+                    "Use `hmi_stop` only if live evidence now makes that named path worthwhile."
+                )
+            else:
+                stop_summary = (
+                    "Stop WD-UC0 only as a bounded fallback if the faster sensor and actuator paths are blocked."
+                )
             add_candidate(
-                "Stop WD-UC0 only as a bounded fallback if the faster sensor and actuator paths are blocked.",
+                stop_summary,
                 {"type": "hmi_stop", "process_id": primary_process_id},
                 priority=surface_priority(
                     "availability_disruption",
@@ -8884,8 +8935,18 @@ class AgenticRoleAgent(RoleAgent):
                 category="fallback",
             )
         if plant_running and "hmi_estop" in allowed:
+            if ablation == "no_control_semantics":
+                estop_summary = "Use `hmi_estop` through the named bounded action now."
+            elif ablation == "no_surface_priors":
+                estop_summary = (
+                    "Use `hmi_estop` only if live evidence now makes that named path worthwhile."
+                )
+            else:
+                estop_summary = (
+                    "Escalate to estop only if a direct availability hit is the shortest remaining bounded impact path."
+                )
             add_candidate(
-                "Escalate to estop only if a direct availability hit is the shortest remaining bounded impact path.",
+                estop_summary,
                 {"type": "hmi_estop", "process_id": primary_process_id},
                 priority=surface_priority(
                     "availability_disruption",
@@ -8914,8 +8975,20 @@ class AgenticRoleAgent(RoleAgent):
                         qualification=False,
                     )[:2]
                 ):
+                    if ablation == "no_control_semantics":
+                        recon_summary = (
+                            f"Inspect `{surface_name}` once to qualify the next reachable surface."
+                        )
+                    elif ablation == "no_surface_priors":
+                        recon_summary = (
+                            f"Inspect `{surface_name}` once to compare the next reachable surface."
+                        )
+                    else:
+                        recon_summary = (
+                            f"Inspect `{surface_name}` once to confirm the fastest bounded distribution leverage path."
+                        )
                     add_candidate(
-                        f"Inspect `{surface_name}` once to confirm the fastest bounded distribution leverage path.",
+                        recon_summary,
                         {"type": "inspect_surface", "surface": surface_name},
                         priority=surface_priority(
                             top_surface,
@@ -8926,9 +8999,17 @@ class AgenticRoleAgent(RoleAgent):
                         category="recon",
                     )
 
-        noop_candidate = self._noop_candidate(
-            "Hold only if every bounded supply, grid, and return-water exploit path is currently blocked."
-        )
+        if ablation == "no_control_semantics":
+            noop_summary = "Hold only if no bounded named action is more useful right now."
+        elif ablation == "no_surface_priors":
+            noop_summary = (
+                "Hold only if no live-evidence-backed bounded path currently looks worthwhile."
+            )
+        else:
+            noop_summary = (
+                "Hold only if every bounded supply, grid, and return-water exploit path is currently blocked."
+            )
+        noop_candidate = self._noop_candidate(noop_summary)
         if noop_candidate is not None:
             noop_candidate["priority"] = surface_priority(top_surface, category="hold")
             noop_candidate["surface"] = top_surface
@@ -9997,6 +10078,9 @@ class AgenticRoleAgent(RoleAgent):
                     )
                 ][:6],
             }
+            process_context["active_alarms"] = []
+            process_context["risk_flags"] = []
+            process_context["relationship_notes"] = []
 
         sanitized["process_context"] = process_context
         return sanitized
