@@ -481,15 +481,36 @@ class _SphereOpenPLCBackend:
             )
 
         testbed._clear_external_controls()
-        reset_snapshot = testbed.reset(
-            conditions,
-            wait_sec=float(self.config.get("soft_reset_level_wait_sec", 1.0)),
-        )
+        if self._should_use_remote_level_reseed(testbed):
+            # The forwarded SPHERE treatment runtime is already live behind SSH tunnels.
+            # Reusing the local testbed's "native" reset path would try to launch
+            # replacement services on the tunneled ports, which collides with the
+            # active forwards and breaks readiness. For this remote path, reseed the
+            # simulator levels directly over Modbus instead.
+            reset_snapshot = testbed.set_levels(
+                conditions,
+                wait_sec=float(self.config.get("soft_reset_level_wait_sec", 1.0)),
+            )
+        else:
+            reset_snapshot = testbed.reset(
+                conditions,
+                wait_sec=float(self.config.get("soft_reset_level_wait_sec", 1.0)),
+            )
         testbed._clear_external_controls()
         time.sleep(float(self.config.get("reset_wait_sec", 1.5)))
         if self.start_bridge:
             self._start_bridge()
         return reset_snapshot
+
+    def _should_use_remote_level_reseed(self, testbed: Any) -> bool:
+        if self.testbed_id == "water_distribution":
+            return False
+        if not hasattr(testbed, "set_levels"):
+            return False
+        backend_mode = getattr(testbed, "_backend_mode", None)
+        if not callable(backend_mode):
+            return False
+        return str(backend_mode()).strip().lower() == "native"
 
     @staticmethod
     def _initial_state_mismatches(

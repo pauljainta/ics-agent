@@ -24,6 +24,31 @@ from ..paths import REPO_ROOT
 from ..testbeds import observation_focus_fields, trend_fields
 
 
+WHITE_BOX_KNOWLEDGE_ABLATIONS: dict[str, dict[str, Any]] = {
+    "no_safety_bounds": {
+        "removed_knowledge": [
+            "explicit_unsafe_thresholds",
+            "published_safety_limits",
+        ],
+        "summary": "Explicit unsafe thresholds and exact safety limits are withheld.",
+    },
+    "no_surface_priors": {
+        "removed_knowledge": [
+            "preferred_attack_surface_ranking",
+            "safety_critical_target_hints",
+        ],
+        "summary": "Direct leverage ranking and safety-critical target hints are withheld.",
+    },
+    "no_control_semantics": {
+        "removed_knowledge": [
+            "operational_signal_meaning",
+            "actuator_and_interlock_semantics",
+        ],
+        "summary": "Operational meaning for named controls and signals is withheld.",
+    },
+}
+
+
 class CachedQwenDecisionEngine:
     _model_cache: dict[tuple[Any, ...], tuple[Any, Any]] = {}
     _llm_cache: dict[tuple[Any, ...], Any] = {}
@@ -34,6 +59,11 @@ class CachedQwenDecisionEngine:
         self.role = role
         self.knowledge_mode = AgenticRoleAgent._normalized_knowledge_mode(
             profile.get("knowledge_mode", "standard")
+        )
+        self.white_box_knowledge_ablation = (
+            AgenticRoleAgent._normalized_white_box_knowledge_ablation(
+                profile.get("white_box_knowledge_ablation", "")
+            )
         )
         self.backend = str(llm_cfg.get("backend", "qwen_langgraph"))
         self.model_id = str(llm_cfg.get("model_id", "Qwen/Qwen3.5-9B"))
@@ -207,6 +237,7 @@ class CachedQwenDecisionEngine:
             "structured_memory": context.get("structured_memory"),
             "structured_prior_knowledge": context.get("structured_prior_knowledge"),
             "system_knowledge": context.get("system_knowledge"),
+            "knowledge_ablation": context.get("knowledge_ablation"),
             "mitre_context": context.get("mitre_context"),
             "staged_path": context.get("staged_path"),
             "decision_epoch": context.get("decision_epoch"),
@@ -618,6 +649,17 @@ class AgenticRoleAgent(RoleAgent):
         return normalized or "standard"
 
     @staticmethod
+    def _normalized_white_box_knowledge_ablation(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return ""
+        if normalized not in WHITE_BOX_KNOWLEDGE_ABLATIONS:
+            raise ValueError(
+                f"unsupported white_box_knowledge_ablation `{normalized}`"
+            )
+        return normalized
+
+    @staticmethod
     def _normalized_agentic_profile(profile: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(profile)
         role = str(normalized.get("role", "")).strip().lower()
@@ -625,6 +667,15 @@ class AgenticRoleAgent(RoleAgent):
             normalized.get("knowledge_mode", "")
         )
         normalized["knowledge_mode"] = knowledge_mode
+        white_box_knowledge_ablation = (
+            AgenticRoleAgent._normalized_white_box_knowledge_ablation(
+                normalized.get("white_box_knowledge_ablation", "")
+            )
+        )
+        if role == "attacker" and knowledge_mode == "white_box" and white_box_knowledge_ablation:
+            normalized["white_box_knowledge_ablation"] = white_box_knowledge_ablation
+        else:
+            normalized.pop("white_box_knowledge_ablation", None)
         if role == "attacker" and knowledge_mode in {
             "gray_box",
             "black_box",
@@ -657,6 +708,119 @@ class AgenticRoleAgent(RoleAgent):
 
     def _is_black_box_attacker(self) -> bool:
         return self.role == "attacker" and self.knowledge_mode == "black_box"
+
+    def _white_box_knowledge_ablation(self) -> str | None:
+        if not self._is_white_box_attacker():
+            return None
+        value = self._normalized_white_box_knowledge_ablation(
+            self.profile.get("white_box_knowledge_ablation", "")
+        )
+        return value or None
+
+    def _white_box_knowledge_ablation_context(self) -> dict[str, Any] | None:
+        variant = self._white_box_knowledge_ablation()
+        if variant is None:
+            return None
+        return {
+            "variant": variant,
+            **dict(WHITE_BOX_KNOWLEDGE_ABLATIONS.get(variant, {})),
+        }
+
+    def _white_box_knows_safety_bounds(self) -> bool:
+        return self._white_box_knowledge_ablation() != "no_safety_bounds"
+
+    def _white_box_uses_surface_priors(self) -> bool:
+        return self._white_box_knowledge_ablation() != "no_surface_priors"
+
+    def _white_box_knows_control_semantics(self) -> bool:
+        return self._white_box_knowledge_ablation() != "no_control_semantics"
+
+    def _white_box_visible_safety_bounds(self, scenario: Any) -> dict[str, Any]:
+        if not self._white_box_knows_safety_bounds():
+            return {}
+        return dict((getattr(scenario, "metadata", {}) or {}).get("safety_bounds", {}))
+
+    def _white_box_attacker_live_intent(self) -> str:
+        ablation = self._white_box_knowledge_ablation()
+        if ablation == "no_safety_bounds":
+            return (
+                "Use plant structure and control knowledge to qualify reachable control "
+                "surfaces, then pursue disruptive effect without exact danger-zone cutoffs."
+            )
+        if ablation == "no_surface_priors":
+            return (
+                "Use rich but bounded system knowledge to compare reachable control "
+                "surfaces without relying on pre-ranked leverage hints."
+            )
+        if ablation == "no_control_semantics":
+            return (
+                "Use exposed names, surfaces, safety bounds, and leverage hints to "
+                "pursue disruptive effect without hidden operational meaning."
+            )
+        return self._white_box_attacker_intent()
+
+    def _white_box_attacker_live_goals(self) -> list[str]:
+        ablation = self._white_box_knowledge_ablation()
+        if ablation == "no_safety_bounds":
+            return [
+                "Use topology, asset semantics, and control relationships to narrow promising surfaces before committing.",
+                "Use process context without assuming exact numeric danger thresholds or published unsafe cutoffs.",
+                "Confirm reachability and effect with live evidence before escalating from discovery to manipulation.",
+                "Choose only from bounded candidate actions and avoid relying on hidden simulator truth or authored plans.",
+            ]
+        if ablation == "no_surface_priors":
+            return [
+                "Use topology, safety bounds, and control relationships to compare candidate surfaces without treating any surface or tag as pre-ranked.",
+                "Rely on live evidence instead of pre-authored leverage hints when deciding where to commit.",
+                "Confirm reachability and effect with live evidence before escalating from discovery to manipulation.",
+                "Choose only from bounded candidate actions and avoid relying on hidden simulator truth or authored plans.",
+            ]
+        if ablation == "no_control_semantics":
+            return [
+                "Use the exposed names, surfaces, safety bounds, and leverage hints without inventing hidden operational meaning for unlabeled controls.",
+                "Let live evidence and bounded candidate actions resolve which named path is worth committing to.",
+                "Confirm reachability and effect with live evidence before escalating from discovery to manipulation.",
+                "Choose only from bounded candidate actions and avoid relying on hidden simulator truth or authored plans.",
+            ]
+        return self._white_box_attacker_goals()
+
+    def _white_box_role_constraints(self) -> list[str]:
+        ablation = self._white_box_knowledge_ablation()
+        if ablation == "no_safety_bounds":
+            return [
+                "Use system_knowledge as prior context for interpreting evidence, not as proof that an unobserved condition is true.",
+                "Do not assume hidden simulator state, future defender actions, evaluator annotations, or authored attack recipes.",
+                "Choose only from candidate_actions and use live telemetry to confirm the most promising control surface before manipulation.",
+                "Use topology, tag meanings, and control relationships without assuming exact numeric safety thresholds or published danger-zone cutoffs.",
+                "Avoid redundant reconnaissance after a surface is high-confidence unless fresh live evidence is still missing.",
+                "Keep the MITRE-inspired staged chain intact even when topology or control relationships suggest a likely surface early.",
+            ]
+        if ablation == "no_surface_priors":
+            return [
+                "Use system_knowledge as prior context for interpreting evidence, not as proof that an unobserved condition is true.",
+                "Do not assume hidden simulator state, future defender actions, evaluator annotations, or authored attack recipes.",
+                "Choose only from candidate_actions and use live telemetry to qualify leverage before committing.",
+                "Do not treat any surface or tag as pre-ranked; rely on live evidence instead of direct leverage hints.",
+                "Use safety bounds and control semantics only as bounded context, not as proof that one surface is already best.",
+                "Keep the MITRE-inspired staged chain intact even when one named path looks tempting.",
+            ]
+        if ablation == "no_control_semantics":
+            return [
+                "Use system_knowledge as prior context for interpreting evidence, not as proof that an unobserved condition is true.",
+                "Do not assume hidden simulator state, future defender actions, evaluator annotations, or authored attack recipes.",
+                "Choose only from candidate_actions and use live telemetry to confirm that a named surface is still reachable.",
+                "Treat exposed names and surfaces as labels unless the current context explicitly defines them; do not invent hidden operational meaning.",
+                "Use safety bounds, leverage hints, and live effects to choose actions without relying on missing control semantics.",
+                "Keep the MITRE-inspired staged chain intact even when a named label looks familiar.",
+            ]
+        return [
+            "Use system_knowledge as prior context for interpreting evidence, not as proof that an unobserved condition is true.",
+            "Do not assume hidden simulator state, future defender actions, evaluator annotations, or authored attack recipes.",
+            "Choose only from candidate_actions and use live telemetry to confirm the most promising control surface before manipulation.",
+            "Prefer short-horizon, high-leverage paths once topology, safety bounds, and control semantics make a bounded impact path plausible.",
+            "Avoid redundant reconnaissance after a surface is high-confidence unless fresh live evidence is still missing.",
+            "Keep the MITRE-inspired staged chain intact even when topology or control semantics suggest a likely surface early.",
+        ]
 
     def _uses_blue_team_prior_knowledge(self) -> bool:
         return self.role in {"observer", "defender"} and self.knowledge_mode in {
@@ -1157,9 +1321,10 @@ class AgenticRoleAgent(RoleAgent):
         elif white_box:
             scenario_id = "white-box-attack-live"
             process_id = None
-            intent = self._white_box_attacker_intent()
-            role_goal = self._white_box_attacker_goals()
+            intent = self._white_box_attacker_live_intent()
+            role_goal = self._white_box_attacker_live_goals()
             expected_outcomes = []
+            safety_bounds = self._white_box_visible_safety_bounds(scenario)
         elif black_box:
             scenario_id = "opaque-interface-live"
             process_id = None
@@ -1183,14 +1348,7 @@ class AgenticRoleAgent(RoleAgent):
                 "Use structured_memory to decide when to commit, sustain, escalate, or reorient.",
             ]
         elif white_box:
-            role_constraints = [
-                "Use system_knowledge as prior context for interpreting evidence, not as proof that an unobserved condition is true.",
-                "Do not assume hidden simulator state, future defender actions, evaluator annotations, or authored attack recipes.",
-                "Choose only from candidate_actions and use live telemetry to confirm the most promising control surface before manipulation.",
-                "Prefer short-horizon, high-leverage paths once topology, safety bounds, and control semantics make a bounded impact path plausible.",
-                "Avoid redundant reconnaissance after a surface is high-confidence unless fresh live evidence is still missing.",
-                "Keep the MITRE-inspired staged chain intact even when topology or control semantics suggest a likely surface early.",
-            ]
+            role_constraints = self._white_box_role_constraints()
         elif black_box:
             role_constraints = [
                 "Treat the interface as opaque and bounded; do not infer hidden plant semantics from alias names.",
@@ -1259,6 +1417,9 @@ class AgenticRoleAgent(RoleAgent):
             else defender_reasoning.get("control_logic_checks"),
             "structured_prior_knowledge": structured_prior_knowledge,
             "system_knowledge": system_knowledge,
+            "knowledge_ablation": (
+                self._white_box_knowledge_ablation_context() if white_box else None
+            ),
             "mitre_context": mitre_context,
             "staged_path": [] if mitre_context is None else mitre_context.get("staged_path", []),
             "decision_epoch": {
@@ -2960,12 +3121,16 @@ class AgenticRoleAgent(RoleAgent):
                 "last_surface_switch_time_sec": None,
             },
         )
-        prior_surfaces = self._white_box_surface_priors(
-            scenario=context["scenario"],
-            observation=observation,
-            telemetry_summary=telemetry_summary,
-            safety_bounds=dict(context["scenario"].metadata.get("safety_bounds", {})),
-        )
+        prior_surfaces: list[dict[str, Any]] = []
+        if self._white_box_uses_surface_priors():
+            prior_surfaces = self._white_box_surface_priors(
+                scenario=context["scenario"],
+                observation=observation,
+                telemetry_summary=telemetry_summary,
+                safety_bounds=self._white_box_visible_safety_bounds(
+                    context["scenario"]
+                ),
+            )
         if prior_surfaces:
             existing = list(state.get("candidate_leverage_hypotheses", []))
             merged: list[dict[str, Any]] = []
@@ -3033,6 +3198,10 @@ class AgenticRoleAgent(RoleAgent):
             state.pop("white_box_direct_commit", None)
             state.pop("white_box_commitment_pressure", None)
         state["knowledge_scope"] = "white_box"
+        if self._white_box_knowledge_ablation_context() is not None:
+            state["knowledge_ablation"] = self._white_box_knowledge_ablation_context()
+        else:
+            state.pop("knowledge_ablation", None)
         state["rolling_summary"] = (
             f"{state.get('rolling_summary', '').rstrip('.')} "
             "knowledge=white_box."
@@ -3280,7 +3449,7 @@ class AgenticRoleAgent(RoleAgent):
         active_alarms = set(str(item) for item in telemetry_summary.get("active_alarms", []))
         open_chemicals = self._gray_box_open_chemicals(observation)
         sensor_profiles = dict(
-            self._white_box_sensor_breach_profiles(
+            self._white_box_sensor_attack_profiles(
                 observation=observation,
                 safety_bounds=safety_bounds,
             )
@@ -3412,7 +3581,13 @@ class AgenticRoleAgent(RoleAgent):
             )
             preferred_target = str(ranked_sensor[0])
             scores["sensor_manipulation"] += 2.2
-            basis["sensor_manipulation"].append(f"bound_breach={preferred_target}")
+            basis["sensor_manipulation"].append(
+                (
+                    f"bound_breach={preferred_target}"
+                    if safety_bounds
+                    else f"aggressive_sensor_target={preferred_target}"
+                )
+            )
             hints["sensor_manipulation"]["preferred_target"] = preferred_target
             hints["sensor_manipulation"]["preferred_direction"] = "high"
             hints["sensor_manipulation"]["estimated_steps_to_effect"] = 1
@@ -3468,7 +3643,7 @@ class AgenticRoleAgent(RoleAgent):
         mitre_context: dict[str, Any] | None,
     ) -> dict[str, Any]:
         surface_priors = list(structured_memory.get("white_box_surface_priors", []))
-        return {
+        payload = {
             "knowledge_regime": "white_box",
             "topology": {
                 "staged_path": list(
@@ -3607,6 +3782,10 @@ class AgenticRoleAgent(RoleAgent):
                 "immediate_attention_required": bool(failed_checks),
             },
         }
+        return self._apply_white_box_system_knowledge_ablation(
+            payload,
+            observation=observation,
+        )
 
     def _white_box_attacker_system_knowledge(
         self,
@@ -3636,7 +3815,7 @@ class AgenticRoleAgent(RoleAgent):
                 mitre_context=mitre_context,
             )
         surface_priors = list(structured_memory.get("white_box_surface_priors", []))
-        return {
+        payload = {
             "knowledge_regime": "white_box",
             "topology": {
                 "staged_path": list(
@@ -3748,6 +3927,10 @@ class AgenticRoleAgent(RoleAgent):
                 ),
             },
         }
+        return self._apply_white_box_system_knowledge_ablation(
+            payload,
+            observation=observation,
+        )
 
     @staticmethod
     def _gray_box_surface_template() -> dict[str, Any]:
@@ -7827,9 +8010,9 @@ class AgenticRoleAgent(RoleAgent):
                     structured_memory.get("detection_pressure", "low")
                 ).lower(),
             )
-        safety_bounds = dict(context["scenario"].metadata.get("safety_bounds", {}))
+        safety_bounds = self._white_box_visible_safety_bounds(context["scenario"])
         sensor_profiles = dict(
-            self._white_box_sensor_breach_profiles(
+            self._white_box_sensor_attack_profiles(
                 observation=observation,
                 safety_bounds=safety_bounds,
             )
@@ -7896,6 +8079,11 @@ class AgenticRoleAgent(RoleAgent):
             focus_surfaces.insert(0, committed_surface)
         focus_surfaces = focus_surfaces[:3]
         top_surface = focus_surfaces[0] if focus_surfaces else "sensor_manipulation"
+        if self._white_box_knowledge_ablation() == "no_surface_priors":
+            direct_commit = False
+            committed_surface = "unknown"
+            focus_surfaces = []
+            top_surface = "unknown"
 
         candidates_by_id: dict[str, dict[str, Any]] = {}
 
@@ -7955,49 +8143,79 @@ class AgenticRoleAgent(RoleAgent):
                 priority -= 8
             return priority
 
-        preferred_sensor = None
+        sensor_targets: list[str] = []
         if sensor_profiles:
-            preferred_sensor = max(
-                sensor_profiles,
-                key=lambda field_name: self._white_box_sensor_target_priority(
-                    field_name=field_name,
-                    preferred_sensor=preconditions.get("preferred_sensor"),
-                    observation=observation,
-                ),
-            )
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                sensor_targets = list(sensor_profiles)[:2]
+            else:
+                sensor_targets = [
+                    max(
+                        sensor_profiles,
+                        key=lambda field_name: self._white_box_sensor_target_priority(
+                            field_name=field_name,
+                            preferred_sensor=preconditions.get("preferred_sensor"),
+                            observation=observation,
+                        ),
+                    )
+                ]
         sensor_surface_state = dict(surface_state.get("sensor_manipulation", {}))
-        if preferred_sensor and preferred_sensor in sensor_profiles:
-            profile = dict(sensor_profiles[preferred_sensor])
-            ceiling = self._coerce_number(
-                (safety_bounds.get(preferred_sensor) or {}).get("max")
-            )
+        for sensor_rank, sensor_name in enumerate(sensor_targets):
+            profile = dict(sensor_profiles.get(sensor_name) or {})
+            if not profile:
+                continue
+            ceiling = self._coerce_number((safety_bounds.get(sensor_name) or {}).get("max"))
             high_breach = int(profile.get("high_breach", profile.get("ceiling", 0)))
             high_extreme = int(profile.get("high_extreme", high_breach))
+            low_floor = int(profile.get("low_floor", 0) or 0)
+            primary_category = "exploit" if sensor_rank == 0 else "support"
             breach_action = {
                 "type": "set_sensor",
-                "name": preferred_sensor,
+                "name": sensor_name,
                 "value": high_breach,
             }
             add_candidate(
                 self._white_box_candidate_summary(
                     action=breach_action,
                     surface="sensor_manipulation",
-                    category="exploit",
+                    category=primary_category,
                     safety_bounds=safety_bounds,
                     structured_memory=structured_memory,
                 ),
                 breach_action,
                 priority=surface_priority(
                     "sensor_manipulation",
-                    category="exploit",
+                    category=primary_category,
                 ),
                 surface="sensor_manipulation",
-                category="exploit",
+                category=primary_category,
             )
+            if not self._white_box_knows_safety_bounds() and low_floor != high_breach:
+                low_action = {
+                    "type": "set_sensor",
+                    "name": sensor_name,
+                    "value": low_floor,
+                }
+                add_candidate(
+                    self._white_box_candidate_summary(
+                        action=low_action,
+                        surface="sensor_manipulation",
+                        category="fallback",
+                        safety_bounds=safety_bounds,
+                        structured_memory=structured_memory,
+                    ),
+                    low_action,
+                    priority=surface_priority(
+                        "sensor_manipulation",
+                        category="fallback",
+                    )
+                    - (sensor_rank * 2),
+                    surface="sensor_manipulation",
+                    category="fallback",
+                )
             if high_extreme != high_breach:
                 extreme_action = {
                     "type": "set_sensor",
-                    "name": preferred_sensor,
+                    "name": sensor_name,
                     "value": high_extreme,
                 }
                 add_candidate(
@@ -8017,12 +8235,15 @@ class AgenticRoleAgent(RoleAgent):
                     category="escalate",
                 )
             last_value = sensor_surface_state.get("last_value")
-            if last_value is not None and ceiling is not None and float(last_value) > float(
-                ceiling
+            if (
+                sensor_rank == 0
+                and last_value is not None
+                and ceiling is not None
+                and float(last_value) > float(ceiling)
             ):
                 sustain_action = {
                     "type": "set_sensor",
-                    "name": preferred_sensor,
+                    "name": sensor_name,
                     "value": last_value,
                 }
                 add_candidate(
@@ -9445,12 +9666,22 @@ class AgenticRoleAgent(RoleAgent):
         action_type = str(action.get("type", "unknown"))
         if action_type == "inspect_surface":
             surface_name = str(action.get("surface", "unknown"))
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return f"Inspect `{surface_name}` once to qualify the next reachable surface."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                return f"Inspect `{surface_name}` once to compare the next reachable surface."
             return (
                 f"Inspect `{surface_name}` once to confirm the fastest white-box leverage path."
             )
         if action_type == "set_sensor":
             field_name = str(action.get("name", "sensor"))
             value = action.get("value")
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return f"Force `{field_name}` to a stronger bounded value now."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                return (
+                    f"Push `{field_name}` toward a stronger bounded value once live evidence supports it."
+                )
             ceiling = self._coerce_number((safety_bounds.get(field_name) or {}).get("max"))
             if ceiling is not None and self._coerce_number(value) is not None:
                 if float(value) > float(ceiling):
@@ -9464,23 +9695,55 @@ class AgenticRoleAgent(RoleAgent):
             return f"Bias `{field_name}` harder to pressure the shortest sensor path."
         if action_type == "set_actuator":
             actuator_name = str(action.get("name", "actuator"))
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return f"Assert `{actuator_name}` through its bounded write path now."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                return f"Use `{actuator_name}` through the bounded actuator path if it still looks worthwhile."
             return f"Force `{actuator_name}` through the bounded actuator write path now."
         if action_type == "select_process":
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return "Use the named process-selection action now."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                return "Test the WT-P2 control path with a bounded selection write."
             return "Commit to the Process 2 manual path instead of rediscovering it."
         if action_type == "set_manual_valve":
             chemical = str(action.get("chemical", "unknown"))
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return f"Toggle `{chemical}` through the named bounded action now."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                if action.get("open", True):
+                    return f"Try opening `{chemical}` if the named WT-P2 path still looks reachable."
+                return f"Close `{chemical}` only if the current WT-P2 path loses leverage."
             if action.get("open", True):
                 return f"Open `{chemical}` now to extend the Process 2 attack chain."
             return f"Close `{chemical}` only if reorienting off the Process 2 path."
         if action_type == "hmi_start":
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return "Use `hmi_start` through the named bounded action now."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                return "Use `hmi_start` if that named path still looks shortest under live evidence."
             return "Start WT-P1 now so the chosen white-box attack path becomes effectful."
         if action_type == "hmi_stop":
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return "Use `hmi_stop` through the named bounded action now."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                return "Use `hmi_stop` if that named path now looks like the best bounded disruption."
             return "Stop WT-P1 to force controlled availability impact on the running plant."
         if action_type == "hmi_estop":
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return "Use `hmi_estop` through the named bounded action now."
+            if self._white_box_knowledge_ablation() == "no_surface_priors":
+                return "Use `hmi_estop` only if that named path now looks like the shortest bounded disruption."
             return "Escalate to estop on the running plant when availability impact is shortest."
         if category == "hold":
+            if self._white_box_knowledge_ablation() == "no_control_semantics":
+                return "Hold only if no bounded named action is more useful right now."
             return "Hold only if no bounded high-leverage action can produce faster impact."
         surface_name = str(structured_memory.get("best_known_attack_surface") or surface)
+        if self._white_box_knowledge_ablation() == "no_control_semantics":
+            return "Advance the current bounded named surface with live evidence."
+        if self._white_box_knowledge_ablation() == "no_surface_priors":
+            return f"Advance the bounded `{surface_name}` surface only if live evidence keeps it viable."
         return f"Advance the bounded `{surface_name}` attack path."
 
     @staticmethod
@@ -9583,6 +9846,65 @@ class AgenticRoleAgent(RoleAgent):
             )
         return profiles
 
+    def _white_box_sensor_attack_profiles(
+        self,
+        *,
+        observation: dict[str, Any],
+        safety_bounds: dict[str, Any],
+    ) -> list[tuple[str, dict[str, int]]]:
+        if safety_bounds:
+            return self._white_box_sensor_breach_profiles(
+                observation=observation,
+                safety_bounds=safety_bounds,
+            )
+
+        profiles: list[tuple[str, dict[str, int]]] = []
+        for field_name, profile in self._gray_box_sensor_profiles(observation):
+            current = self._coerce_number(observation.get(field_name))
+            if current is None:
+                continue
+            high_values = [int(item) for item in profile.get("high", [])]
+            low_values = [int(item) for item in profile.get("low", [])]
+            aggressive_high = int(
+                round(
+                    min(
+                        65535.0,
+                        max(
+                            float(high_values[-1]) if high_values else current,
+                            current + max(800.0, abs(current) * 1.2),
+                            1400.0,
+                        ),
+                    )
+                )
+            )
+            aggressive_extreme = int(
+                round(
+                    min(
+                        65535.0,
+                        max(
+                            aggressive_high + 400.0,
+                            current + max(1200.0, abs(current) * 1.8),
+                            2000.0,
+                        ),
+                    )
+                )
+            )
+            profiles.append(
+                (
+                    str(field_name),
+                    {
+                        "low_floor": int(
+                            round(max(0.0, min(low_values) if low_values else 0.0))
+                        ),
+                        "high_breach": aggressive_high,
+                        "high_extreme": max(aggressive_high, aggressive_extreme),
+                        "high_alarm": aggressive_high,
+                        "ceiling": int(round(max(0.0, current))),
+                    },
+                )
+            )
+        return profiles
+
     def _white_box_sensor_target_priority(
         self,
         *,
@@ -9605,6 +9927,79 @@ class AgenticRoleAgent(RoleAgent):
         if current is not None and current >= 500.0:
             score += 0.4
         return score
+
+    def _apply_white_box_system_knowledge_ablation(
+        self,
+        payload: dict[str, Any],
+        *,
+        observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        variant = self._white_box_knowledge_ablation()
+        if variant is None:
+            return payload
+
+        sanitized = dict(payload)
+        sanitized["knowledge_ablation"] = self._white_box_knowledge_ablation_context()
+        process_context = dict(sanitized.get("process_context") or {})
+
+        if variant == "no_safety_bounds":
+            sanitized["safety_envelope"] = {}
+            process_context["surface_leverage_hints"] = [
+                {
+                    key: value
+                    for key, value in dict(item).items()
+                    if key not in {"preferred_value", "alternate_value", "breach_capable"}
+                }
+                for item in process_context.get("surface_leverage_hints", [])
+                if isinstance(item, dict)
+            ]
+
+        if variant == "no_surface_priors":
+            process_context["preferred_surface_order"] = []
+            process_context["surface_leverage_hints"] = []
+
+        if variant == "no_control_semantics":
+            topology = dict(sanitized.get("topology") or {})
+            topology["process_paths"] = [
+                {
+                    key: value
+                    for key, value in dict(item).items()
+                    if key != "role"
+                }
+                for item in topology.get("process_paths", [])
+                if isinstance(item, dict)
+            ]
+            topology["surface_relationships"] = [
+                {
+                    key: value
+                    for key, value in dict(item).items()
+                    if key != "maps_to"
+                }
+                for item in topology.get("surface_relationships", [])
+                if isinstance(item, dict)
+            ]
+            sanitized["topology"] = topology
+            sanitized["control_semantics"] = {"withheld": True}
+            asset_metadata = dict(sanitized.get("asset_metadata") or {})
+            sanitized["asset_metadata"] = {
+                "suite": asset_metadata.get("suite"),
+                "state_name": asset_metadata.get("state_name"),
+                "active_label_names": [
+                    str(name)
+                    for name, value in observation.items()
+                    if (
+                        (
+                            str(name).startswith("Alarm_")
+                            or str(name).endswith("_Sts")
+                            or str(name) == "P2_Selected"
+                        )
+                        and self._is_active_flag(value)
+                    )
+                ][:6],
+            }
+
+        sanitized["process_context"] = process_context
+        return sanitized
 
     def _white_box_mitre_recon_surface_order(
         self,

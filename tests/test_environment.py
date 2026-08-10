@@ -164,6 +164,38 @@ class _FakeDistributionTestbed:
         return dict(self.reset_snapshot)
 
 
+class _FakeTreatmentTestbed:
+    def __init__(self, reset_snapshot: dict[str, object]) -> None:
+        self.reset_snapshot = dict(reset_snapshot)
+        self.clear_calls = 0
+        self.reset_calls: list[dict[str, object]] = []
+        self.set_levels_calls: list[dict[str, object]] = []
+
+    def _backend_mode(self) -> str:
+        return "native"
+
+    def _clear_external_controls(self) -> None:
+        self.clear_calls += 1
+
+    def reset(self, initial_conditions=None, *, wait_sec: float) -> dict[str, object]:
+        self.reset_calls.append(
+            {
+                "initial_conditions": dict(initial_conditions or {}),
+                "wait_sec": wait_sec,
+            }
+        )
+        return dict(self.reset_snapshot)
+
+    def set_levels(self, updates, *, wait_sec: float) -> dict[str, object]:
+        self.set_levels_calls.append(
+            {
+                "initial_conditions": dict(updates or {}),
+                "wait_sec": wait_sec,
+            }
+        )
+        return dict(self.reset_snapshot)
+
+
 class _FakeDistributionDirectEnv:
     def __init__(
         self,
@@ -199,6 +231,23 @@ def _distribution_backend(
         }
     )
     backend._require_direct_env = MethodType(lambda self: fake_direct_env, backend)
+    return backend
+
+
+def _treatment_backend(
+    fake_direct_env: _FakeDistributionDirectEnv,
+) -> environment_module._SphereOpenPLCBackend:
+    backend = environment_module._SphereOpenPLCBackend(
+        {
+            "backend": "sphere_openplc",
+            "start_bridge": False,
+            "remote_reset_mode": "soft_reseed",
+            "soft_reset_level_wait_sec": 0.25,
+            "reset_wait_sec": 0.0,
+        }
+    )
+    backend._require_direct_env = MethodType(lambda self: fake_direct_env, backend)
+    backend._local_port_listening = MethodType(lambda self, port: True, backend)
     return backend
 
 
@@ -238,6 +287,38 @@ def test_distribution_backend_reset_uses_testbed_reset_and_records_validation() 
     assert result["initial_state_validation"]["status"] == "passed"
     assert result["initial_state_validation"]["expected"] == expected
     assert result["initial_state_validation"]["observed"] == expected
+
+
+def test_treatment_backend_soft_reset_uses_remote_level_reseed_when_native_mode() -> None:
+    reset_snapshot = {
+        "STATE_NAME": "RUNNING",
+        "RW_Tank_Level": 600.0,
+        "UF_UFFT_Tank_Level": 400.0,
+        "ChemTreat_NaCl_Level": 800.0,
+    }
+    fake_testbed = _FakeTreatmentTestbed(reset_snapshot)
+    fake_direct_env = _FakeDistributionDirectEnv(
+        testbed=fake_testbed,
+        observations=[reset_snapshot],
+    )
+    backend = _treatment_backend(fake_direct_env)
+
+    result = backend.reset({"RW_Tank_Level": 600, "UF_UFFT_Tank_Level": 400})
+
+    assert fake_direct_env.clear_runtime_containment_calls == 1
+    assert fake_testbed.clear_calls == 2
+    assert fake_testbed.reset_calls == []
+    assert len(fake_testbed.set_levels_calls) == 1
+    assert fake_testbed.set_levels_calls[0]["initial_conditions"] == {
+        "RW_Tank_Level": 600,
+        "UF_UFFT_Tank_Level": 400,
+        "ChemTreat_NaCl_Level": 800,
+        "ChemTreat_NaOCl_Level": 800,
+        "ChemTreat_HCl_Level": 800,
+    }
+    assert fake_testbed.set_levels_calls[0]["wait_sec"] == 0.25
+    assert result["post_reset_observation"]["STATE_NAME"] == "RUNNING"
+    assert "initial_state_validation" not in result
 
 
 def test_distribution_backend_reset_fails_loudly_on_initial_state_mismatch() -> None:
