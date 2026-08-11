@@ -10,6 +10,8 @@ from ics_agent.water_treatment_domain_ablation import (
     DOMAIN_CONFIG_PATH,
     DOMAIN_FAMILY_SPEC,
     DOMAIN_RESULT_ROOT,
+    ENRICHED_CONDITION_NOTE,
+    BLACK_BOX_RUNTIME_NOTE,
     DomainAblationRunner,
 )
 
@@ -98,3 +100,16 @@ def test_domain_ablation_methodology_manual_avoids_forbidden_ranking_phrase() ->
     ).read_text().lower()
 
     assert "surface ranking" not in manual_text
+
+
+def test_domain_ablation_repo_note_mentions_enriched_primer_and_black_box_runtime(
+    tmp_path: Path,
+) -> None:
+    runner = DomainAblationRunner(tmp_path / "domain-ablation")
+    runner.ensure_root_layout()
+    runner.write_repo_note()
+
+    note_text = runner.repo_note_path.read_text()
+
+    assert ENRICHED_CONDITION_NOTE in note_text
+    assert BLACK_BOX_RUNTIME_NOTE in note_text

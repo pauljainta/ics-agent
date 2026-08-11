@@ -22,7 +22,7 @@ from . import water_treatment_seeded_backbone as seeded
 
 
 DOMAIN_EXPERIMENT_VERSION = (
-    "water_treatment_domain_ablation_black_box_high_cyber_high_domain_seed101_v1"
+    "water_treatment_domain_ablation_black_box_high_cyber_high_domain_swat_enriched_seed101_v2"
 )
 DOMAIN_SEED = 101
 DOMAIN_CONFIG_PATH = (
@@ -62,6 +62,16 @@ DEFAULT_VALIDATION_TESTS = [
     "tests/test_seeded_backbone.py",
     "tests/test_water_treatment_domain_ablation.py",
 ]
+ENRICHED_CONDITION_LABEL = "SWaT-informed documentation-enriched black-box attacker"
+ENRICHED_CONDITION_NOTE = (
+    "Treatment primer intentionally enriched with SWaT-derived attack/process "
+    "knowledge; this is not the earlier strict target-blind domain-only primer."
+)
+BLACK_BOX_RUNTIME_NOTE = (
+    "Runtime attacker interface remained black-box with knowledge_mode = "
+    "black_box, system_knowledge = None, and the existing treatment black-box "
+    "observation/action interface unchanged."
+)
 
 
 def _sha256_text(text: str) -> str:
@@ -445,15 +455,20 @@ class DomainAblationRunner(seeded.SeededBackboneRunner):
         )
         return config, condition_spec, effective_profiles, attacker_profile
 
-    def write_prompt_knowledge_audit(self) -> None:
-        self.audit_root.mkdir(parents=True, exist_ok=True)
-        self.audit_packages_root.mkdir(parents=True, exist_ok=True)
-        config, condition_spec, _, attacker_profile = self._attacker_profile_bundle()
+    def _attacker_prompt_and_knowledge_paths(self) -> tuple[Path, list[Path]]:
+        _, _, _, attacker_profile = self._attacker_profile_bundle()
         prompt_path = _resolve_prompt_path(attacker_profile["llm"]["prompt_file"])
         knowledge_paths = [
             resolve_repo_path(path, base_dir=REPO_ROOT)
             for path in attacker_profile.get("knowledge_files", [])
         ]
+        return prompt_path, knowledge_paths
+
+    def write_prompt_knowledge_audit(self) -> None:
+        self.audit_root.mkdir(parents=True, exist_ok=True)
+        self.audit_packages_root.mkdir(parents=True, exist_ok=True)
+        config, condition_spec, _, attacker_profile = self._attacker_profile_bundle()
+        prompt_path, knowledge_paths = self._attacker_prompt_and_knowledge_paths()
         file_hashes = {
             portable_path(path): seeded._sha256_path(path)
             for path in [prompt_path, *knowledge_paths, DOMAIN_CONFIG_PATH]
@@ -545,7 +560,11 @@ class DomainAblationRunner(seeded.SeededBackboneRunner):
             "result_root": portable_path(self.result_root),
             "condition_name": DOMAIN_FAMILY_SPEC.family_name,
             "attacker_profile": DOMAIN_FAMILY_SPEC.attacker_profile_id,
+            "attacker_condition_label": ENRICHED_CONDITION_LABEL,
+            "attacker_condition_note": ENRICHED_CONDITION_NOTE,
             "knowledge_mode": attacker_profile.get("knowledge_mode"),
+            "system_knowledge": None,
+            "runtime_interface_note": BLACK_BOX_RUNTIME_NOTE,
             "prompt_path": portable_path(prompt_path),
             "knowledge_paths": [portable_path(path) for path in knowledge_paths],
             "file_hashes": file_hashes,
@@ -563,8 +582,12 @@ class DomainAblationRunner(seeded.SeededBackboneRunner):
             f"- Experiment version: `{DOMAIN_EXPERIMENT_VERSION}`",
             f"- Condition: `{DOMAIN_FAMILY_SPEC.family_name}`",
             f"- Attacker profile: `{DOMAIN_FAMILY_SPEC.attacker_profile_id}`",
+            f"- Condition interpretation: `{ENRICHED_CONDITION_LABEL}`",
+            f"- Enrichment note: `{ENRICHED_CONDITION_NOTE}`",
+            f"- Runtime interface note: `{BLACK_BOX_RUNTIME_NOTE}`",
             f"- Prompt path: `{portable_path(prompt_path)}`",
             f"- Knowledge files: `{', '.join(portable_path(path) for path in knowledge_paths)}`",
+            f"- Audit manifest: `{portable_path(self.audit_manifest_path)}`",
             f"- Package count: `{len(package_rows)}`",
             f"- Leakage findings: `{len(all_findings)}`",
         ]
@@ -578,6 +601,8 @@ class DomainAblationRunner(seeded.SeededBackboneRunner):
         self._set_phase("aggregating", "in_progress")
         seed_root = self.seed_root(DOMAIN_FAMILY_SPEC.family_name, DOMAIN_SEED)
         family_root = self.family_root(DOMAIN_FAMILY_SPEC.family_name)
+        prompt_path, knowledge_paths = self._attacker_prompt_and_knowledge_paths()
+        audit_summary = _read_json(self.audit_summary_path, {})
         seed_summary = _read_json(seed_root / "seed_summary.json", {})
         if not seed_summary:
             raise RuntimeError("seed summary missing for domain ablation run")
@@ -612,7 +637,17 @@ class DomainAblationRunner(seeded.SeededBackboneRunner):
                 [
                     f"# {DOMAIN_FAMILY_SPEC.family_name}",
                     "",
+                    f"- Attacker profile: `{DOMAIN_FAMILY_SPEC.attacker_profile_id}`",
+                    "- Defender profile: `agentic_defender`",
+                    f"- Testbed: `{seeded.TESTBED_ID}`",
                     f"- Seed: `{DOMAIN_SEED}`",
+                    f"- Condition interpretation: `{ENRICHED_CONDITION_LABEL}`",
+                    f"- Enrichment note: `{ENRICHED_CONDITION_NOTE}`",
+                    f"- Runtime interface note: `{BLACK_BOX_RUNTIME_NOTE}`",
+                    f"- Attacker prompt: `{portable_path(prompt_path)}`",
+                    f"- Attacker knowledge files: `{', '.join(portable_path(path) for path in knowledge_paths)}`",
+                    f"- Prompt and knowledge audit manifest: `{portable_path(self.audit_manifest_path)}`",
+                    f"- Prompt and knowledge bundle hash: `{audit_summary.get('bundle_hash')}`",
                     f"- Completed runs: `{seed_summary.get('completed_scenarios')}/18`",
                     f"- Detected scenarios: `{attack_metrics.get('defender_detected_attack_run_count')}`",
                     f"- Defender-action scenarios: `{attack_metrics.get('defender_acted_attack_run_count')}`",
@@ -638,8 +673,14 @@ class DomainAblationRunner(seeded.SeededBackboneRunner):
             f"- Testbed: `{seeded.TESTBED_ID}`",
             f"- Seed: `{DOMAIN_SEED}`",
             f"- Results root: `{portable_path(self.result_root)}`",
-            "- Target-blind black-box regime preserved: `true`",
+            f"- Condition interpretation: `{ENRICHED_CONDITION_LABEL}`",
+            f"- Enrichment note: `{ENRICHED_CONDITION_NOTE}`",
+            f"- Runtime interface note: `{BLACK_BOX_RUNTIME_NOTE}`",
+            f"- Attacker prompt: `{portable_path(prompt_path)}`",
+            f"- Attacker knowledge files: `{', '.join(portable_path(path) for path in knowledge_paths)}`",
             f"- Prompt audit root: `{portable_path(self.audit_root)}`",
+            f"- Prompt and knowledge audit manifest: `{portable_path(self.audit_manifest_path)}`",
+            f"- Prompt and knowledge bundle hash: `{audit_summary.get('bundle_hash')}`",
             f"- Detected scenarios: `{attack_metrics.get('defender_detected_attack_run_count')}`",
             f"- Defender-action scenarios: `{attack_metrics.get('defender_acted_attack_run_count')}`",
             f"- Safety-violation scenarios: `{attack_metrics.get('attacker_caused_safety_violation_run_count')}`",
@@ -652,14 +693,24 @@ class DomainAblationRunner(seeded.SeededBackboneRunner):
 
     def write_repo_note(self) -> None:
         resume_state = _read_json(self.resume_state_path, {})
+        prompt_path, knowledge_paths = self._attacker_prompt_and_knowledge_paths()
         lines = [
             "# Domain Ablation Note",
             "",
             f"- Experiment version: `{DOMAIN_EXPERIMENT_VERSION}`",
             f"- Condition root: `{portable_path(self.result_root)}`",
             f"- Config path: `{portable_path(DOMAIN_CONFIG_PATH)}`",
+            f"- Attacker profile: `{DOMAIN_FAMILY_SPEC.attacker_profile_id}`",
+            "- Defender profile: `agentic_defender`",
+            f"- Testbed: `{seeded.TESTBED_ID}`",
+            f"- Seed: `{DOMAIN_SEED}`",
+            f"- Condition interpretation: `{ENRICHED_CONDITION_LABEL}`",
+            f"- Enrichment note: `{ENRICHED_CONDITION_NOTE}`",
+            f"- Runtime interface note: `{BLACK_BOX_RUNTIME_NOTE}`",
+            f"- Attacker prompt: `{portable_path(prompt_path)}`",
+            f"- Attacker knowledge files: `{', '.join(portable_path(path) for path in knowledge_paths)}`",
             f"- Prompt audit root: `{portable_path(self.audit_root)}`",
-            f"- Final seed: `{DOMAIN_SEED}`",
+            f"- Prompt and knowledge audit manifest: `{portable_path(self.audit_manifest_path)}`",
             f"- Resume event occurred: `{'true' if resume_state.get('resume_event_detected') else 'false'}`",
             f"- All 18 runs completed: `{'true' if resume_state.get('completed_runs') == 18 else 'false'}`",
             "- Water-treatment only.",

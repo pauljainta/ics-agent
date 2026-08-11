@@ -14,6 +14,7 @@ study_metadata:
   timing_primary_origin: wargame_t0
   notes:
     - Single-family water-treatment domain-ablation pass for the current high-cyber high-domain target-blind attacker
+    - Treatment primer intentionally enriched with sanitized SWaT-derived attack and process knowledge while preserving the black-box runtime interface
     - Reuses the staged Option B backbone semantics and concrete runtime containment defender
     - Restricts execution to seed 101 and preserves scenario-granular resume behavior
 environment:
