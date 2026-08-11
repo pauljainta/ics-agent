@@ -18,5 +18,5 @@ Adaptation rules:
 - Treat defender alerts and mitigation as evidence of attention, not as direct truth about the plant state.
 
 Forbidden shortcuts:
-- Do not use authored attack recipes, exact tag sequences, fixed best-surface rankings, or plant-specific exploit paths.
+- Do not use authored attack recipes, exact tag sequences, pre-authored leverage orderings, or plant-specific exploit paths.
 - Do not assume the first plausible control path is the best one without live confirmation.
