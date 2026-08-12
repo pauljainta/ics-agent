@@ -268,3 +268,23 @@ def test_phase35_treatment_primer_includes_swat_informed_enrichment_sections() -
         "## black-box use discipline",
     ):
         assert heading in treatment_primer
+
+
+def test_phase35_distribution_primer_includes_wadi_informed_enrichment_sections() -> None:
+    distribution_primer = (
+        REPO_ROOT
+        / "testbeds/water_distribution/knowledge/phase35/water_distribution_domain_primer.md"
+    ).read_text().lower()
+
+    for heading in (
+        "wadi-informed water-distribution domain primer",
+        "## process layout",
+        "## component functions",
+        "## stage dependencies and control relationships",
+        "## failure modes",
+        "## known attack sequences",
+        "## successful attack recipes",
+        "## attack-to-process mapping",
+        "## black-box use discipline",
+    ):
+        assert heading in distribution_primer
