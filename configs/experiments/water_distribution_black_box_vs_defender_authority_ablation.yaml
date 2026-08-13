@@ -1,0 +1,119 @@
+experiment_name: water_distribution_openplc_defender_authority_ablation_black_box
+experiment_id: water_distribution_openplc_defender_authority_ablation_black_box
+testbed: water_distribution
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/water_distribution_openplc/defender-authority-ablation
+study_metadata:
+  family: water_distribution_defender_authority_ablation_black_box
+  timing_primary_origin: wargame_t0
+  notes:
+    - Water-distribution Phase 4 defender-authority ablation for the retained black-box attacker
+    - Preserves the retained 11-scenario suite, seed discipline, and the current full-containment distribution baseline
+    - Compares observe-alert-only authority against delayed runtime containment under seed 101
+environment:
+  testbed: water_distribution
+  backend: sphere_openplc
+  merge_server: merge.example.invalid
+  experiment: openplcwater.lgarcia
+  realization: example-realization-02
+  revision: ac79757fe0d3f8e98bbfa43a303fee121b88be05
+  xdc: example-xdc-04
+  keep_running: true
+  start_bridge: true
+  remote_bind_host: 0.0.0.0
+  controller_port: 2502
+  simulator_port: 2503
+  access_host: access
+  engineering_host: engineering
+  remote_roles: {}
+  reset_wait_sec: 1.5
+  loop_sleep_sec: 0.05
+conditions:
+  - name: black_box_attacker__observe_alert_only_defender
+    profiles:
+      attacker: black_box_attacker
+      defender: observe_alert_only_defender
+      observer: scripted_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/attacker_manual.md
+        abort_on_backend_error: false
+        action_cooldown_sec: 2.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0
+        llm:
+          backend: qwen_langchain
+          prompt_file: testbeds/water_distribution/prompts/black_box_attacker.md
+          use_langgraph: false
+          allow_langchain_fallback: false
+          max_new_tokens: 64
+      defender:
+        allowed_action_types: [noop]
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/defender_manual.md
+        abort_on_backend_error: false
+        action_cooldown_sec: 2.0
+        note_cooldown_sec: 12.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0
+        llm:
+          backend: qwen_langchain
+          prompt_file: testbeds/water_distribution/prompts/defender.md
+          use_langgraph: false
+          allow_langchain_fallback: false
+          max_new_tokens: 48
+  - name: black_box_attacker__delayed_containment_defender
+    profiles:
+      attacker: black_box_attacker
+      defender: delayed_containment_defender
+      observer: scripted_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/attacker_manual.md
+        abort_on_backend_error: false
+        action_cooldown_sec: 2.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0
+        llm:
+          backend: qwen_langchain
+          prompt_file: testbeds/water_distribution/prompts/black_box_attacker.md
+          use_langgraph: false
+          allow_langchain_fallback: false
+          max_new_tokens: 64
+      defender:
+        allowed_action_types:
+          [hmi_stop, hmi_estop, disable_hmi_session, isolate_engineering_host, block_sensor_write, block_actuator_write, quarantine_signal_source, noop]
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/defender_manual.md
+        abort_on_backend_error: false
+        action_cooldown_sec: 2.0
+        note_cooldown_sec: 12.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0
+        runtime_containment_activation_delay_steps: 2
+        llm:
+          backend: qwen_langchain
+          prompt_file: testbeds/water_distribution/prompts/defender.md
+          use_langgraph: false
+          allow_langchain_fallback: false
+          max_new_tokens: 48
