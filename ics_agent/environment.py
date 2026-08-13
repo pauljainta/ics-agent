@@ -98,26 +98,108 @@ class RuntimeContainmentState:
     """Track concrete runtime enforcement that can block later attacker actions."""
 
     def __init__(self) -> None:
+        self._activation_delay_steps = 0
+        self._current_step_index = 0
+        self._next_pending_id = 0
         self.reset()
 
     def reset(self) -> None:
         self._rules: dict[str, dict[str, Any]] = {}
+        self._pending_rules: dict[str, dict[str, Any]] = {}
         self._history: list[dict[str, Any]] = []
         self._blocked_attempt_count = 0
+        self._current_step_index = 0
+        self._next_pending_id = 0
+
+    def set_activation_delay_steps(self, steps: int) -> None:
+        self._activation_delay_steps = max(0, int(steps or 0))
 
     def snapshot(self) -> dict[str, Any]:
         rules = {
             surface: dict(payload)
             for surface, payload in sorted(self._rules.items(), key=lambda item: item[0])
         }
+        pending_rules = {
+            surface: dict(payload)
+            for surface, payload in sorted(
+                self._pending_rules.items(),
+                key=lambda item: item[0],
+            )
+        }
         return {
             "active": bool(rules),
             "surface_scope": "all" if "all" in rules else ("targeted" if rules else None),
             "target_surfaces": list(rules.keys()),
             "rules": rules,
+            "pending": bool(pending_rules),
+            "pending_surface_scope": (
+                "all"
+                if "all" in pending_rules
+                else ("targeted" if pending_rules else None)
+            ),
+            "pending_target_surfaces": list(pending_rules.keys()),
+            "pending_rules": pending_rules,
+            "pending_rule_count": len(pending_rules),
+            "activation_delay_steps": self._activation_delay_steps,
+            "current_step_index": self._current_step_index,
             "history": list(self._history),
             "blocked_attempt_count": self._blocked_attempt_count,
         }
+
+    def advance_step(self, step_index: int) -> list[dict[str, Any]]:
+        self._current_step_index = int(step_index)
+        activations: dict[int, dict[str, Any]] = {}
+
+        for surface, payload in list(self._pending_rules.items()):
+            activates_at_step = int(payload.get("activates_at_step", 0) or 0)
+            if activates_at_step > self._current_step_index:
+                continue
+
+            rule = {
+                "surface": surface,
+                "source_action_type": payload.get("source_action_type"),
+                "source_action": dict(payload.get("source_action") or {}),
+                "strength": int(payload.get("strength", 0) or 0),
+                "mode": "runtime_enforced",
+            }
+            self._rules[surface] = rule
+            self._pending_rules.pop(surface, None)
+
+            pending_id = int(payload.get("pending_id", 0) or 0)
+            event = activations.setdefault(
+                pending_id,
+                {
+                    "pending_id": pending_id,
+                    "source_action_type": payload.get("source_action_type"),
+                    "source_action": dict(payload.get("source_action") or {}),
+                    "scheduled_at_step": int(
+                        payload.get("scheduled_at_step", self._current_step_index) or 0
+                    ),
+                    "activated_at_step": self._current_step_index,
+                    "activation_delay_steps": int(
+                        payload.get("activation_delay_steps", self._activation_delay_steps)
+                        or 0
+                    ),
+                    "target_surfaces": [],
+                },
+            )
+            event["target_surfaces"].append(surface)
+
+        if activations:
+            self._history.extend(
+                {
+                    "event": "activation",
+                    "pending_id": payload["pending_id"],
+                    "source_action_type": payload["source_action_type"],
+                    "source_action": dict(payload["source_action"]),
+                    "scheduled_at_step": payload["scheduled_at_step"],
+                    "activated_at_step": payload["activated_at_step"],
+                    "activation_delay_steps": payload["activation_delay_steps"],
+                    "target_surfaces": list(payload["target_surfaces"]),
+                }
+                for payload in activations.values()
+            )
+        return list(activations.values())
 
     def apply(self, action: dict[str, Any] | str | None) -> dict[str, Any] | None:
         normalized = normalize_action(action)
@@ -126,14 +208,96 @@ class RuntimeContainmentState:
 
         target_surfaces = containment_surfaces(normalized)
         action_name = action_type(normalized)
+        stronger_alias = action_name == "quarantine_signal_source"
+        next_strength = 2 if stronger_alias else 1
+
+        if self._activation_delay_steps > 0:
+            newly_scheduled: list[str] = []
+            strengthened_pending: list[str] = []
+            already_enforced: list[str] = []
+            already_pending: list[str] = []
+            pending_id: int | None = None
+            activates_at_step = self._current_step_index + self._activation_delay_steps
+
+            for surface in target_surfaces:
+                active_rule = dict(self._rules.get(surface) or {})
+                active_strength = int(active_rule.get("strength", 0) or 0)
+                if active_strength >= next_strength:
+                    already_enforced.append(surface)
+                    continue
+
+                pending_rule = dict(self._pending_rules.get(surface) or {})
+                pending_strength = int(pending_rule.get("strength", 0) or 0)
+                if pending_strength >= next_strength:
+                    already_pending.append(surface)
+                    continue
+
+                if pending_id is None:
+                    self._next_pending_id += 1
+                    pending_id = self._next_pending_id
+
+                if pending_rule:
+                    pending_rule.update(
+                        {
+                            "source_action_type": action_name,
+                            "source_action": dict(normalized),
+                            "strength": next_strength,
+                            "mode": "pending_runtime_enforcement",
+                            "pending_id": int(
+                                pending_rule.get("pending_id", pending_id) or pending_id
+                            ),
+                            "activation_delay_steps": self._activation_delay_steps,
+                            "activates_at_step": min(
+                                int(
+                                    pending_rule.get(
+                                        "activates_at_step",
+                                        activates_at_step,
+                                    )
+                                    or activates_at_step
+                                ),
+                                activates_at_step,
+                            ),
+                        }
+                    )
+                    self._pending_rules[surface] = pending_rule
+                    strengthened_pending.append(surface)
+                    continue
+
+                self._pending_rules[surface] = {
+                    "surface": surface,
+                    "source_action_type": action_name,
+                    "source_action": dict(normalized),
+                    "strength": next_strength,
+                    "mode": "pending_runtime_enforcement",
+                    "pending_id": pending_id,
+                    "scheduled_at_step": self._current_step_index,
+                    "activates_at_step": activates_at_step,
+                    "activation_delay_steps": self._activation_delay_steps,
+                }
+                newly_scheduled.append(surface)
+
+            applied = {
+                "action_type": action_name,
+                "target_surfaces": target_surfaces,
+                "newly_scheduled_surfaces": newly_scheduled,
+                "strengthened_pending_surfaces": strengthened_pending,
+                "already_pending_surfaces": already_pending,
+                "already_enforced_surfaces": already_enforced,
+                "newly_enforced_surfaces": [],
+                "already_enforced_surfaces_count": len(already_enforced),
+                "stronger_alias": stronger_alias,
+                "activation_delay_steps": self._activation_delay_steps,
+                "activates_at_step": activates_at_step,
+                "activation_mode": "delayed",
+            }
+            self._history.append({"event": "scheduled", **applied})
+            return applied
+
         newly_enforced: list[str] = []
         already_enforced: list[str] = []
-        stronger_alias = action_name == "quarantine_signal_source"
-
         for surface in target_surfaces:
             existing = dict(self._rules.get(surface) or {})
             current_strength = int(existing.get("strength", 0) or 0)
-            next_strength = 2 if stronger_alias else 1
             if current_strength >= next_strength:
                 already_enforced.append(surface)
                 continue
@@ -152,8 +316,10 @@ class RuntimeContainmentState:
             "newly_enforced_surfaces": newly_enforced,
             "already_enforced_surfaces": already_enforced,
             "stronger_alias": stronger_alias,
+            "activation_delay_steps": 0,
+            "activation_mode": "immediate",
         }
-        self._history.append(applied)
+        self._history.append({"event": "applied", **applied})
         return applied
 
     def block_result(
@@ -353,6 +519,7 @@ class _SphereOpenPLCBackend:
         self._command_log: list[dict[str, Any]] = []
         self._role_runtime_info: dict[str, dict[str, Any]] = {}
         self._start_result: dict[str, Any] = {}
+        self._runtime_containment_delay_steps = 0
 
     def start(self) -> dict[str, Any]:
         try:
@@ -361,6 +528,9 @@ class _SphereOpenPLCBackend:
             self._role_runtime_info.clear()
             self._prepare_transport()
             self._direct_env = OpenPLCEnvironment(self._direct_environment_config())
+            self._direct_env.set_runtime_containment_delay_steps(
+                self._runtime_containment_delay_steps
+            )
             self.started = True
             self._start_result = {
                 "backend": "sphere_openplc",
@@ -891,6 +1061,16 @@ class _SphereOpenPLCBackend:
         payload = dict(runtime_info)
         payload.setdefault("assigned_node", self.remote_role_hosts.get(role))
         self._role_runtime_info[role] = payload
+
+    def set_runtime_containment_delay_steps(self, steps: int) -> None:
+        self._runtime_containment_delay_steps = max(0, int(steps or 0))
+        if self._direct_env is not None:
+            self._direct_env.set_runtime_containment_delay_steps(
+                self._runtime_containment_delay_steps
+            )
+
+    def advance_runtime_containment_step(self, step_index: int) -> list[dict[str, Any]]:
+        return self._require_direct_env().advance_runtime_containment_step(step_index)
 
     def runtime_containment_snapshot(self) -> dict[str, Any]:
         return self._require_direct_env().runtime_containment_snapshot()
@@ -2326,6 +2506,17 @@ class OpenPLCEnvironment:
         if self._backend_impl is not None:
             return self._backend_impl.runtime_containment_snapshot()
         return self._runtime_containment.snapshot()
+
+    def set_runtime_containment_delay_steps(self, steps: int) -> None:
+        if self._backend_impl is not None:
+            self._backend_impl.set_runtime_containment_delay_steps(steps)
+            return
+        self._runtime_containment.set_activation_delay_steps(steps)
+
+    def advance_runtime_containment_step(self, step_index: int) -> list[dict[str, Any]]:
+        if self._backend_impl is not None:
+            return self._backend_impl.advance_runtime_containment_step(step_index)
+        return self._runtime_containment.advance_step(step_index)
 
     def clear_runtime_containment(self) -> None:
         if self._backend_impl is not None:

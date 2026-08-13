@@ -185,3 +185,47 @@ def test_process2_deselect_no_longer_triggers_global_attacker_cutoff() -> None:
         item["event_type"] == "attacker_execution_cutoff_activated"
         for item in bundle.system_events
     )
+
+
+def test_observe_alert_only_defender_emits_alert_without_cutoff_activation() -> None:
+    orchestrator = ExperimentOrchestrator()
+    env = StubEnvironment()
+    bundle = _bundle()
+    runtime_containment = orchestrator._initial_runtime_containment()
+    context = {"observation": {"STATE_NAME": "RUNNING"}}
+
+    defender_alert = RoleDecision(
+        role="defender",
+        agent_name="defender",
+        decision_type="alert",
+        summary="Suspicious telemetry-write behavior detected.",
+        time_sec=1.0,
+        timestamp_utc=utc_now(),
+        action=None,
+        diagnosis="sensor_write_abuse",
+    )
+
+    orchestrator._execute_online_roles(
+        roles=["defender"],
+        agents={"defender": StubAgent(defender_alert)},
+        context=context,
+        bundle=bundle,
+        scenario=bundle.scenario,
+        condition={"defender": "observe_alert_only_defender"},
+        env=env,
+        elapsed=1.0,
+        effective_profiles={
+            "defender": {
+                "role": "defender",
+                "allowed_action_types": ["noop"],
+            }
+        },
+        runtime_containment=runtime_containment,
+    )
+
+    assert len(bundle.alerts) == 1
+    assert runtime_containment["active"] is False
+    assert not any(
+        item["event_type"] == "attacker_execution_cutoff_activated"
+        for item in bundle.system_events
+    )

@@ -138,6 +138,9 @@ class ExperimentOrchestrator:
             "activated_by_role": None,
             "surface_scope": None,
             "target_surfaces": [],
+            "pending": False,
+            "pending_target_surfaces": [],
+            "activation_delay_steps": 0,
             "is_symbolic": False,
             "blocked_action_count": 0,
         }
@@ -180,6 +183,55 @@ class ExperimentOrchestrator:
                 "role": role,
                 "action": dict(action),
                 "containment": metadata,
+            }
+        )
+
+    @staticmethod
+    def _record_delayed_containment_activation(
+        *,
+        runtime_containment: dict[str, Any],
+        bundle: RunBundle,
+        activation: dict[str, Any],
+        role: str,
+        elapsed: float,
+    ) -> None:
+        if runtime_containment.get("active"):
+            return
+        action = dict(activation.get("source_action") or {})
+        target_surfaces = list(activation.get("target_surfaces") or [])
+        metadata = containment_metadata(action)
+        if target_surfaces:
+            metadata["target_surfaces"] = target_surfaces
+            metadata["surface_scope"] = (
+                "all" if "all" in target_surfaces else target_surfaces[0]
+            )
+        runtime_containment.update(
+            {
+                "active": True,
+                "pending": False,
+                "pending_target_surfaces": [],
+                "activated_at_sec": round(elapsed, 3),
+                "activated_by_action": action,
+                "activated_by_role": role,
+                "surface_scope": metadata.get("surface_scope"),
+                "target_surfaces": list(metadata.get("target_surfaces", [])),
+                "activation_delay_steps": int(
+                    activation.get("activation_delay_steps", 0) or 0
+                ),
+                "is_symbolic": bool(metadata.get("is_symbolic")),
+            }
+        )
+        bundle.system_events.append(
+            {
+                "timestamp_utc": utc_now(),
+                "time_sec": round(elapsed, 3),
+                "event_type": "attacker_execution_cutoff_activated",
+                "role": role,
+                "action": action,
+                "containment": metadata,
+                "scheduled_at_step": activation.get("scheduled_at_step"),
+                "activated_at_step": activation.get("activated_at_step"),
+                "activation_delay_steps": activation.get("activation_delay_steps"),
             }
         )
 
@@ -1034,6 +1086,27 @@ class ExperimentOrchestrator:
         )
 
         env = OpenPLCEnvironment(config.get("environment", {}))
+        defender_profile = dict(
+            (effective_profiles or {}).get("defender")
+            or self.agent_profiles.get(condition.get("defender", ""), {})
+        )
+        defender_delay_steps = max(
+            0,
+            int(
+                defender_profile.get(
+                    "runtime_containment_activation_delay_steps",
+                    0,
+                )
+                or 0
+            ),
+        )
+        env.set_runtime_containment_delay_steps(defender_delay_steps)
+        bundle.config_snapshot["experiment_rules"][
+            "runtime_containment_activation_delay_steps"
+        ] = defender_delay_steps
+        bundle.config_snapshot["experiment_rules"][
+            "runtime_containment_activation_mode"
+        ] = "delayed" if defender_delay_steps else "immediate"
         run_started_utc = utc_now()
         started = False
         phase_a_started_monotonic = time.monotonic()
@@ -2125,11 +2198,21 @@ class ExperimentOrchestrator:
         runtime_containment = self._initial_runtime_containment()
         last_state: str | None = None
         elapsed = 0.0
+        step_index = 0
         pending_initial_observation = (
             dict(initial_observation) if isinstance(initial_observation, dict) else None
         )
 
         while elapsed <= duration:
+            pending_activations = env.advance_runtime_containment_step(step_index)
+            for activation in pending_activations:
+                self._record_delayed_containment_activation(
+                    runtime_containment=runtime_containment,
+                    bundle=bundle,
+                    activation=activation,
+                    role="defender",
+                    elapsed=elapsed,
+                )
             if pending_initial_observation is not None:
                 observation = dict(pending_initial_observation)
                 pending_initial_observation = None
@@ -2244,6 +2327,7 @@ class ExperimentOrchestrator:
                 )
             time.sleep(loop_sleep_sec)
             elapsed = round(elapsed + poll_interval, 3)
+            step_index += 1
 
         expectation_events = [
             {

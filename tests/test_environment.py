@@ -128,6 +128,62 @@ def test_runtime_containment_state_resets_between_episodes(fake_openplc) -> None
     assert env.testbed.actions[-1]["type"] == "set_sensor"
 
 
+def test_delayed_runtime_containment_activates_after_two_steps(fake_openplc) -> None:
+    env = _fresh_env(fake_openplc)
+    env.set_runtime_containment_delay_steps(2)
+
+    scheduled = env.act({"type": "block_sensor_write"}, role="defender")
+    assert scheduled["runtime_containment"]["active"] is False
+    assert scheduled["runtime_containment"]["pending"] is True
+    assert scheduled["runtime_containment"]["pending_target_surfaces"] == [
+        "sensor_write_path"
+    ]
+
+    env.advance_runtime_containment_step(1)
+    allowed_during_delay = env.act(
+        {"type": "set_sensor", "name": "RW_Tank_Level", "value": 777},
+        role="attacker",
+    )
+    assert allowed_during_delay.get("blocked_by_runtime_containment") is not True
+
+    activations = env.advance_runtime_containment_step(2)
+    assert len(activations) == 1
+    assert activations[0]["activation_delay_steps"] == 2
+    assert activations[0]["activated_at_step"] == 2
+    blocked_after_activation = env.act(
+        {"type": "set_sensor", "name": "RW_Tank_Level", "value": 778},
+        role="attacker",
+    )
+    assert blocked_after_activation["blocked_by_runtime_containment"] is True
+
+
+def test_sphere_backend_delay_configuration_does_not_force_transport_start() -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        {
+            "testbed": "water_treatment",
+            "backend": "sphere_openplc",
+            "start_bridge": False,
+            "experiment": "openplcwater.lgarcia",
+            "realization": "example-realization-03",
+            "revision": "test-revision",
+            "xdc": "example-xdc-07",
+        }
+    )
+    start_calls = 0
+
+    def _unexpected_start(self):
+        nonlocal start_calls
+        start_calls += 1
+        raise AssertionError("delay configuration should not start the sphere transport")
+
+    backend.start = MethodType(_unexpected_start, backend)
+
+    backend.set_runtime_containment_delay_steps(2)
+
+    assert start_calls == 0
+    assert backend._runtime_containment_delay_steps == 2
+
+
 def test_vendor_openplc_payload_imports_without_workspace_repos(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(environment_module, "WORKSPACE_ROOT", tmp_path)
     vendor_scripts = environment_module.OPENPLC_SUPPORT_SCRIPTS.resolve()

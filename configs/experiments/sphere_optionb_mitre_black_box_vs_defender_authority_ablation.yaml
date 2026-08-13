@@ -1,0 +1,114 @@
+experiment_name: WaterTreatmentDefenderAuthorityAblationBlackBox
+experiment_id: WaterTreatmentDefenderAuthorityAblationBlackBox
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/Water-treatment/defender-authority-ablation
+study_metadata:
+  family: defender_authority_ablation_black_box_optionb_mitre18
+  timing_primary_origin: wargame_t0
+  notes:
+    - Water-treatment Phase 4 defender-authority ablation for the staged Option B black-box attacker
+    - Preserves the existing attacker, observer, scenarios, and safety thresholds
+    - Compares observe-alert-only authority against delayed runtime containment under seed 101
+environment:
+  backend: sphere_openplc
+  merge_server: merge.example.invalid
+  experiment: openplcwater.lgarcia
+  realization: example-realization-03
+  revision: ac79757fe0d3f8e98bbfa43a303fee121b88be05
+  xdc: example-xdc-07
+  keep_running: true
+  start_bridge: true
+  remote_bind_host: 0.0.0.0
+  controller_port: 2502
+  simulator_port: 2503
+  access_host: access
+  engineering_host: engineering
+  remote_roles: {}
+  reset_wait_sec: 1.5
+  loop_sleep_sec: 0.05
+conditions:
+  - name: black_box_attacker__observe_alert_only_defender
+    profiles:
+      attacker: black_box_attacker
+      defender: observe_alert_only_defender
+      observer: agentic_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B black-box attacker
+        llm:
+          prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+      defender:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B observe-alert-only defender with no live containment authority
+        allowed_action_types:
+          - noop
+        llm:
+          prompt_file: configs/prompts/defender_optionb_mitre.md
+        note_cooldown_sec: 4.0
+        reasoning_cooldown_sec: 2.0
+        reasoning_refresh_sec: 4.0
+      observer:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B agentic observer
+        llm:
+          prompt_file: configs/prompts/observer_optionb_mitre.md
+  - name: black_box_attacker__delayed_containment_defender
+    profiles:
+      attacker: black_box_attacker
+      defender: delayed_containment_defender
+      observer: agentic_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B black-box attacker
+        llm:
+          prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+      defender:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B delayed-containment defender with a 2-timestep runtime cutoff delay
+        allowed_action_types:
+          - hmi_stop
+          - hmi_estop
+          - select_process
+          - disable_hmi_session
+          - isolate_engineering_host
+          - block_sensor_write
+          - block_process2_manual_path
+          - quarantine_signal_source
+          - noop
+        runtime_containment_activation_delay_steps: 2
+        llm:
+          prompt_file: configs/prompts/defender_optionb_mitre.md
+        note_cooldown_sec: 4.0
+        reasoning_cooldown_sec: 2.0
+        reasoning_refresh_sec: 4.0
+      observer:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B agentic observer
+        llm:
+          prompt_file: configs/prompts/observer_optionb_mitre.md

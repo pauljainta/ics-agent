@@ -289,6 +289,71 @@ profiles:
     note_cooldown_sec: 8.0
     reasoning_cooldown_sec: 6.0
     reasoning_refresh_sec: 12.0
+  observe_alert_only_defender:
+    role: defender
+    family: agentic
+    mode: online
+    allowed_action_types: [noop]
+    abort_on_backend_error: true
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/defender_manual.md
+    llm:
+      backend: qwen_langgraph
+      framework: langchain
+      use_langgraph: true
+      strict_backend: true
+      allow_langchain_fallback: true
+      model_id: Qwen/Qwen3.5-9B
+      prompt_file: configs/prompts/defender.md
+      local_files_only: true
+      require_cuda: true
+      quantization: bf16
+      temperature: 0
+      max_new_tokens: 128
+    memory:
+      observation_window: 12
+      decision_window: 12
+      action_window: 12
+      alert_window: 8
+      summary_window: 6
+    action_cooldown_sec: 1.0
+    note_cooldown_sec: 8.0
+    reasoning_cooldown_sec: 6.0
+    reasoning_refresh_sec: 12.0
+  delayed_containment_defender:
+    role: defender
+    family: agentic
+    mode: online
+    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
+    abort_on_backend_error: true
+    knowledge_files:
+      - configs/knowledge/shared_testbed_manual.md
+      - configs/knowledge/defender_manual.md
+    llm:
+      backend: qwen_langgraph
+      framework: langchain
+      use_langgraph: true
+      strict_backend: true
+      allow_langchain_fallback: true
+      model_id: Qwen/Qwen3.5-9B
+      prompt_file: configs/prompts/defender.md
+      local_files_only: true
+      require_cuda: true
+      quantization: bf16
+      temperature: 0
+      max_new_tokens: 128
+    memory:
+      observation_window: 12
+      decision_window: 12
+      action_window: 12
+      alert_window: 8
+      summary_window: 6
+    runtime_containment_activation_delay_steps: 2
+    action_cooldown_sec: 1.0
+    note_cooldown_sec: 8.0
+    reasoning_cooldown_sec: 6.0
+    reasoning_refresh_sec: 12.0
   agentic_defender_with_prior_knowledge:
     role: defender
     family: agentic
