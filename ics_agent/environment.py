@@ -520,6 +520,10 @@ class _SphereOpenPLCBackend:
         self._role_runtime_info: dict[str, dict[str, Any]] = {}
         self._start_result: dict[str, Any] = {}
         self._runtime_containment_delay_steps = 0
+        self._node_ssh_hostnames: dict[str, str] = {}
+        self._prefer_mrg_xdc_transport = bool(
+            config.get("prefer_mrg_xdc_transport", False)
+        )
 
     def start(self) -> dict[str, Any]:
         try:
@@ -1247,6 +1251,166 @@ class _SphereOpenPLCBackend:
         command.extend(args)
         return command
 
+    def _can_use_mrg_xdc_transport(self, target: str | None = None) -> bool:
+        if not self._xdc_ref:
+            return False
+        normalized_target = str(target or "").strip()
+        if not normalized_target:
+            return True
+        return normalized_target != self._xdc_host
+
+    def _enable_mrg_xdc_transport(self, *, target: str, reason: str) -> None:
+        if self._prefer_mrg_xdc_transport:
+            return
+        self._prefer_mrg_xdc_transport = True
+        self._phase_event(
+            "phase_a",
+            "transport_fallback_enabled",
+            transport="mrg_xdc",
+            target=target,
+            reason=reason,
+        )
+
+    def _mrg_xdc_ssh_command(
+        self,
+        target: str,
+        *,
+        local_forward: str | None = None,
+    ) -> list[str]:
+        assert self._xdc_ref is not None
+        command = self._mrg_command("xdc", "ssh", "-x", self._xdc_ref)
+        if local_forward:
+            command.extend(["-L", local_forward])
+        command.append(target)
+        return command
+
+    @staticmethod
+    def _script_command(command: list[str]) -> list[str]:
+        return ["script", "-q", "-c", shlex.join(command), "/dev/null"]
+
+    @staticmethod
+    def _strip_terminal_control(text: str) -> str:
+        sanitized = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+        sanitized = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", sanitized)
+        sanitized = re.sub(r"\x1B[@-_][0-?]*[ -/]*[@-~]", "", sanitized)
+        return sanitized
+
+    @classmethod
+    def _parse_mrg_xdc_ssh_output(
+        cls,
+        transcript: str,
+        *,
+        begin_marker: str,
+        rc_marker_prefix: str,
+    ) -> tuple[str, int]:
+        sanitized = cls._strip_terminal_control(transcript)
+        lines = sanitized.splitlines()
+
+        begin_index: int | None = None
+        for index, line in enumerate(lines):
+            if line.strip() == begin_marker:
+                begin_index = index
+        if begin_index is None:
+            raise EnvironmentError(
+                "failed to parse `mrg xdc ssh` output: begin marker was not observed"
+            )
+
+        rc_index: int | None = None
+        exit_code: int | None = None
+        for index in range(begin_index + 1, len(lines)):
+            line = lines[index].strip()
+            if not line.startswith(rc_marker_prefix):
+                continue
+            rc_index = index
+            rc_text = line[len(rc_marker_prefix) :].strip()
+            try:
+                exit_code = int(rc_text)
+            except ValueError as exc:
+                raise EnvironmentError(
+                    "failed to parse `mrg xdc ssh` output: "
+                    f"invalid exit code marker `{line}`"
+                ) from exc
+            break
+        if rc_index is None or exit_code is None:
+            raise EnvironmentError(
+                "failed to parse `mrg xdc ssh` output: exit code marker was not observed"
+            )
+
+        output_lines = lines[begin_index + 1 : rc_index]
+        output = "\n".join(output_lines)
+        if output_lines:
+            output += "\n"
+        return output, exit_code
+
+    def _mrg_ssh_checked(
+        self,
+        target: str,
+        remote_command: str,
+        *,
+        timeout_sec: float | None = None,
+    ) -> str:
+        command = self._mrg_xdc_ssh_command(target)
+        self._record_command(f"{shlex.join(command)} <remote command>")
+        marker_suffix = f"{os.getpid()}_{time.time_ns()}"
+        begin_marker = f"__CODEX_MRG_BEGIN_{marker_suffix}__"
+        rc_marker_prefix = f"__CODEX_MRG_RC_{marker_suffix}__:"
+        script_input = "\n".join(
+            [
+                "unset PROMPT_COMMAND || true",
+                "export PS1=''",
+                "export PS2=''",
+                "stty -echo >/dev/null 2>&1 || true",
+                f"printf '%s\\n' {shlex.quote(begin_marker)}",
+                "(",
+                remote_command,
+                ")",
+                "__codex_mrg_rc__=$?",
+                f"printf '%s%s\\n' {shlex.quote(rc_marker_prefix)} \"$__codex_mrg_rc__\"",
+                'exit "$__codex_mrg_rc__"',
+            ]
+        ) + "\n"
+        timeout_value = timeout_sec or self.ssh_timeout_sec
+        try:
+            completed = subprocess.run(
+                self._script_command(command),
+                input=script_input,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=timeout_value,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise EnvironmentError(
+                f"command timed out after {timeout_value}s: {shlex.join(command)}"
+            ) from exc
+
+        transcript = (completed.stdout or "") + (completed.stderr or "")
+        detail = self._strip_terminal_control(transcript).strip()
+        try:
+            output, exit_code = self._parse_mrg_xdc_ssh_output(
+                transcript,
+                begin_marker=begin_marker,
+                rc_marker_prefix=rc_marker_prefix,
+            )
+        except EnvironmentError as exc:
+            raise EnvironmentError(
+                f"command failed via `mrg xdc ssh`: {shlex.join(command)}"
+                + (f": {detail}" if detail else "")
+            ) from exc
+        if exit_code != 0:
+            command_preview = remote_command.strip().splitlines()[0][:160]
+            raise EnvironmentError(
+                f"remote command failed on `{target}` via `mrg xdc ssh`"
+                + (f" (`{command_preview}`)" if command_preview else "")
+                + (f": {output.strip()}" if output.strip() else "")
+            )
+        if completed.returncode != 0:
+            raise EnvironmentError(
+                f"command failed via `mrg xdc ssh` ({completed.returncode}): {shlex.join(command)}"
+                + (f": {detail}" if detail else "")
+            )
+        return output
+
     @staticmethod
     def _qualify_realization_ref(
         value: str, experiment_name: str, project_name: str
@@ -1291,6 +1455,7 @@ class _SphereOpenPLCBackend:
         if payload is None:
             raise EnvironmentError(f"unable to inspect realization `{self._realization_ref}`")
         realization = payload.get("result", {}).get("realization", {})
+        self._node_ssh_hostnames = self._realization_node_hostnames(payload)
         realized_revision = str(realization.get("xhash", "")).strip() or None
         if self.revision is None:
             self.revision = realized_revision
@@ -1298,6 +1463,35 @@ class _SphereOpenPLCBackend:
             raise EnvironmentError(
                 f"realization `{self._realization_ref}` is pinned to revision `{realized_revision}`, not configured revision `{self.revision}`"
             )
+
+    @staticmethod
+    def _realization_node_hostnames(payload: dict[str, Any]) -> dict[str, str]:
+        hostnames: dict[str, str] = {}
+        nodes = payload.get("result", {}).get("realization", {}).get("nodes", {})
+        if not isinstance(nodes, dict):
+            return hostnames
+        for node_entry in nodes.values():
+            if not isinstance(node_entry, dict):
+                continue
+            node = node_entry.get("node") or {}
+            node_id = str(node.get("id") or "").strip()
+            if not node_id:
+                continue
+            sockets = node.get("sockets") or []
+            for socket in sockets:
+                if not isinstance(socket, dict):
+                    continue
+                for addr in socket.get("addrs") or []:
+                    host = str(addr or "").split("/", 1)[0].strip()
+                    if host:
+                        hostnames[node_id] = host
+                        break
+                if node_id in hostnames:
+                    break
+        return hostnames
+
+    def _ssh_hostname_for(self, host: str) -> str:
+        return self._node_ssh_hostnames.get(host, host)
 
     def _ensure_materialization(self) -> None:
         assert self._realization_ref is not None
@@ -1394,19 +1588,12 @@ class _SphereOpenPLCBackend:
                 "",
             ]
         )
-        host_specs: list[tuple[str, str]] = []
-        if self.access_host:
-            host_specs.append((self.access_host, self._xdc_host))
-        if self.engineering_host:
-            host_specs.append(
-                (
-                    self.engineering_host,
-                    self.access_host or self._xdc_host,
-                )
-            )
+        host_specs: list[str] = []
+        for host in [self.access_host, self.engineering_host]:
+            if host:
+                host_specs.append(host)
 
-        control_proxy = self.engineering_host or self.access_host or self._xdc_host
-        seen_hosts = {host for host, _ in host_specs}
+        seen_hosts = set(host_specs)
         for host in [
             "controller",
             "simulator",
@@ -1414,14 +1601,14 @@ class _SphereOpenPLCBackend:
         ]:
             if host in seen_hosts:
                 continue
-            host_specs.append((host, control_proxy))
+            host_specs.append(host)
             seen_hosts.add(host)
 
-        for host, proxy_jump in host_specs:
+        for host in host_specs:
             lines.extend(
                 [
                     f"Host {host}",
-                    f"    HostName {host}",
+                    f"    HostName {self._ssh_hostname_for(host)}",
                     f"    User {self._merge_user}",
                 ]
             )
@@ -1429,7 +1616,7 @@ class _SphereOpenPLCBackend:
                 lines.append(f"    IdentityFile {self.identity_file}")
             lines.extend(
                 [
-                    f"    ProxyJump {proxy_jump}",
+                    f"    ProxyJump {self._xdc_host}",
                     "",
                 ]
             )
@@ -1926,6 +2113,46 @@ class _SphereOpenPLCBackend:
         pid_name: str,
         log_name: str,
     ) -> None:
+        if self._prefer_mrg_xdc_transport and self._can_use_mrg_xdc_transport(target):
+            self._mrg_start_tunnel(
+                target,
+                local_port=local_port,
+                remote_port=remote_port,
+                pid_name=pid_name,
+                log_name=log_name,
+            )
+            return
+
+        try:
+            self._raw_start_tunnel(
+                target,
+                local_port=local_port,
+                remote_port=remote_port,
+                pid_name=pid_name,
+                log_name=log_name,
+            )
+            return
+        except EnvironmentError as exc:
+            if not self._can_use_mrg_xdc_transport(target):
+                raise
+            self._mrg_start_tunnel(
+                target,
+                local_port=local_port,
+                remote_port=remote_port,
+                pid_name=pid_name,
+                log_name=log_name,
+            )
+            self._enable_mrg_xdc_transport(target=target, reason=str(exc))
+
+    def _raw_start_tunnel(
+        self,
+        target: str,
+        *,
+        local_port: int,
+        remote_port: int,
+        pid_name: str,
+        log_name: str,
+    ) -> None:
         log_path = self.logs_dir / log_name
         self._record_command(
             f"ssh -F {self.ssh_config_path} -L {local_port}:127.0.0.1:{remote_port} {target}"
@@ -1947,6 +2174,46 @@ class _SphereOpenPLCBackend:
                     f"{local_port}:127.0.0.1:{remote_port}",
                     target,
                 ],
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        self._write_pid(pid_name, process.pid)
+        deadline = time.time() + self.tunnel_start_timeout_sec
+        while time.time() < deadline:
+            if self._local_port_listening(local_port):
+                return
+            if process.poll() is not None:
+                time.sleep(0.25)
+                if self._local_port_listening(local_port):
+                    return
+                raise EnvironmentError(
+                    f"{pid_name} exited early: {self._tail_log(log_path)}"
+                )
+            time.sleep(0.25)
+        raise EnvironmentError(
+            f"{pid_name} did not open local port {local_port}: {self._tail_log(log_path)}"
+        )
+
+    def _mrg_start_tunnel(
+        self,
+        target: str,
+        *,
+        local_port: int,
+        remote_port: int,
+        pid_name: str,
+        log_name: str,
+    ) -> None:
+        command = self._mrg_xdc_ssh_command(
+            target,
+            local_forward=f"{local_port}:127.0.0.1:{remote_port}",
+        )
+        log_path = self.logs_dir / log_name
+        self._record_command(shlex.join(command))
+        with log_path.open("w") as handle:
+            process = subprocess.Popen(
+                self._script_command(command),
                 stdin=subprocess.DEVNULL,
                 stdout=handle,
                 stderr=subprocess.STDOUT,
@@ -2091,6 +2358,42 @@ class _SphereOpenPLCBackend:
         timeout_sec: float | None = None,
         retries: int | None = None,
     ) -> str:
+        if self._prefer_mrg_xdc_transport and self._can_use_mrg_xdc_transport(target):
+            return self._mrg_ssh_checked(
+                target,
+                remote_command,
+                timeout_sec=timeout_sec,
+            )
+
+        raw_retries = retries
+        if raw_retries is None and self._can_use_mrg_xdc_transport(target):
+            raw_retries = 1
+        try:
+            return self._raw_ssh_checked(
+                target,
+                remote_command,
+                timeout_sec=timeout_sec,
+                retries=raw_retries,
+            )
+        except EnvironmentError as exc:
+            if not self._can_use_mrg_xdc_transport(target):
+                raise
+            output = self._mrg_ssh_checked(
+                target,
+                remote_command,
+                timeout_sec=timeout_sec,
+            )
+            self._enable_mrg_xdc_transport(target=target, reason=str(exc))
+            return output
+
+    def _raw_ssh_checked(
+        self,
+        target: str,
+        remote_command: str,
+        *,
+        timeout_sec: float | None = None,
+        retries: int | None = None,
+    ) -> str:
         self._record_command(f"ssh {target} {remote_command[:180]}")
         last_error: EnvironmentError | None = None
         for attempt in range(1, max(1, retries or self.ssh_attempts) + 1):
@@ -2108,6 +2411,46 @@ class _SphereOpenPLCBackend:
         raise last_error
 
     def _scp_file_checked(
+        self,
+        source: Path,
+        destination: str,
+        *,
+        timeout_sec: float | None = None,
+        retries: int | None = None,
+    ) -> None:
+        if self._prefer_mrg_xdc_transport and self._can_use_mrg_xdc_transport():
+            self._mrg_scp_file_checked(
+                source,
+                destination,
+                timeout_sec=timeout_sec,
+                retries=retries,
+            )
+            return
+
+        raw_retries = retries
+        if raw_retries is None and self._can_use_mrg_xdc_transport():
+            raw_retries = 1
+        try:
+            self._raw_scp_file_checked(
+                source,
+                destination,
+                timeout_sec=timeout_sec,
+                retries=raw_retries,
+            )
+            return
+        except EnvironmentError as exc:
+            if not self._can_use_mrg_xdc_transport():
+                raise
+            self._mrg_scp_file_checked(
+                source,
+                destination,
+                timeout_sec=timeout_sec,
+                retries=retries,
+            )
+            destination_target = destination.split(":", 1)[0]
+            self._enable_mrg_xdc_transport(target=destination_target, reason=str(exc))
+
+    def _raw_scp_file_checked(
         self,
         source: Path,
         destination: str,
@@ -2141,7 +2484,7 @@ class _SphereOpenPLCBackend:
                     text=True,
                     timeout=timeout_value,
                 )
-            except subprocess.TimeoutExpired as exc:
+            except subprocess.TimeoutExpired:
                 last_error = EnvironmentError(
                     f"copy timed out after {timeout_value}s: {source} -> {destination}"
                 )
@@ -2159,8 +2502,84 @@ class _SphereOpenPLCBackend:
         assert last_error is not None
         raise last_error
 
+    def _mrg_scp_file_checked(
+        self,
+        source: Path,
+        destination: str,
+        *,
+        timeout_sec: float | None = None,
+        retries: int | None = None,
+    ) -> None:
+        if ":" not in destination:
+            raise EnvironmentError(
+                f"invalid remote destination `{destination}` for `mrg xdc scp upload`"
+            )
+        target, remote_path = destination.split(":", 1)
+        command = self._mrg_command("xdc", "scp", "upload", "-x", str(self._xdc_ref))
+        if source.is_dir():
+            command.append("-r")
+        command.extend([str(source), f"{target}:{remote_path}"])
+        self._record_command(shlex.join(command))
+        timeout_value = timeout_sec or self.scp_timeout_sec
+        attempt_count = max(1, retries or self.scp_attempts)
+        last_error: EnvironmentError | None = None
+        for attempt in range(1, attempt_count + 1):
+            try:
+                completed = subprocess.run(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                    timeout=timeout_value,
+                )
+            except subprocess.TimeoutExpired:
+                last_error = EnvironmentError(
+                    f"copy timed out after {timeout_value}s: {source} -> {destination}"
+                )
+            else:
+                if completed.returncode == 0:
+                    return
+                detail = self._strip_terminal_control(
+                    (completed.stderr or completed.stdout).strip()
+                )
+                last_error = EnvironmentError(
+                    f"failed to copy `{source.name}` to `{destination}` via `mrg xdc scp`"
+                    + (f": {detail}" if detail else "")
+                )
+            if attempt >= attempt_count:
+                break
+            time.sleep(self.ssh_retry_backoff_sec * attempt)
+        assert last_error is not None
+        raise last_error
+
     def _fetch_remote_file(self, target: str, remote_path: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if self._prefer_mrg_xdc_transport and self._can_use_mrg_xdc_transport(target):
+            self._mrg_fetch_remote_file(target, remote_path, destination)
+            return
+
+        try:
+            self._raw_fetch_remote_file(target, remote_path, destination)
+        except EnvironmentError as exc:
+            if not self._can_use_mrg_xdc_transport(target):
+                destination.write_text(f"log fetch failed from {target}:{remote_path}\n{exc}\n")
+                return
+            try:
+                self._mrg_fetch_remote_file(target, remote_path, destination)
+            except EnvironmentError as fallback_exc:
+                destination.write_text(
+                    f"log fetch failed from {target}:{remote_path}\n{fallback_exc}\n"
+                )
+                return
+            self._enable_mrg_xdc_transport(target=target, reason=str(exc))
+
+    def _raw_fetch_remote_file(
+        self,
+        target: str,
+        remote_path: str,
+        destination: Path,
+    ) -> None:
         self._record_command(f"scp {target}:{remote_path} {destination}")
         try:
             completed = subprocess.run(
@@ -2184,11 +2603,49 @@ class _SphereOpenPLCBackend:
                 timeout=self.scp_timeout_sec,
             )
         except subprocess.TimeoutExpired:
-            destination.write_text(f"log fetch timed out from {target}:{remote_path}\n")
-            return
+            raise EnvironmentError(f"log fetch timed out from {target}:{remote_path}")
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
-            destination.write_text(f"log fetch failed from {target}:{remote_path}\n{detail}\n")
+            raise EnvironmentError(
+                f"log fetch failed from {target}:{remote_path}"
+                + (f": {detail}" if detail else "")
+            )
+
+    def _mrg_fetch_remote_file(
+        self,
+        target: str,
+        remote_path: str,
+        destination: Path,
+    ) -> None:
+        command = self._mrg_command(
+            "xdc",
+            "scp",
+            "download",
+            "-x",
+            str(self._xdc_ref),
+            f"{target}:{remote_path}",
+            str(destination),
+        )
+        self._record_command(shlex.join(command))
+        try:
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=self.scp_timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            raise EnvironmentError(f"log fetch timed out from {target}:{remote_path}")
+        if completed.returncode != 0:
+            detail = self._strip_terminal_control(
+                (completed.stderr or completed.stdout).strip()
+            )
+            raise EnvironmentError(
+                f"log fetch failed from {target}:{remote_path} via `mrg xdc scp`"
+                + (f": {detail}" if detail else "")
+            )
 
     def _remote_port_listening(self, target: str, port: int, *, retries: int = 1) -> bool:
         command = (

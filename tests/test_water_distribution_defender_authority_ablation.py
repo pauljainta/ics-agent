@@ -164,3 +164,21 @@ def test_distribution_authority_run_id_uses_defender_variant_label() -> None:
 
     assert "observe_alert_only" in observe_run_id
     assert "delayed_containment" in delayed_run_id
+
+
+def test_distribution_authority_freeze_metadata_is_stable_under_local_model_defaults(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    result_root = tmp_path / "defender-authority-ablation"
+    runner = DefenderAuthorityAblationRunner(result_root)
+
+    runner.freeze_metadata()
+    runner.completed_runs_path.write_text("{}\n")
+
+    monkeypatch.delenv("QWEN_MODEL_PATH", raising=False)
+    monkeypatch.delenv("QWEN_MODEL_ID", raising=False)
+    runner.freeze_metadata()
+
+    monkeypatch.setenv("QWEN_MODEL_PATH", "/tmp/alternate-qwen-path")
+    runner.freeze_metadata()

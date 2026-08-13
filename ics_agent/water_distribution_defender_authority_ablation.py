@@ -17,7 +17,7 @@ from . import water_treatment_defender_authority_ablation as authority_common
 
 
 AUTHORITY_EXPERIMENT_VERSION = (
-    "water_distribution_defender_authority_ablation_seed101_v1"
+    "water_distribution_defender_authority_ablation_seed101_v6"
 )
 AUTHORITY_SEED = 101
 AUTHORITY_RESULT_ROOT = (
@@ -240,6 +240,50 @@ class DefenderAuthorityAblationRunner(seeded.SeededBackboneRunner):
         raise RuntimeError(
             f"unable to resolve condition `{family_spec.family_name}` from {family_spec.config_path}"
         )
+
+    def _family_model_settings(
+        self,
+        family_spec: seeded.FamilySpec,
+    ) -> dict[str, dict[str, Any]]:
+        orchestrator = self._orchestrator()
+        config = self._runtime_config(family_spec, AUTHORITY_SEED)
+        condition_spec = self._condition_spec(orchestrator, family_spec, config)
+        effective_profiles = condition_spec.get("effective_profiles") or {}
+
+        # Freeze experiment metadata from the configured profile view rather than
+        # runtime-local environment defaults like QWEN_MODEL_PATH.
+        settings: dict[str, dict[str, Any]] = {}
+        for role, profile_id in condition_spec["profiles"].items():
+            profile = (
+                dict(effective_profiles.get(role) or {})
+                or orchestrator.agent_profiles.get(profile_id, {})
+            )
+            if not isinstance(profile, dict) or profile.get("family") != "agentic":
+                continue
+            llm = dict(profile.get("llm") or {})
+            if not llm:
+                continue
+            model_id = llm.get("model_id")
+            settings[str(role)] = {
+                "profile_id": str(profile_id),
+                "backend": llm.get("backend"),
+                "framework": llm.get("framework"),
+                "model_id": model_id,
+                "model_path": model_id,
+                "temperature": float(llm.get("temperature", 0.0) or 0.0),
+                "top_p": llm.get("top_p"),
+                "do_sample": float(llm.get("temperature", 0.0) or 0.0) > 0.0,
+                "max_new_tokens": llm.get("max_new_tokens"),
+                "quantization": llm.get("quantization"),
+                "context_limit": llm.get("context_limit"),
+                "local_files_only": bool(llm.get("local_files_only", True)),
+                "require_cuda": bool(llm.get("require_cuda", True)),
+                "strict_backend": bool(llm.get("strict_backend", True)),
+                "allow_langchain_fallback": bool(
+                    llm.get("allow_langchain_fallback", True)
+                ),
+            }
+        return settings
 
     def _prompt_hash_payload(self) -> dict[str, Any]:
         orchestrator = self._orchestrator()

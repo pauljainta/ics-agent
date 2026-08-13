@@ -184,6 +184,97 @@ def test_sphere_backend_delay_configuration_does_not_force_transport_start() -> 
     assert backend._runtime_containment_delay_steps == 2
 
 
+def test_sphere_backend_ssh_config_uses_realization_node_ips_when_available(
+    tmp_path: Path,
+) -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        {
+            "testbed": "water_distribution",
+            "backend": "sphere_openplc",
+            "start_bridge": False,
+            "helper_root": tmp_path / "helper",
+            "ssh_config_path": tmp_path / "openplc_ssh_config",
+            "identity_file": tmp_path / "missing_merge_key",
+            "remote_roles": {},
+        }
+    )
+    backend._merge_user = "researcher"
+    backend._xdc_host = "example-xdc-04-researcher"
+    backend._node_ssh_hostnames = {
+        "access": "198.18.4.30",
+        "engineering": "198.18.4.40",
+        "controller": "198.18.4.10",
+        "simulator": "198.18.4.20",
+    }
+
+    backend._write_ssh_config()
+
+    config_text = backend.ssh_config_path.read_text()
+    assert "Host access\n    HostName 198.18.4.30\n" in config_text
+    assert "Host engineering\n    HostName 198.18.4.40\n" in config_text
+    assert "Host controller\n    HostName 198.18.4.10\n" in config_text
+    assert "Host simulator\n    HostName 198.18.4.20\n" in config_text
+    assert "Host access\n    HostName 198.18.4.30\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+    assert "Host engineering\n    HostName 198.18.4.40\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+    assert "Host controller\n    HostName 198.18.4.10\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+
+
+def test_sphere_backend_parses_mrg_xdc_ssh_transcript() -> None:
+    begin_marker = "__CODEX_MRG_BEGIN_test__"
+    rc_marker_prefix = "__CODEX_MRG_RC_test__:"
+    transcript = (
+        "\x1b[?2004hresearcher@controller:~$ unset PROMPT_COMMAND\r\n"
+        "\x1b[?2004l\r"
+        "__CODEX_MRG_BEGIN_test__\r\n"
+        "line one\r\n"
+        "line two\r\n"
+        "__CODEX_MRG_RC_test__:0\r\n"
+        "logout\r\n"
+    )
+
+    output, exit_code = environment_module._SphereOpenPLCBackend._parse_mrg_xdc_ssh_output(
+        transcript,
+        begin_marker=begin_marker,
+        rc_marker_prefix=rc_marker_prefix,
+    )
+
+    assert output == "line one\nline two\n"
+    assert exit_code == 0
+
+
+def test_sphere_backend_ssh_checked_falls_back_to_mrg_xdc_transport() -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        {
+            "testbed": "water_distribution",
+            "backend": "sphere_openplc",
+            "start_bridge": False,
+        }
+    )
+    backend._xdc_ref = "example-xdc-05.researcher"
+    raw_calls: list[str] = []
+    mrg_calls: list[str] = []
+
+    def _raw_ssh_checked(self, target, remote_command, *, timeout_sec=None, retries=None):
+        raw_calls.append(f"{target}:{remote_command}")
+        raise EnvironmentError("ssh raw path failed: no route to host")
+
+    def _mrg_ssh_checked(self, target, remote_command, *, timeout_sec=None):
+        mrg_calls.append(f"{target}:{remote_command}")
+        return "ready\n"
+
+    backend._raw_ssh_checked = MethodType(_raw_ssh_checked, backend)
+    backend._mrg_ssh_checked = MethodType(_mrg_ssh_checked, backend)
+
+    first = backend._ssh_checked("controller", "echo ready")
+    second = backend._ssh_checked("controller", "echo ready again")
+
+    assert first == "ready\n"
+    assert second == "ready\n"
+    assert raw_calls == ["controller:echo ready"]
+    assert mrg_calls == ["controller:echo ready", "controller:echo ready again"]
+    assert backend._prefer_mrg_xdc_transport is True
+
+
 def test_vendor_openplc_payload_imports_without_workspace_repos(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(environment_module, "WORKSPACE_ROOT", tmp_path)
     vendor_scripts = environment_module.OPENPLC_SUPPORT_SCRIPTS.resolve()
@@ -287,6 +378,7 @@ def _distribution_backend(
         }
     )
     backend._require_direct_env = MethodType(lambda self: fake_direct_env, backend)
+    backend._local_port_listening = MethodType(lambda self, port: True, backend)
     return backend
 
 
