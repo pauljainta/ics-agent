@@ -7,6 +7,7 @@ from ics_agent.water_distribution_seeded_backbone import (
     DEFAULT_TMUX_SESSION_NAME,
     SeededBackboneRunner,
     TESTBED_ID,
+    _read_json,
     _format_mean_std,
     _normalize_csv_rows,
     _parse_args,
@@ -89,3 +90,34 @@ def test_distribution_launch_controller_uses_detached_tmux(
     assert str(runner.result_root) in launch_command
     assert str(runner.controller_stdout_path) in launch_command
     assert runner.launcher_state_path.exists()
+
+
+def test_distribution_clear_stale_running_rows_resets_resume_state(tmp_path) -> None:
+    runner = SeededBackboneRunner(tmp_path / "seeded_backbone_qwen35_9b")
+    family_name = "black_box_attacker__agentic_defender"
+    seed = 101
+
+    rows = runner._load_scenario_rows(family_name, seed)
+    rows[0]["status"] = "running"
+    rows[0]["attempt_count"] = "1"
+    rows[0]["started_at_utc"] = "2026-08-14T00:00:00+00:00"
+    rows[0]["run_id"] = "stale-run"
+    runner._save_scenario_rows(family_name, seed, rows)
+
+    cleared = runner._clear_stale_running_rows(
+        family_names=[family_name],
+        seeds=[seed],
+    )
+
+    assert len(cleared) == 1
+    refreshed_rows = runner._load_scenario_rows(family_name, seed)
+    assert refreshed_rows[0]["status"] == "pending"
+    assert refreshed_rows[0]["run_id"] == ""
+    assert (
+        refreshed_rows[0]["last_error"]
+        == "stale running marker cleared before resume"
+    )
+
+    resume_state = _read_json(runner.resume_state_path, {})
+    assert resume_state["pending_runs"] > 0
+    assert resume_state["next_run"]["scenario_id"] == refreshed_rows[0]["scenario_id"]

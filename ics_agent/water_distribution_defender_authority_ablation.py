@@ -821,7 +821,10 @@ class DefenderAuthorityAblationRunner(seeded.SeededBackboneRunner):
                 )
                 seeded._append_log(
                     self.experiment_log_path,
-                    f"worker failed for {family.family_name} seed {AUTHORITY_SEED}: {completed.stderr.strip()}",
+                    (
+                        f"worker failed for {family.family_name} seed {AUTHORITY_SEED}; "
+                        "inspect the family worker_run.json for detailed stderr/stdout"
+                    ),
                 )
                 return completed.returncode
             seeded._append_log(

@@ -385,7 +385,11 @@ class _SphereOpenPLCBackend:
         ).strip() or None
         self.realization_name = str(config.get("realization", "wargamestable")).strip()
         self.revision = str(config.get("revision", "")).strip() or None
-        self.xdc_name = str(config.get("xdc", "")).strip() or "x0"
+        self.configured_xdc_name = str(config.get("xdc", "")).strip() or "x0"
+        self.xdc_name = (
+            str(os.environ.get("ICS_AGENT_SPHERE_XDC_OVERRIDE", "")).strip()
+            or self.configured_xdc_name
+        )
         self.access_host = str(config.get("access_host", "access")).strip() or None
         self.engineering_host = (
             str(config.get("engineering_host", "engineering")).strip() or None
@@ -467,10 +471,22 @@ class _SphereOpenPLCBackend:
         self.start_bridge = bool(config.get("start_bridge", True))
         self.stop_remote_runtime = bool(config.get("stop_remote_runtime", False))
 
-        helper_root_value = config.get("helper_root", "~/.cache/ics-sphere")
-        self.helper_root = Path(helper_root_value).expanduser().resolve()
+        helper_root_value = config.get("helper_root")
+        if helper_root_value:
+            helper_root_path = Path(helper_root_value).expanduser()
+        else:
+            helper_root_path = (
+                Path("~/.cache/ics-sphere").expanduser()
+                / self.testbed_id
+                / self.realization_name
+                / self.xdc_name
+            )
+        self.helper_root = helper_root_path.resolve()
         self.logs_dir = self.helper_root / "logs"
-        ssh_config_value = config.get("ssh_config_path", self.helper_root / "openplc_ssh_config")
+        ssh_config_value = config.get(
+            "ssh_config_path",
+            self.helper_root / "openplc_ssh_config",
+        )
         self.ssh_config_path = Path(ssh_config_value).expanduser().resolve()
         self.identity_file = Path(
             config.get("identity_file", "~/.ssh/merge_key")
@@ -1477,17 +1493,11 @@ class _SphereOpenPLCBackend:
             node_id = str(node.get("id") or "").strip()
             if not node_id:
                 continue
-            sockets = node.get("sockets") or []
-            for socket in sockets:
-                if not isinstance(socket, dict):
-                    continue
-                for addr in socket.get("addrs") or []:
-                    host = str(addr or "").split("/", 1)[0].strip()
-                    if host:
-                        hostnames[node_id] = host
-                        break
-                if node_id in hostnames:
-                    break
+            # For XDC-attached SPHERE runs, the jump host resolves node IDs such as
+            # `controller` and `simulator` to the live infra endpoints. Socket IPs
+            # in realization metadata can point at an unreachable address family
+            # from the XDC, so prefer the stable node IDs as SSH host targets.
+            hostnames[node_id] = node_id
         return hostnames
 
     def _ssh_hostname_for(self, host: str) -> str:

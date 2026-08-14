@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
@@ -902,8 +903,13 @@ def verify_optionb_staged_snapshot(
 
     expected_xdc = str(expected_environment.get("xdc", "")).strip()
     actual_xdc = str(environment_snapshot.get("xdc", "")).strip()
+    override_xdc = str(os.environ.get("ICS_AGENT_SPHERE_XDC_OVERRIDE", "")).strip()
     if expected_xdc and actual_xdc:
-        if expected_xdc not in {actual_xdc, actual_xdc.split(".", 1)[0]}:
+        expected_tokens = {expected_xdc, expected_xdc.split(".", 1)[0]}
+        if override_xdc:
+            expected_tokens.update({override_xdc, override_xdc.split(".", 1)[0]})
+        actual_tokens = {actual_xdc, actual_xdc.split(".", 1)[0]}
+        if expected_tokens.isdisjoint(actual_tokens):
             errors.append(f"expected xdc `{expected_xdc}`, found `{actual_xdc}`")
 
     return {

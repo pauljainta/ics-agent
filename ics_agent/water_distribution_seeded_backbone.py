@@ -803,6 +803,70 @@ class SeededBackboneRunner:
             "family_action_space_hashes": family_hashes,
         }
 
+    def _resume_transport_override_action_space_payload(
+        self,
+        actual_payload: Any,
+        expected_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        override_xdc = str(os.environ.get("ICS_AGENT_SPHERE_XDC_OVERRIDE", "")).strip()
+        if not override_xdc or not isinstance(actual_payload, dict):
+            return None
+        if actual_payload.get("experiment_version") != expected_payload.get(
+            "experiment_version"
+        ):
+            return None
+
+        environment_source_key = portable_path(REPO_ROOT / "ics_agent" / "environment.py")
+
+        def _diff_keys(actual_map: Any, expected_map: Any) -> set[str]:
+            actual_items = dict(actual_map or {})
+            expected_items = dict(expected_map or {})
+            return {
+                key
+                for key in set(actual_items) | set(expected_items)
+                if actual_items.get(key) != expected_items.get(key)
+            }
+
+        normalized_expected = deepcopy(expected_payload)
+        expected_sources = dict(normalized_expected.get("source_hashes") or {})
+        actual_sources = dict(actual_payload.get("source_hashes") or {})
+        if _diff_keys(actual_sources, expected_sources) != {environment_source_key}:
+            return None
+        expected_sources[environment_source_key] = actual_sources[environment_source_key]
+        normalized_expected["source_hashes"] = expected_sources
+
+        expected_families = dict(normalized_expected.get("family_action_space_hashes") or {})
+        actual_families = dict(actual_payload.get("family_action_space_hashes") or {})
+        if set(actual_families) != set(expected_families):
+            return None
+
+        for family_name, expected_family in expected_families.items():
+            actual_family = actual_families.get(family_name)
+            if not isinstance(expected_family, dict) or not isinstance(actual_family, dict):
+                return None
+
+            normalized_bundle = deepcopy(expected_family.get("bundle") or {})
+            actual_bundle = dict(actual_family.get("bundle") or {})
+            expected_runtime = dict(normalized_bundle.get("runtime_source_hashes") or {})
+            actual_runtime = dict(actual_bundle.get("runtime_source_hashes") or {})
+            if _diff_keys(actual_runtime, expected_runtime) != {environment_source_key}:
+                return None
+
+            expected_runtime[environment_source_key] = actual_runtime[environment_source_key]
+            normalized_bundle["runtime_source_hashes"] = expected_runtime
+            normalized_family = {
+                "bundle_hash": _canonical_json_hash(normalized_bundle),
+                "bundle": normalized_bundle,
+            }
+            if actual_family != normalized_family:
+                return None
+            expected_families[family_name] = normalized_family
+
+        normalized_expected["family_action_space_hashes"] = expected_families
+        if actual_payload != normalized_expected:
+            return None
+        return actual_payload
+
     def _containment_semantics_text(self) -> str:
         return "\n".join(
             [
@@ -873,6 +937,17 @@ class SeededBackboneRunner:
             elif kind == "json":
                 if actual_path.exists():
                     actual_payload = _read_json(actual_path, None)
+                    if actual_path == self.action_space_hashes_path and has_progress:
+                        # Preserve frozen action-space metadata when the only
+                        # runtime drift is the transport override plumbing in
+                        # `ics_agent/environment.py`.
+                        payload = (
+                            self._resume_transport_override_action_space_payload(
+                                actual_payload,
+                                payload,
+                            )
+                            or payload
+                        )
                     if actual_payload != payload and has_progress:
                         raise RuntimeError(
                             f"frozen metadata mismatch in {actual_path}; create a new experiment version before continuing"
@@ -1011,6 +1086,79 @@ class SeededBackboneRunner:
         rows: list[dict[str, Any]],
     ) -> None:
         write_csv(self._scenario_status_path(family_name, seed), rows)
+
+    def _family_seed_pairs(
+        self,
+        *,
+        family_names: list[str] | None = None,
+        seeds: list[int] | None = None,
+    ) -> list[tuple[str, int]]:
+        selected_families = family_names or [family.family_name for family in FAMILY_SPECS]
+        selected_seeds = seeds or list(SEEDS)
+        return [
+            (family_name, seed)
+            for family_name in selected_families
+            for seed in selected_seeds
+        ]
+
+    def _resume_snapshot_rows(
+        self,
+        *,
+        family_names: list[str] | None = None,
+        seeds: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for family_name, seed in self._family_seed_pairs(
+            family_names=family_names,
+            seeds=seeds,
+        ):
+            rows.extend(self._load_scenario_rows(family_name, seed))
+        return rows
+
+    def _clear_stale_running_rows(
+        self,
+        *,
+        family_names: list[str] | None = None,
+        seeds: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        cleared: list[dict[str, Any]] = []
+        for family_name, seed in self._family_seed_pairs(
+            family_names=family_names,
+            seeds=seeds,
+        ):
+            rows = self._load_scenario_rows(family_name, seed)
+            changed = False
+            for row in rows:
+                if row.get("status") != "running":
+                    continue
+                prior_error = str(row.get("last_error") or "").strip()
+                row["status"] = "pending"
+                row["started_at_utc"] = ""
+                row["completed_at_utc"] = ""
+                row["failed_at_utc"] = ""
+                row["run_id"] = ""
+                row["last_error"] = (
+                    "stale running marker cleared before resume"
+                    if not prior_error
+                    else (
+                        "stale running marker cleared before resume; "
+                        f"previous note: {prior_error}"
+                    )
+                )
+                changed = True
+                cleared.append(
+                    {
+                        "attacker_family": family_name,
+                        "seed": seed,
+                        "scenario_id": row["scenario_id"],
+                        "attempt_count": row.get("attempt_count", "0"),
+                    }
+                )
+            if changed:
+                self._save_scenario_rows(family_name, seed, rows)
+        if cleared:
+            self._sync_all_ledgers()
+        return cleared
 
     def _expected_environment(self, config: dict[str, Any]) -> dict[str, Any]:
         return dict(config.get("environment") or {})
@@ -1680,11 +1828,13 @@ class SeededBackboneRunner:
 
     def run_controller(self) -> int:
         self.freeze_metadata()
-        self._mark_resume_event_if_needed(
-            [row for row in csv.DictReader(self.run_queue_path.open(newline=""))]
-            if self.run_queue_path.exists()
-            else []
-        )
+        self._mark_resume_event_if_needed(self._resume_snapshot_rows())
+        cleared_rows = self._clear_stale_running_rows()
+        if cleared_rows:
+            _append_log(
+                self.experiment_log_path,
+                f"cleared {len(cleared_rows)} stale running markers before controller resume",
+            )
         self._validate_distribution_environment()
         self._set_phase("running_grid", "in_progress")
         _append_log(
@@ -1782,7 +1932,22 @@ class SeededBackboneRunner:
             conditions=[condition_spec],
         )
         orchestrator._current_reproducibility = reproducibility
-        self._mark_resume_event_if_needed(self._load_scenario_rows(family_name, seed))
+        self._mark_resume_event_if_needed(
+            self._resume_snapshot_rows(
+                family_names=[family_name],
+                seeds=[seed],
+            )
+        )
+        cleared_rows = self._clear_stale_running_rows(
+            family_names=[family_name],
+            seeds=[seed],
+        )
+        if cleared_rows:
+            _append_log(
+                self.experiment_log_path,
+                "cleared stale running markers before worker resume: "
+                f"{family_name} seed {seed}",
+            )
         completed_rows, _ = self._sync_seed_state(
             family_spec=family_spec,
             seed=seed,
@@ -1875,7 +2040,11 @@ class SeededBackboneRunner:
             if not success:
                 _append_log(
                     self.experiment_log_path,
-                    f"scenario failed after {attempts} attempts: {family_name} seed {seed} scenario {scenario.scenario_id}: {last_error}",
+                    (
+                        f"scenario failed after {attempts} attempts: "
+                        f"{family_name} seed {seed} scenario {scenario.scenario_id}; "
+                        "inspect scenario_status.csv, worker_run.json, and interrupted_artifacts for details"
+                    ),
                 )
                 return 1
             _append_log(
