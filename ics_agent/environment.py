@@ -1294,10 +1294,11 @@ class _SphereOpenPLCBackend:
         local_forward: str | None = None,
     ) -> list[str]:
         assert self._xdc_ref is not None
+        resolved_target = self._ssh_hostname_for(target)
         command = self._mrg_command("xdc", "ssh", "-x", self._xdc_ref)
         if local_forward:
             command.extend(["-L", local_forward])
-        command.append(target)
+        command.append(resolved_target)
         return command
 
     @staticmethod
@@ -1493,11 +1494,14 @@ class _SphereOpenPLCBackend:
             node_id = str(node.get("id") or "").strip()
             if not node_id:
                 continue
-            # For XDC-attached SPHERE runs, the jump host resolves node IDs such as
-            # `controller` and `simulator` to the live infra endpoints. Socket IPs
-            # in realization metadata can point at an unreachable address family
-            # from the XDC, so prefer the stable node IDs as SSH host targets.
-            hostnames[node_id] = node_id
+            # Prefer the realization's infranet address when it is present. Recent
+            # XDC paths no longer resolve short node IDs like `controller`
+            # consistently, while `infranetAddr` stays stable within the attached
+            # materialization network. Fall back to the node ID when no explicit
+            # infranet address is exposed.
+            hostnames[node_id] = (
+                str(node_entry.get("infranetAddr") or "").strip() or node_id
+            )
         return hostnames
 
     def _ssh_hostname_for(self, host: str) -> str:
@@ -2525,10 +2529,11 @@ class _SphereOpenPLCBackend:
                 f"invalid remote destination `{destination}` for `mrg xdc scp upload`"
             )
         target, remote_path = destination.split(":", 1)
+        resolved_target = self._ssh_hostname_for(target)
         command = self._mrg_command("xdc", "scp", "upload", "-x", str(self._xdc_ref))
         if source.is_dir():
             command.append("-r")
-        command.extend([str(source), f"{target}:{remote_path}"])
+        command.extend([str(source), f"{resolved_target}:{remote_path}"])
         self._record_command(shlex.join(command))
         timeout_value = timeout_sec or self.scp_timeout_sec
         attempt_count = max(1, retries or self.scp_attempts)
@@ -2627,13 +2632,14 @@ class _SphereOpenPLCBackend:
         remote_path: str,
         destination: Path,
     ) -> None:
+        resolved_target = self._ssh_hostname_for(target)
         command = self._mrg_command(
             "xdc",
             "scp",
             "download",
             "-x",
             str(self._xdc_ref),
-            f"{target}:{remote_path}",
+            f"{resolved_target}:{remote_path}",
             str(destination),
         )
         self._record_command(shlex.join(command))

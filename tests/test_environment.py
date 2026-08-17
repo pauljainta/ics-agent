@@ -201,23 +201,39 @@ def test_sphere_backend_ssh_config_uses_realization_node_ips_when_available(
     backend._merge_user = "researcher"
     backend._xdc_host = "example-xdc-04-researcher"
     backend._node_ssh_hostnames = {
-        "access": "access",
-        "engineering": "engineering",
-        "controller": "controller",
-        "simulator": "simulator",
+        "access": "198.18.8.11",
+        "engineering": "198.18.8.13",
+        "controller": "198.18.8.12",
+        "simulator": "198.18.8.14",
     }
 
     backend._write_ssh_config()
 
     config_text = backend.ssh_config_path.read_text()
     assert "Host example-xdc-04-researcher\n    HostName example-xdc-04-researcher\n" in config_text
-    assert "Host access\n    HostName access\n" in config_text
-    assert "Host engineering\n    HostName engineering\n" in config_text
-    assert "Host controller\n    HostName controller\n" in config_text
-    assert "Host simulator\n    HostName simulator\n" in config_text
-    assert "Host access\n    HostName access\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
-    assert "Host engineering\n    HostName engineering\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
-    assert "Host controller\n    HostName controller\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+    assert "Host access\n    HostName 198.18.8.11\n" in config_text
+    assert "Host engineering\n    HostName 198.18.8.13\n" in config_text
+    assert "Host controller\n    HostName 198.18.8.12\n" in config_text
+    assert "Host simulator\n    HostName 198.18.8.14\n" in config_text
+    assert "Host access\n    HostName 198.18.8.11\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+    assert "Host engineering\n    HostName 198.18.8.13\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+    assert "Host controller\n    HostName 198.18.8.12\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+
+
+def test_sphere_backend_mrg_xdc_ssh_command_uses_resolved_node_target() -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        {
+            "testbed": "water_distribution",
+            "backend": "sphere_openplc",
+            "start_bridge": False,
+        }
+    )
+    backend._xdc_ref = "example-xdc-04.researcher"
+    backend._node_ssh_hostnames = {"controller": "198.18.8.12"}
+
+    command = backend._mrg_xdc_ssh_command("controller")
+
+    assert command[-1] == "198.18.8.12"
 
 
 def test_sphere_backend_default_helper_root_is_isolated_by_testbed_realization_and_xdc() -> None:

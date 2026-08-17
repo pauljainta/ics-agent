@@ -139,6 +139,17 @@ def test_scripted_black_box_runner_tracks_18_pending_runs(tmp_path: Path) -> Non
     assert resume_state["next_run"]["scenario_id"] == rows[0]["scenario_id"]
 
 
+def test_scripted_black_box_runner_derives_required_live_preflight_refs() -> None:
+    runner = ScriptedBlackBoxBaselineRunner(CANONICAL_RESULT_ROOT)
+    refs = runner._required_preflight_refs(runner._runtime_config())
+
+    assert refs == {
+        "merge_server": "merge.example.invalid",
+        "realization": "example-realization-03.openplcwater.lgarcia",
+        "materialization": "example-realization-03.openplcwater.lgarcia",
+    }
+
+
 def test_scripted_black_box_policy_is_deterministic_across_fresh_agents() -> None:
     orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
     profile = orchestrator.agent_profiles[FAMILY_SPEC.attacker_profile_id]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import shutil
 import subprocess
@@ -208,6 +209,32 @@ class ScriptedBlackBoxBaselineRunner:
         config["use_canonical_result_root"] = True
         config["testbed"] = TESTBED_ID
         return config
+
+    @staticmethod
+    def _required_preflight_refs(config: dict[str, Any]) -> dict[str, str]:
+        environment = dict(config.get("environment") or {})
+        experiment_ref = str(environment.get("experiment", "")).strip()
+        realization_name = str(environment.get("realization", "")).strip()
+        if not experiment_ref or "." not in experiment_ref:
+            raise RuntimeError(
+                "expected environment.experiment in `experiment.project` form"
+            )
+        experiment_name, project_name = experiment_ref.split(".", 1)
+        if realization_name.count(".") == 2:
+            realization_ref = realization_name
+        elif "." in realization_name:
+            raise RuntimeError(
+                "expected environment.realization as a short name or full `realization.experiment.project` reference"
+            )
+        else:
+            realization_ref = (
+                f"{realization_name}.{experiment_name}.{project_name}"
+            )
+        return {
+            "merge_server": str(environment.get("merge_server", "")).strip(),
+            "realization": realization_ref,
+            "materialization": realization_ref,
+        }
 
     def _condition_spec(
         self,
@@ -924,15 +951,59 @@ class ScriptedBlackBoxBaselineRunner:
             )
         return completed.stdout.strip()
 
+    def _check_mrg_show_json(
+        self,
+        kind: str,
+        ref: str,
+        *,
+        merge_server: str,
+        timeout_sec: float = 20.0,
+    ) -> dict[str, Any]:
+        command = ["mrg"]
+        if merge_server:
+            command.extend(["-s", merge_server])
+        command.extend(["show", kind, ref, "--json"])
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                cwd=REPO_ROOT,
+                env=os.environ.copy(),
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"mrg {kind} preflight timed out after {timeout_sec:.0f}s: {' '.join(command)}"
+            ) from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(
+                f"mrg {kind} preflight failed ({completed.returncode}) for `{ref}`: {detail}"
+            )
+        try:
+            return json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"mrg {kind} preflight returned non-JSON output for `{ref}`"
+            ) from exc
+
     def _validate_optionb_environment(self) -> None:
         payload = _read_json(self.optionb_validation_path, {})
-        if payload.get("status") == "passed":
+        if (
+            payload.get("status") == "passed"
+            and isinstance(payload.get("preflight"), dict)
+            and payload["preflight"].get("merge_user")
+            and payload["preflight"].get("realization")
+            and payload["preflight"].get("materialization")
+        ):
             self._set_phase("validated_optionb_environment", "completed")
             return
         self._set_phase("validated_optionb_environment", "in_progress")
         config = self._runtime_config()
         env = OpenPLCEnvironment(config.get("environment", {}))
         scenario = self.scenarios()[0]
+        preflight_refs = self._required_preflight_refs(config)
         result: dict[str, Any] = {
             "validated_at_utc": utc_now(),
             "config_path": portable_path(Path(config["_path"])),
@@ -940,6 +1011,16 @@ class ScriptedBlackBoxBaselineRunner:
         }
         try:
             merge_user = self._check_mrg_transport()
+            realization_payload = self._check_mrg_show_json(
+                "realization",
+                preflight_refs["realization"],
+                merge_server=preflight_refs["merge_server"],
+            )
+            materialization_payload = self._check_mrg_show_json(
+                "materialization",
+                preflight_refs["materialization"],
+                merge_server=preflight_refs["merge_server"],
+            )
             startup = env.start()
             backend = env._backend_impl
             if not isinstance(backend, _SphereOpenPLCBackend):
@@ -950,6 +1031,14 @@ class ScriptedBlackBoxBaselineRunner:
             result.update(
                 {
                     "status": "passed",
+                    "preflight": {
+                        "merge_server": preflight_refs["merge_server"],
+                        "merge_user": merge_user,
+                        "realization_ref": preflight_refs["realization"],
+                        "materialization_ref": preflight_refs["materialization"],
+                        "realization": realization_payload,
+                        "materialization": materialization_payload,
+                    },
                     "startup": startup,
                     "validated_target": {
                         "experiment": backend.experiment_ref,
