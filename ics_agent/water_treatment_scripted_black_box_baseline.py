@@ -67,6 +67,9 @@ FAMILY_SPEC = FamilySpec(
     knowledge_variant="black_box_scripted",
     config_path=CONFIG_PATH,
 )
+RESUME_COMPATIBLE_CONFIG_HASH_PATHS = {
+    portable_path(REPO_ROOT / "ics_agent" / "water_treatment_scripted_black_box_baseline.py"),
+}
 TOP_LEVEL_PHASES = [
     "manifest_frozen",
     "validated_optionb_environment",
@@ -415,6 +418,26 @@ class ScriptedBlackBoxBaselineRunner:
             self.metrics_schema_path: ("json", _infer_metrics_schema()),
         }
 
+    @staticmethod
+    def _is_resume_compatible_config_hash_update(
+        actual_payload: Any,
+        expected_payload: Any,
+    ) -> bool:
+        if not isinstance(actual_payload, dict) or not isinstance(expected_payload, dict):
+            return False
+        actual_hashes = dict(actual_payload.get("file_hashes") or {})
+        expected_hashes = dict(expected_payload.get("file_hashes") or {})
+        if set(actual_hashes) != set(expected_hashes):
+            return False
+        changed_paths = {
+            path
+            for path, expected_hash in expected_hashes.items()
+            if actual_hashes.get(path) != expected_hash
+        }
+        return bool(changed_paths) and changed_paths.issubset(
+            RESUME_COMPATIBLE_CONFIG_HASH_PATHS
+        )
+
     def freeze_metadata(self) -> None:
         self.ensure_root_layout()
         has_progress = bool(_read_json(self.completed_runs_path, {}))
@@ -439,9 +462,21 @@ class ScriptedBlackBoxBaselineRunner:
                 if actual_path.exists():
                     actual_payload = _read_json(actual_path, None)
                     if actual_payload != payload and has_progress:
-                        raise RuntimeError(
-                            f"frozen metadata mismatch in {actual_path}; create a new experiment version before continuing"
-                        )
+                        if (
+                            actual_path == self.config_hashes_path
+                            and self._is_resume_compatible_config_hash_update(
+                                actual_payload,
+                                payload,
+                            )
+                        ):
+                            _append_log(
+                                self.experiment_log_path,
+                                "updating config hashes after a resume-compatible runner-only bookkeeping change",
+                            )
+                        else:
+                            raise RuntimeError(
+                                f"frozen metadata mismatch in {actual_path}; create a new experiment version before continuing"
+                            )
                 write_json(actual_path, payload)
             elif kind == "yaml":
                 if actual_path.exists():
@@ -486,6 +521,8 @@ class ScriptedBlackBoxBaselineRunner:
         item = dict(phases.get(phase) or {})
         item["status"] = status
         item["updated_utc"] = utc_now()
+        if status != "failed" and "error_message" not in fields:
+            item.pop("error_message", None)
         if status == "in_progress" and "started_utc" not in item:
             item["started_utc"] = item["updated_utc"]
         if status == "completed":
@@ -989,16 +1026,6 @@ class ScriptedBlackBoxBaselineRunner:
             ) from exc
 
     def _validate_optionb_environment(self) -> None:
-        payload = _read_json(self.optionb_validation_path, {})
-        if (
-            payload.get("status") == "passed"
-            and isinstance(payload.get("preflight"), dict)
-            and payload["preflight"].get("merge_user")
-            and payload["preflight"].get("realization")
-            and payload["preflight"].get("materialization")
-        ):
-            self._set_phase("validated_optionb_environment", "completed")
-            return
         self._set_phase("validated_optionb_environment", "in_progress")
         config = self._runtime_config()
         env = OpenPLCEnvironment(config.get("environment", {}))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import ics_agent.water_treatment_scripted_black_box_baseline as scripted_baseline
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
@@ -11,6 +12,7 @@ from ics_agent.water_treatment_scripted_black_box_baseline import (
     CANONICAL_RESULT_ROOT,
     CONFIG_PATH,
     FAMILY_SPEC,
+    RESUME_COMPATIBLE_CONFIG_HASH_PATHS,
     RUNS_PER_SEED,
     SEED,
     ScriptedBlackBoxBaselineRunner,
@@ -176,3 +178,132 @@ def test_scripted_black_box_policy_is_deterministic_across_fresh_agents() -> Non
     assert first[0].action == second[0].action
     assert first[0].summary == second[0].summary
     assert "deterministic" in first[0].labels
+
+
+def test_set_phase_completed_clears_stale_error_message(tmp_path: Path) -> None:
+    runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
+    runner.ensure_root_layout()
+
+    runner._set_phase("validated_optionb_environment", "failed", error_message="stale")
+    runner._set_phase("validated_optionb_environment", "completed")
+
+    payload = json.loads(runner.global_phase_status_path.read_text())
+    phase = payload["phases"]["validated_optionb_environment"]
+    assert phase["status"] == "completed"
+    assert "error_message" not in phase
+
+
+def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
+    runner.ensure_root_layout()
+    runner.optionb_validation_path.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "preflight": {
+                    "merge_user": "cached-user",
+                    "realization": {"id": "cached-realization"},
+                    "materialization": {"id": "cached-materialization"},
+                },
+            }
+        )
+    )
+
+    calls = {"whoami": 0, "show": 0}
+
+    class FakeBackend:
+        experiment_ref = "openplcwater.lgarcia"
+        _realization_ref = "example-realization-03.openplcwater.lgarcia"
+        revision = "ac79757fe0d3f8e98bbfa43a303fee121b88be05"
+        _xdc_ref = "example-xdc-07"
+
+    class FakeEnvironment:
+        def __init__(self, _config):
+            self._backend_impl = FakeBackend()
+
+        def start(self) -> dict[str, str]:
+            return {"status": "started"}
+
+        def reset(self, _initial_conditions) -> dict[str, str]:
+            return {"STATE_NAME": "IDLE"}
+
+        def observe_flat(self) -> dict[str, str]:
+            return {"STATE_NAME": "IDLE"}
+
+        def inspect_surface(self, _action) -> dict[str, object]:
+            return {"reconnaissance": {"surface": "tags"}}
+
+        def stop(self) -> None:
+            return None
+
+    def fake_transport(*, timeout_sec: float = 20.0) -> str:
+        calls["whoami"] += 1
+        assert timeout_sec == 20.0
+        return "live-user"
+
+    def fake_show(kind: str, ref: str, *, merge_server: str, timeout_sec: float = 20.0):
+        calls["show"] += 1
+        assert merge_server == "merge.example.invalid"
+        assert timeout_sec == 20.0
+        return {"kind": kind, "ref": ref}
+
+    monkeypatch.setattr(scripted_baseline, "OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr(scripted_baseline, "_SphereOpenPLCBackend", FakeBackend)
+    monkeypatch.setattr(runner, "_check_mrg_transport", fake_transport)
+    monkeypatch.setattr(runner, "_check_mrg_show_json", fake_show)
+
+    runner._validate_optionb_environment()
+
+    payload = json.loads(runner.optionb_validation_path.read_text())
+    assert payload["status"] == "passed"
+    assert payload["preflight"]["merge_user"] == "live-user"
+    assert calls == {"whoami": 1, "show": 2}
+
+
+def test_resume_compatible_config_hash_update_allows_runner_only_drift() -> None:
+    runner_path = next(iter(RESUME_COMPATIBLE_CONFIG_HASH_PATHS))
+    actual_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "old-runner-hash",
+            "configs/agent_profiles.yaml": "shared-hash",
+        },
+    }
+    expected_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "new-runner-hash",
+            "configs/agent_profiles.yaml": "shared-hash",
+        },
+    }
+
+    assert ScriptedBlackBoxBaselineRunner._is_resume_compatible_config_hash_update(
+        actual_payload,
+        expected_payload,
+    )
+
+
+def test_resume_compatible_config_hash_update_rejects_behavioral_drift() -> None:
+    runner_path = next(iter(RESUME_COMPATIBLE_CONFIG_HASH_PATHS))
+    actual_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "old-runner-hash",
+            "ics_agent/agents/agentic.py": "old-agentic-hash",
+        },
+    }
+    expected_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "new-runner-hash",
+            "ics_agent/agents/agentic.py": "new-agentic-hash",
+        },
+    }
+
+    assert not ScriptedBlackBoxBaselineRunner._is_resume_compatible_config_hash_update(
+        actual_payload,
+        expected_payload,
+    )

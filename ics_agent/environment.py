@@ -537,6 +537,7 @@ class _SphereOpenPLCBackend:
         self._start_result: dict[str, Any] = {}
         self._runtime_containment_delay_steps = 0
         self._node_ssh_hostnames: dict[str, str] = {}
+        self._node_mrg_targets: dict[str, str] = {}
         self._prefer_mrg_xdc_transport = bool(
             config.get("prefer_mrg_xdc_transport", False)
         )
@@ -1294,7 +1295,7 @@ class _SphereOpenPLCBackend:
         local_forward: str | None = None,
     ) -> list[str]:
         assert self._xdc_ref is not None
-        resolved_target = self._ssh_hostname_for(target)
+        resolved_target = self._mrg_target_for(target)
         command = self._mrg_command("xdc", "ssh", "-x", self._xdc_ref)
         if local_forward:
             command.extend(["-L", local_forward])
@@ -1473,6 +1474,7 @@ class _SphereOpenPLCBackend:
             raise EnvironmentError(f"unable to inspect realization `{self._realization_ref}`")
         realization = payload.get("result", {}).get("realization", {})
         self._node_ssh_hostnames = self._realization_node_hostnames(payload)
+        self._node_mrg_targets = self._realization_node_targets(payload)
         realized_revision = str(realization.get("xhash", "")).strip() or None
         if self.revision is None:
             self.revision = realized_revision
@@ -1504,8 +1506,30 @@ class _SphereOpenPLCBackend:
             )
         return hostnames
 
+    @staticmethod
+    def _realization_node_targets(payload: dict[str, Any]) -> dict[str, str]:
+        targets: dict[str, str] = {}
+        nodes = payload.get("result", {}).get("realization", {}).get("nodes", {})
+        if not isinstance(nodes, dict):
+            return targets
+        for node_entry in nodes.values():
+            if not isinstance(node_entry, dict):
+                continue
+            node = node_entry.get("node") or {}
+            node_id = str(node.get("id") or "").strip()
+            if not node_id:
+                continue
+            targets[node_id] = node_id
+            infranet_addr = str(node_entry.get("infranetAddr") or "").strip()
+            if infranet_addr:
+                targets[infranet_addr] = node_id
+        return targets
+
     def _ssh_hostname_for(self, host: str) -> str:
         return self._node_ssh_hostnames.get(host, host)
+
+    def _mrg_target_for(self, host: str) -> str:
+        return self._node_mrg_targets.get(host, host)
 
     def _ensure_materialization(self) -> None:
         assert self._realization_ref is not None
@@ -2529,7 +2553,7 @@ class _SphereOpenPLCBackend:
                 f"invalid remote destination `{destination}` for `mrg xdc scp upload`"
             )
         target, remote_path = destination.split(":", 1)
-        resolved_target = self._ssh_hostname_for(target)
+        resolved_target = self._mrg_target_for(target)
         command = self._mrg_command("xdc", "scp", "upload", "-x", str(self._xdc_ref))
         if source.is_dir():
             command.append("-r")
@@ -2632,7 +2656,7 @@ class _SphereOpenPLCBackend:
         remote_path: str,
         destination: Path,
     ) -> None:
-        resolved_target = self._ssh_hostname_for(target)
+        resolved_target = self._mrg_target_for(target)
         command = self._mrg_command(
             "xdc",
             "scp",

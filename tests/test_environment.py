@@ -220,7 +220,7 @@ def test_sphere_backend_ssh_config_uses_realization_node_ips_when_available(
     assert "Host controller\n    HostName 198.18.8.12\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
 
 
-def test_sphere_backend_mrg_xdc_ssh_command_uses_resolved_node_target() -> None:
+def test_sphere_backend_mrg_xdc_ssh_command_uses_node_id_target() -> None:
     backend = environment_module._SphereOpenPLCBackend(
         {
             "testbed": "water_distribution",
@@ -230,10 +230,31 @@ def test_sphere_backend_mrg_xdc_ssh_command_uses_resolved_node_target() -> None:
     )
     backend._xdc_ref = "example-xdc-04.researcher"
     backend._node_ssh_hostnames = {"controller": "198.18.8.12"}
+    backend._node_mrg_targets = {
+        "controller": "controller",
+        "198.18.8.12": "controller",
+    }
 
     command = backend._mrg_xdc_ssh_command("controller")
 
-    assert command[-1] == "198.18.8.12"
+    assert command[-1] == "controller"
+
+
+def test_sphere_backend_mrg_target_for_resolves_infranet_ip_back_to_node_id() -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        {
+            "testbed": "water_distribution",
+            "backend": "sphere_openplc",
+            "start_bridge": False,
+        }
+    )
+    backend._node_mrg_targets = {
+        "controller": "controller",
+        "198.18.8.12": "controller",
+    }
+
+    assert backend._mrg_target_for("controller") == "controller"
+    assert backend._mrg_target_for("198.18.8.12") == "controller"
 
 
 def test_sphere_backend_default_helper_root_is_isolated_by_testbed_realization_and_xdc() -> None:
