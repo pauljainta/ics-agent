@@ -832,6 +832,16 @@ class AgenticRoleAgent(RoleAgent):
     def _optionb_mitre_enabled(self) -> bool:
         return optionb_mitre_enabled(self.profile)
 
+    def _uses_scripted_black_box_policy(self) -> bool:
+        if not self._is_black_box_attacker():
+            return False
+        if str(self._state.get("testbed_id", "")).strip().lower() != "water_treatment":
+            return False
+        behavior = self.profile.get("behavior_model")
+        if not isinstance(behavior, dict):
+            return False
+        return str(behavior.get("policy", "")).strip().lower() == "scripted_black_box"
+
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
             return []
@@ -908,6 +918,8 @@ class AgenticRoleAgent(RoleAgent):
         transition = self._optionb_mitre_transition_decisions(agent_context)
         if transition:
             return transition
+        if self._uses_scripted_black_box_policy():
+            return self._step_scripted_black_box_attacker(agent_context)
         if self._only_noop_candidates(agent_context):
             return []
         if not self._should_reason(agent_context, channel="action"):
@@ -2313,6 +2325,231 @@ class AgenticRoleAgent(RoleAgent):
             ),
             reverse=True,
         )
+
+    def _scripted_black_box_policy_state(self) -> dict[str, Any]:
+        return self._state.setdefault(
+            "scripted_black_box_policy",
+            {
+                "processed_action_signatures": set(),
+                "candidate_attempts": {},
+                "inspected_surfaces": set(),
+                "surface_scores": {},
+                "last_candidate_id": None,
+                "last_surface": None,
+                "selection_log": [],
+            },
+        )
+
+    @staticmethod
+    def _scripted_black_box_candidate_surface(candidate: dict[str, Any]) -> str:
+        surface = str(candidate.get("surface", "")).strip()
+        if surface:
+            return surface
+        visible_action = dict(candidate.get("action") or {})
+        if str(visible_action.get("type", "")).strip() == "inspect_surface":
+            return str(visible_action.get("target", "")).strip()
+        return ""
+
+    def _sync_scripted_black_box_policy_state(self, context: dict[str, Any]) -> dict[str, Any]:
+        state = self._scripted_black_box_policy_state()
+        processed = state.setdefault("processed_action_signatures", set())
+        attempts = state.setdefault("candidate_attempts", {})
+        inspected = state.setdefault("inspected_surfaces", set())
+        surface_scores = state.setdefault("surface_scores", {})
+
+        for item in context.get("recent_actions", []):
+            if item.get("role") != "attacker":
+                continue
+            visible_action = normalize_action(item.get("action"))
+            if visible_action is None:
+                continue
+            candidate_id = self._black_box_candidate_id(visible_action)
+            time_sec = self._coerce_number(item.get("time_sec"))
+            signature = f"{candidate_id}@{time_sec if time_sec is not None else 'na'}"
+            if signature in processed:
+                continue
+            processed.add(signature)
+            attempts[candidate_id] = int(attempts.get(candidate_id, 0) or 0) + 1
+            if str(visible_action.get("type", "")).strip() == "inspect_surface":
+                target = str(visible_action.get("target", "")).strip()
+                if target:
+                    inspected.add(target)
+            result = item.get("result")
+            if isinstance(result, dict):
+                surface = str(result.get("surface", "")).strip()
+                if surface:
+                    inspected.add(surface)
+
+        structured_memory = dict(context.get("structured_memory") or {})
+        for payload in structured_memory.get("observed_effect_patterns", []):
+            if not isinstance(payload, dict):
+                continue
+            surface = str(payload.get("surface", "")).strip()
+            if not surface:
+                continue
+            score = float(payload.get("score", 0.0) or 0.0)
+            surface_scores[surface] = max(
+                float(surface_scores.get(surface, 0.0) or 0.0),
+                score,
+            )
+        return state
+
+    def _scripted_black_box_candidate_score(
+        self,
+        *,
+        candidate: dict[str, Any],
+        context: dict[str, Any],
+        state: dict[str, Any],
+    ) -> tuple[int, int, str, str]:
+        visible_action = dict(candidate.get("action") or {})
+        action_type = str(visible_action.get("type", "")).strip()
+        candidate_id = str(candidate.get("id", "")).strip()
+        surface = self._scripted_black_box_candidate_surface(candidate)
+        category = str(candidate.get("category", "")).strip().lower()
+        structured_memory = dict(context.get("structured_memory") or {})
+        risk_flags = {str(item) for item in context.get("risk_flags", [])}
+        detection_pressure = str(
+            structured_memory.get("detection_pressure") or ""
+        ).strip().lower()
+        best_surface = str(structured_memory.get("best_known_surface", "")).strip()
+        committed_surface = str(
+            structured_memory.get("committed_surface", "")
+        ).strip()
+        stalled_surfaces = {
+            str(item).strip() for item in structured_memory.get("stalled_surfaces", [])
+        }
+        attempts = int(state.get("candidate_attempts", {}).get(candidate_id, 0) or 0)
+        inspected_surfaces = {
+            str(item).strip() for item in state.get("inspected_surfaces", set())
+        }
+        surface_scores = dict(state.get("surface_scores", {}))
+        next_phase = str((context.get("mitre_context") or {}).get("next_phase", "")).strip()
+
+        if candidate_id == "bb_noop" or action_type == "noop":
+            return (-10_000, -attempts, surface or "~", candidate_id)
+
+        score = 0
+        if next_phase in {"discovery", "control_path_qualification"}:
+            phase_surfaces = list(
+                (context.get("mitre_context") or {}).get(
+                    "qualification_surfaces"
+                    if next_phase == "control_path_qualification"
+                    else "discovery_surfaces",
+                    [],
+                )
+            )
+            phase_order = {
+                str(item).strip(): index for index, item in enumerate(phase_surfaces)
+            }
+            if action_type == "inspect_surface":
+                score += 300
+                if visible_action.get("target") not in inspected_surfaces:
+                    score += 50
+                score += max(
+                    0,
+                    24 - (phase_order.get(str(visible_action.get("target")), 99) * 6),
+                )
+            else:
+                score -= 200
+        else:
+            score += {
+                "probe": 90,
+                "support": 84,
+                "exploit": 80,
+                "sustain": 76,
+                "escalate": 72,
+                "fallback": 58,
+                "recon": 44,
+                "hold": 0,
+            }.get(category, 50)
+            if surface and surface == committed_surface:
+                score += 32
+            elif surface and surface == best_surface:
+                score += 24
+            score += min(
+                int(float(surface_scores.get(surface, 0.0) or 0.0) * 12.0),
+                24,
+            )
+            if surface and surface in stalled_surfaces:
+                score -= 18
+            if action_type == "inspect_surface":
+                target = str(visible_action.get("target", "")).strip()
+                if target and target not in inspected_surfaces:
+                    score += 16
+                else:
+                    score -= 8
+            elif action_type == "write_signal":
+                mode = str(visible_action.get("mode", "")).strip()
+                score += {"raise": 14, "lower": 14, "write": 10}.get(mode, 8)
+            elif action_type == "toggle_control":
+                setting = str(visible_action.get("setting", "")).strip()
+                score += {
+                    "engage": 18,
+                    "enable": 16,
+                    "open": 14,
+                    "stop": 12,
+                    "trip": 10,
+                    "disable": 8,
+                }.get(setting, 6)
+            if detection_pressure == "high":
+                score += 6 if category in {"probe", "support"} else -4
+            if "multi_alarm_pressure" in risk_flags:
+                score += 6 if category in {"support", "exploit", "sustain"} else -2
+
+        score -= attempts * 14
+        if attempts == 0:
+            score += 10
+        return (score, -attempts, surface or "~", candidate_id)
+
+    def _step_scripted_black_box_attacker(self, context: dict[str, Any]) -> list[Any]:
+        self.engine.last_mode = "scripted_black_box"
+        self.engine.last_error = None
+        candidates = list(context.get("candidate_actions", []))
+        if not candidates:
+            return []
+        state = self._sync_scripted_black_box_policy_state(context)
+        ranked = sorted(
+            candidates,
+            key=lambda item: self._scripted_black_box_candidate_score(
+                candidate=item,
+                context=context,
+                state=state,
+            ),
+            reverse=True,
+        )
+        for index, candidate in enumerate(ranked):
+            payload = {
+                "decision_type": "action",
+                "candidate_id": candidate.get("id"),
+                "summary": str(candidate.get("summary", "")).strip(),
+                "confidence": 1.0,
+                "labels": ["scripted", "attacker", "black_box", "deterministic"],
+                "metadata": {
+                    "selection_rank": index + 1,
+                    "selection_category": candidate.get("category"),
+                    "selection_surface": self._scripted_black_box_candidate_surface(candidate),
+                    "selection_policy": "scripted_black_box",
+                },
+            }
+            decisions = self._payload_to_decisions(payload, context)
+            if not decisions:
+                continue
+            state["last_candidate_id"] = str(candidate.get("id", "")).strip() or None
+            state["last_surface"] = (
+                self._scripted_black_box_candidate_surface(candidate) or None
+            )
+            selection_log = state.setdefault("selection_log", [])
+            selection_log.append(
+                {
+                    "time_sec": round(float(context.get("time_sec", 0.0)), 3),
+                    "candidate_id": candidate.get("id"),
+                    "surface": state["last_surface"],
+                    "category": candidate.get("category"),
+                }
+            )
+            del selection_log[:-12]
+            return decisions
+        return []
 
     def _black_box_resolved_candidate(self, candidate_id: Any) -> dict[str, Any] | None:
         candidate_map = self._state.setdefault("black_box_candidate_map", {})
@@ -10672,7 +10909,11 @@ class AgenticRoleAgent(RoleAgent):
         metadata = phase_metadata(
             phase_family=phase_family,
             phase=phase,
-            policy_mode="agentic",
+            policy_mode=(
+                "scripted_black_box"
+                if self._uses_scripted_black_box_policy() and self.role == "attacker"
+                else "agentic"
+            ),
             attack_profile=attack_profile,
         )
         mitre_context = dict(context.get("mitre_context") or {})
@@ -10783,6 +11024,7 @@ class AgenticRoleAgent(RoleAgent):
             metadata={
                 "backend": self.engine.last_mode,
                 "error": self.engine.last_error,
+                **dict(payload.get("metadata") or {}),
                 **self._optionb_mitre_metadata(
                     context=context,
                     action=action,
