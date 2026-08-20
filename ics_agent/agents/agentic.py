@@ -203,6 +203,14 @@ class CachedQwenDecisionEngine:
             tokenizer=tokenizer,
             **generator_kwargs,
         )
+        # The HF text-generation pipeline can retain a task-level default
+        # `max_length=20` even when we control decoding through
+        # `max_new_tokens`. Clearing that inherited default avoids noisy
+        # warnings while preserving the repo-configured token budget.
+        if getattr(generator, "generation_config", None) is not None:
+            generator.generation_config.max_length = None
+        if getattr(model, "generation_config", None) is not None:
+            model.generation_config.max_length = None
         llm = HuggingFacePipeline(pipeline=generator)
         self._llm_cache[llm_cache_key] = llm
         return llm
@@ -847,6 +855,14 @@ class AgenticRoleAgent(RoleAgent):
             self._uses_distribution_scripted_black_box_profile()
         )
 
+    def _uses_scripted_gray_box_policy(self) -> bool:
+        if not self._is_gray_box_attacker():
+            return False
+        behavior = self.profile.get("behavior_model")
+        if not isinstance(behavior, dict):
+            return False
+        return str(behavior.get("policy", "")).strip().lower() == "scripted_gray_box"
+
     def _uses_scripted_white_box_policy(self) -> bool:
         if not self._is_white_box_attacker():
             return False
@@ -935,6 +951,8 @@ class AgenticRoleAgent(RoleAgent):
             return transition
         if self._uses_scripted_black_box_policy():
             return self._step_scripted_black_box_attacker(agent_context)
+        if self._uses_scripted_gray_box_policy():
+            return self._step_scripted_gray_box_attacker(agent_context)
         if self._uses_scripted_white_box_policy():
             return self._step_scripted_white_box_attacker(agent_context)
         if self._only_noop_candidates(agent_context):
@@ -2839,6 +2857,258 @@ class AgenticRoleAgent(RoleAgent):
             state["last_candidate_id"] = str(candidate.get("id", "")).strip() or None
             state["last_surface"] = (
                 self._scripted_black_box_candidate_surface(candidate) or None
+            )
+            selection_log = state.setdefault("selection_log", [])
+            selection_log.append(
+                {
+                    "time_sec": round(float(context.get("time_sec", 0.0)), 3),
+                    "candidate_id": candidate.get("id"),
+                    "surface": state["last_surface"],
+                    "category": candidate.get("category"),
+                }
+            )
+            del selection_log[:-12]
+            return decisions
+        return []
+
+    def _scripted_gray_box_policy_state(self) -> dict[str, Any]:
+        return self._state.setdefault(
+            "scripted_gray_box_policy",
+            {
+                "processed_action_signatures": set(),
+                "candidate_attempts": {},
+                "inspected_surfaces": set(),
+                "surface_scores": {},
+                "failed_surfaces": set(),
+                "committed_surface": None,
+                "last_candidate_id": None,
+                "last_surface": None,
+                "selection_log": [],
+            },
+        )
+
+    @staticmethod
+    def _scripted_gray_box_candidate_surface(candidate: dict[str, Any]) -> str:
+        surface = str(candidate.get("surface", "")).strip()
+        if surface:
+            return surface
+        action = dict(candidate.get("action") or {})
+        if str(action.get("type", "")).strip() == "inspect_surface":
+            return (
+                str(action.get("surface", "")).strip()
+                or str(action.get("target", "")).strip()
+            )
+        return ""
+
+    def _sync_scripted_gray_box_policy_state(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = self._scripted_gray_box_policy_state()
+        processed = state.setdefault("processed_action_signatures", set())
+        attempts = state.setdefault("candidate_attempts", {})
+        inspected = state.setdefault("inspected_surfaces", set())
+        surface_scores = state.setdefault("surface_scores", {})
+        failed_surfaces = state.setdefault("failed_surfaces", set())
+
+        for item in context.get("recent_actions", []):
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            candidate_id = action_key(action)
+            time_sec = self._coerce_number(item.get("time_sec"))
+            signature = f"{candidate_id}@{time_sec if time_sec is not None else 'na'}"
+            if signature in processed:
+                continue
+            processed.add(signature)
+            attempts[candidate_id] = int(attempts.get(candidate_id, 0) or 0) + 1
+            if str(action.get("type", "")).strip() == "inspect_surface":
+                target = (
+                    str(action.get("surface", "")).strip()
+                    or str(action.get("target", "")).strip()
+                )
+                if target:
+                    inspected.add(target)
+            result = item.get("result")
+            if isinstance(result, dict):
+                surface = str(result.get("surface", "")).strip()
+                if surface:
+                    inspected.add(surface)
+                recon = dict(result.get("reconnaissance") or {})
+                recon_surface = str(recon.get("surface", "")).strip()
+                if recon_surface:
+                    inspected.add(recon_surface)
+
+        structured_memory = dict(context.get("structured_memory") or {})
+        commitment = dict(structured_memory.get("exploit_commitment") or {})
+        committed_surface = str(
+            commitment.get("surface")
+            or structured_memory.get("best_known_attack_surface")
+            or ""
+        ).strip()
+        state["committed_surface"] = committed_surface or None
+        for payload in structured_memory.get("observed_effect_patterns", []):
+            if not isinstance(payload, dict):
+                continue
+            surface = str(payload.get("surface", "")).strip()
+            if not surface:
+                continue
+            score = float(payload.get("score", 0.0) or 0.0)
+            surface_scores[surface] = max(
+                float(surface_scores.get(surface, 0.0) or 0.0),
+                score,
+            )
+        for payload in structured_memory.get("observed_effect_map", []):
+            if not isinstance(payload, dict):
+                continue
+            surface = str(payload.get("surface", "")).strip()
+            if not surface:
+                continue
+            score = float(payload.get("score", 0.0) or 0.0)
+            surface_scores[surface] = max(
+                float(surface_scores.get(surface, 0.0) or 0.0),
+                score,
+            )
+        for surface in structured_memory.get("stalled_surfaces", []):
+            failed_surface = str(surface).strip()
+            if failed_surface:
+                failed_surfaces.add(failed_surface)
+        return state
+
+    def _scripted_gray_box_candidate_score(
+        self,
+        *,
+        candidate: dict[str, Any],
+        context: dict[str, Any],
+        state: dict[str, Any],
+    ) -> tuple[int, int, int, str, str]:
+        action = dict(candidate.get("action") or {})
+        action_type = str(action.get("type", "")).strip()
+        candidate_id = str(candidate.get("id", "")).strip()
+        surface = self._scripted_gray_box_candidate_surface(candidate)
+        category = str(candidate.get("category", "")).strip().lower()
+        priority = int(candidate.get("priority", 0) or 0)
+        structured_memory = dict(context.get("structured_memory") or {})
+        mitigation_pressure = str(
+            structured_memory.get("detection_pressure", "")
+        ).strip().lower()
+        best_surface = str(
+            structured_memory.get("best_known_attack_surface")
+            or state.get("committed_surface")
+            or ""
+        ).strip()
+        attempts = int(state.get("candidate_attempts", {}).get(candidate_id, 0) or 0)
+        inspected_surfaces = {
+            str(item).strip()
+            for item in state.get("inspected_surfaces", set())
+            if str(item).strip()
+        }
+        failed_surfaces = {
+            str(item).strip()
+            for item in state.get("failed_surfaces", set())
+            if str(item).strip()
+        }
+        surface_scores = dict(state.get("surface_scores", {}))
+        next_phase = str((context.get("mitre_context") or {}).get("next_phase", "")).strip()
+
+        if action_type == "noop" or candidate_id == action_key({"type": "noop"}):
+            return (-10_000, priority, -attempts, surface or "~", candidate_id)
+
+        score = priority * 10
+        score += {
+            "support": 16,
+            "probe": 10,
+            "exploit": 20,
+            "sustain": 20,
+            "escalate": 14,
+            "recon": 10,
+            "fallback": 2,
+            "hold": -4,
+        }.get(category, 0)
+        if surface and surface == best_surface:
+            score += 24
+        score += min(int(float(surface_scores.get(surface, 0.0) or 0.0) * 14.0), 28)
+        if surface and surface in failed_surfaces:
+            score -= 32
+        if action_type == "inspect_surface":
+            target = (
+                str(action.get("surface", "")).strip()
+                or str(action.get("target", "")).strip()
+            )
+            if next_phase in {"discovery", "control_path_qualification"}:
+                ordered_surfaces = list(
+                    (context.get("mitre_context") or {}).get(
+                        "qualification_surfaces"
+                        if next_phase == "control_path_qualification"
+                        else "discovery_surfaces",
+                        [],
+                    )
+                )
+                phase_order = {
+                    str(item).strip(): index
+                    for index, item in enumerate(ordered_surfaces)
+                }
+                score += 140
+                if target not in inspected_surfaces:
+                    score += 24
+                score += max(0, 24 - (phase_order.get(target, 99) * 8))
+            elif target and target not in inspected_surfaces:
+                score += 14
+            else:
+                score -= 8
+        elif next_phase in {"discovery", "control_path_qualification"} and not best_surface:
+            score -= 120
+
+        if mitigation_pressure == "high" and category == "recon":
+            score -= 8
+        if attempts == 0:
+            score += 10
+        score -= attempts * 16
+        return (score, priority, -attempts, surface or "~", candidate_id)
+
+    def _step_scripted_gray_box_attacker(
+        self,
+        context: dict[str, Any],
+    ) -> list[Any]:
+        self.engine.last_mode = "scripted_gray_box"
+        self.engine.last_error = None
+        candidates = list(context.get("candidate_actions", []))
+        if not candidates:
+            return []
+        state = self._sync_scripted_gray_box_policy_state(context)
+        ranked = sorted(
+            candidates,
+            key=lambda item: self._scripted_gray_box_candidate_score(
+                candidate=item,
+                context=context,
+                state=state,
+            ),
+            reverse=True,
+        )
+        for index, candidate in enumerate(ranked):
+            payload = {
+                "decision_type": "action",
+                "candidate_id": candidate.get("id"),
+                "summary": str(candidate.get("summary", "")).strip(),
+                "confidence": 1.0,
+                "labels": ["scripted", "attacker", "gray_box", "deterministic"],
+                "metadata": {
+                    "selection_rank": index + 1,
+                    "selection_category": candidate.get("category"),
+                    "selection_surface": self._scripted_gray_box_candidate_surface(
+                        candidate
+                    ),
+                    "selection_policy": "scripted_gray_box",
+                },
+            }
+            decisions = self._payload_to_decisions(payload, context)
+            if not decisions:
+                continue
+            state["last_candidate_id"] = str(candidate.get("id", "")).strip() or None
+            state["last_surface"] = (
+                self._scripted_gray_box_candidate_surface(candidate) or None
             )
             selection_log = state.setdefault("selection_log", [])
             selection_log.append(
