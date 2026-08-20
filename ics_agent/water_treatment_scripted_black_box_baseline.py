@@ -123,9 +123,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 class ScriptedBlackBoxBaselineRunner:
+    experiment_version = EXPERIMENT_VERSION
+    config_path = CONFIG_PATH
+    family_spec = FAMILY_SPEC
+    seed = SEED
+    runs_per_seed = RUNS_PER_SEED
+    runtime_policy = "deterministic_scripted_black_box"
+    run_id_policy_token = "scriptedBlackBox"
+    controller_run_label = "scripted black-box baseline"
+    validation_test_paths = VALIDATION_TEST_PATHS
+    resume_compatible_config_hash_paths = RESUME_COMPATIBLE_CONFIG_HASH_PATHS
+    report_filename = "scripted_black_box_baseline_report.md"
+    repo_note_filename = "scripted_black_box_baseline_note.md"
+    repo_local_report_path: Path | None = None
+
     def __init__(self, result_root: Path) -> None:
         self.result_root = result_root.resolve()
-        self.seed_root = self.result_root / f"seed_{SEED}"
+        self.seed_root = self.result_root / f"seed_{self.seed}"
         self.progress_root = self.result_root / "_progress"
         self.seed_progress_root = self.seed_root / "_progress"
         self.global_phase_status_path = self.progress_root / "global_phase_status.json"
@@ -143,8 +157,8 @@ class ScriptedBlackBoxBaselineRunner:
         self.interrupted_root = self.seed_progress_root / "interrupted_artifacts"
         self.run_catalog_path = self.result_root / "run_catalog.csv"
         self.run_failures_path = self.result_root / "run_failures.csv"
-        self.report_path = self.result_root / "scripted_black_box_baseline_report.md"
-        self.repo_note_path = self.result_root / "scripted_black_box_baseline_note.md"
+        self.report_path = self.result_root / self.report_filename
+        self.repo_note_path = self.result_root / self.repo_note_filename
         self.manifest_path = self.result_root / "scenario_manifest_water_treatment.csv"
         self.splits_path = self.result_root / "scenario_splits_water_treatment.csv"
         self.seeds_path = self.result_root / "seeds.txt"
@@ -181,22 +195,22 @@ class ScriptedBlackBoxBaselineRunner:
     def manifest_rows(self) -> list[dict[str, Any]]:
         rows = build_manifest_rows(self.scenarios())
         enabled = [row for row in rows if row.get("enabled_for_final") == "true"]
-        if len(enabled) != RUNS_PER_SEED:
+        if len(enabled) != self.runs_per_seed:
             raise RuntimeError(
-                f"expected exactly {RUNS_PER_SEED} enabled water-treatment scenarios, found {len(enabled)}"
+                f"expected exactly {self.runs_per_seed} enabled water-treatment scenarios, found {len(enabled)}"
             )
         return rows
 
     def split_rows(self) -> list[dict[str, Any]]:
         rows = build_split_rows(self.manifest_rows())
-        if len(rows) != RUNS_PER_SEED:
+        if len(rows) != self.runs_per_seed:
             raise RuntimeError(
-                f"expected {RUNS_PER_SEED} split rows, found {len(rows)}"
+                f"expected {self.runs_per_seed} split rows, found {len(rows)}"
             )
         return rows
 
     def _base_config(self) -> dict[str, Any]:
-        config = load_config(str(CONFIG_PATH))
+        config = load_config(str(self.config_path))
         require_fields(
             config,
             ["experiment_name", "scenario_selectors"],
@@ -207,7 +221,7 @@ class ScriptedBlackBoxBaselineRunner:
     def _runtime_config(self) -> dict[str, Any]:
         config = deepcopy(self._base_config())
         config.setdefault("reproducibility", {})
-        config["reproducibility"]["seed"] = SEED
+        config["reproducibility"]["seed"] = self.seed
         config["resume"] = True
         config["use_canonical_result_root"] = True
         config["testbed"] = TESTBED_ID
@@ -246,15 +260,15 @@ class ScriptedBlackBoxBaselineRunner:
     ) -> dict[str, Any]:
         condition_specs = orchestrator._enumerate_conditions(config)
         if len(condition_specs) != 1:
-            raise RuntimeError(f"expected exactly one condition in {CONFIG_PATH}")
+            raise RuntimeError(f"expected exactly one condition in {self.config_path}")
         condition_spec = condition_specs[0]
         condition_name = orchestrator._condition_name(
             condition_spec["profiles"],
             override=condition_spec.get("name"),
         )
-        if condition_name != FAMILY_SPEC.family_name:
+        if condition_name != self.family_spec.family_name:
             raise RuntimeError(
-                f"expected condition `{FAMILY_SPEC.family_name}`, found `{condition_name}`"
+                f"expected condition `{self.family_spec.family_name}`, found `{condition_name}`"
             )
         return condition_spec
 
@@ -292,22 +306,22 @@ class ScriptedBlackBoxBaselineRunner:
         effective_profiles = condition_spec.get("effective_profiles") or {}
         attacker_profile = dict(effective_profiles.get("attacker") or {})
         return {
-            "experiment_version": EXPERIMENT_VERSION,
+            "experiment_version": self.experiment_version,
             "result_root": portable_path(self.result_root),
             "seed_root": portable_path(self.seed_root),
             "testbed": TESTBED_ID,
-            "seed": SEED,
-            "condition_name": FAMILY_SPEC.family_name,
-            "config_path": portable_path(CONFIG_PATH),
+            "seed": self.seed,
+            "condition_name": self.family_spec.family_name,
+            "config_path": portable_path(self.config_path),
             "attacker": {
-                "profile_id": FAMILY_SPEC.attacker_profile_id,
+                "profile_id": self.family_spec.attacker_profile_id,
                 "family": attacker_profile.get("family"),
                 "knowledge_mode": attacker_profile.get("knowledge_mode"),
                 "behavior_model": attacker_profile.get("behavior_model"),
                 "allowed_action_types": list(
                     attacker_profile.get("allowed_action_types", [])
                 ),
-                "runtime_policy": "deterministic_scripted_black_box",
+                "runtime_policy": self.runtime_policy,
                 "llm_invocation_required": False,
             },
             "blue_team_models": self._blue_team_model_metadata(),
@@ -318,29 +332,32 @@ class ScriptedBlackBoxBaselineRunner:
             ),
         }
 
-    def _config_hash_payload(self) -> dict[str, Any]:
-        tracked_paths = [
+    def _config_hash_tracked_paths(self) -> list[Path]:
+        return [
             REPO_ROOT / "configs" / "agent_profiles.yaml",
-            CONFIG_PATH,
+            self.config_path,
             REPO_ROOT / "ics_agent" / "agents" / "agentic.py",
             REPO_ROOT / "ics_agent" / "water_treatment_scripted_black_box_baseline.py",
             REPO_ROOT / "configs" / "prompts" / "black_box_attacker_optionb_mitre.md",
             REPO_ROOT / "configs" / "prompts" / "defender_optionb_mitre.md",
             REPO_ROOT / "configs" / "prompts" / "observer_optionb_mitre.md",
         ]
+
+    def _config_hash_payload(self) -> dict[str, Any]:
+        tracked_paths = self._config_hash_tracked_paths()
         file_hashes = {
             portable_path(path): _sha256_path(path)
             for path in tracked_paths
             if path.exists()
         }
         bundle = {
-            "condition_name": FAMILY_SPEC.family_name,
-            "experiment_version": EXPERIMENT_VERSION,
-            "seed": SEED,
+            "condition_name": self.family_spec.family_name,
+            "experiment_version": self.experiment_version,
+            "seed": self.seed,
             "file_hashes": file_hashes,
         }
         return {
-            "experiment_version": EXPERIMENT_VERSION,
+            "experiment_version": self.experiment_version,
             "file_hashes": file_hashes,
             "bundle_hash": _canonical_json_hash(bundle),
         }
@@ -355,7 +372,7 @@ class ScriptedBlackBoxBaselineRunner:
             for path in [
                 *ACTION_SPACE_SOURCE_PATHS,
                 REPO_ROOT / "ics_agent" / "agents" / "agentic.py",
-                CONFIG_PATH,
+                self.config_path,
             ]
             if path.exists()
         }
@@ -376,7 +393,7 @@ class ScriptedBlackBoxBaselineRunner:
             "containment_semantics_version": CONTAINMENT_SEMANTICS_VERSION,
         }
         return {
-            "experiment_version": EXPERIMENT_VERSION,
+            "experiment_version": self.experiment_version,
             "source_hashes": source_hashes,
             "bundle_hash": _canonical_json_hash(bundle),
             "bundle": bundle,
@@ -405,9 +422,9 @@ class ScriptedBlackBoxBaselineRunner:
         return {
             self.manifest_path: ("csv", self.manifest_rows()),
             self.splits_path: ("csv", self.split_rows()),
-            self.seeds_path: ("text", f"{SEED}\n"),
+            self.seeds_path: ("text", f"{self.seed}\n"),
             self.execution_registry_path: ("yaml", self._execution_registry_payload()),
-            self.experiment_version_path: ("text", EXPERIMENT_VERSION + "\n"),
+            self.experiment_version_path: ("text", self.experiment_version + "\n"),
             self.config_hashes_path: ("json", self._config_hash_payload()),
             self.action_space_hashes_path: ("json", self._action_space_hash_payload()),
             self.containment_semantics_path: (
@@ -418,8 +435,9 @@ class ScriptedBlackBoxBaselineRunner:
             self.metrics_schema_path: ("json", _infer_metrics_schema()),
         }
 
-    @staticmethod
+    @classmethod
     def _is_resume_compatible_config_hash_update(
+        cls,
         actual_payload: Any,
         expected_payload: Any,
     ) -> bool:
@@ -435,7 +453,7 @@ class ScriptedBlackBoxBaselineRunner:
             if actual_hashes.get(path) != expected_hash
         }
         return bool(changed_paths) and changed_paths.issubset(
-            RESUME_COMPATIBLE_CONFIG_HASH_PATHS
+            cls.resume_compatible_config_hash_paths
         )
 
     def freeze_metadata(self) -> None:
@@ -541,8 +559,8 @@ class ScriptedBlackBoxBaselineRunner:
             rows.append(
                 {
                     "manifest_order": index + 1,
-                    "attacker_family": FAMILY_SPEC.family_name,
-                    "seed": str(SEED),
+                    "attacker_family": self.family_spec.family_name,
+                    "seed": str(self.seed),
                     "scenario_id": scenario.scenario_id,
                     "catalog_id": scenario.catalog_id,
                     "split": split_map[scenario.scenario_id],
@@ -566,9 +584,9 @@ class ScriptedBlackBoxBaselineRunner:
             return rows
         with self.scenario_status_path.open(newline="") as handle:
             rows = list(csv.DictReader(handle))
-        if len(rows) != RUNS_PER_SEED:
+        if len(rows) != self.runs_per_seed:
             raise RuntimeError(
-                f"expected {RUNS_PER_SEED} rows in {self.scenario_status_path}, found {len(rows)}"
+                f"expected {self.runs_per_seed} rows in {self.scenario_status_path}, found {len(rows)}"
             )
         return rows
 
@@ -584,9 +602,9 @@ class ScriptedBlackBoxBaselineRunner:
                 TESTBED_ID,
                 _sanitize_token(scenario.scenario_id),
                 split,
-                "scriptedBlackBox",
+                self.run_id_policy_token,
                 "fullAgenticDefender",
-                f"seed{SEED}",
+                f"seed{self.seed}",
             ]
         )
 
@@ -645,9 +663,9 @@ class ScriptedBlackBoxBaselineRunner:
         metrics = dict(summary.get("metrics") or {})
         attack_metrics = dict(metrics.get("attacker") or {})
         return {
-            "progress_key": f"{FAMILY_SPEC.family_name}::{SEED}::{scenario.scenario_id}",
+            "progress_key": f"{self.family_spec.family_name}::{self.seed}::{scenario.scenario_id}",
             "run_id": summary.get("run_id"),
-            "experiment_version": EXPERIMENT_VERSION,
+            "experiment_version": self.experiment_version,
             "git_commit": subprocess.check_output(
                 ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
                 text=True,
@@ -659,9 +677,9 @@ class ScriptedBlackBoxBaselineRunner:
             "scenario_family": _scenario_family_for(scenario.scenario_id),
             "attack_family": _attack_family_for(scenario.scenario_id),
             "split": split,
-            "seed": SEED,
-            "attacker_profile_id": FAMILY_SPEC.attacker_profile_id,
-            "attacker_runtime_policy": "deterministic_scripted_black_box",
+            "seed": self.seed,
+            "attacker_profile_id": self.family_spec.attacker_profile_id,
+            "attacker_runtime_policy": self.runtime_policy,
             "defender_profile_id": "agentic_defender",
             "defender_model_id": (blue_team_models.get("defender") or {}).get(
                 "model_id"
@@ -674,7 +692,7 @@ class ScriptedBlackBoxBaselineRunner:
             "containment_semantics_version": CONTAINMENT_SEMANTICS_VERSION,
             "status": summary.get("status"),
             "error_message": "",
-            "family_name": FAMILY_SPEC.family_name,
+            "family_name": self.family_spec.family_name,
             "run_dir": portable_path(run_dir),
             "catalog_id": scenario.catalog_id,
             "detected": int(
@@ -703,9 +721,9 @@ class ScriptedBlackBoxBaselineRunner:
         error_message: str,
     ) -> dict[str, Any]:
         return {
-            "progress_key": f"{FAMILY_SPEC.family_name}::{SEED}::{scenario_id}",
-            "attacker_family": FAMILY_SPEC.family_name,
-            "seed": SEED,
+            "progress_key": f"{self.family_spec.family_name}::{self.seed}::{scenario_id}",
+            "attacker_family": self.family_spec.family_name,
+            "seed": self.seed,
             "scenario_id": scenario_id,
             "split": split,
             "status": "failed",
@@ -733,14 +751,14 @@ class ScriptedBlackBoxBaselineRunner:
         for row in completed_rows:
             split_counts[row["split"]] = split_counts.get(row["split"], 0) + 1
         condition_summary = {
-            "condition_name": FAMILY_SPEC.family_name,
-            "seed": SEED,
-            "status": "completed" if len(completed_rows) == RUNS_PER_SEED else "partial",
-            "experiment_version": EXPERIMENT_VERSION,
+            "condition_name": self.family_spec.family_name,
+            "seed": self.seed,
+            "status": "completed" if len(completed_rows) == self.runs_per_seed else "partial",
+            "experiment_version": self.experiment_version,
             "testbed": TESTBED_ID,
             "runs": run_summaries,
             "completed_run_count": len(completed_rows),
-            "expected_run_count": RUNS_PER_SEED,
+            "expected_run_count": self.runs_per_seed,
             "split_counts": split_counts,
             "reproducibility": reproducibility,
             "attack_metrics": attack_metrics,
@@ -763,10 +781,10 @@ class ScriptedBlackBoxBaselineRunner:
             write_json(path, payload)
 
         summary_row = {
-            "attacker_family": FAMILY_SPEC.family_name,
-            "seed": SEED,
+            "attacker_family": self.family_spec.family_name,
+            "seed": self.seed,
             "completed_scenarios": len(completed_rows),
-            "expected_scenarios": RUNS_PER_SEED,
+            "expected_scenarios": self.runs_per_seed,
             "detected_scenarios": attack_metrics.get("defender_detected_attack_run_count"),
             "defender_action_scenarios": attack_metrics.get(
                 "defender_acted_attack_run_count"
@@ -785,11 +803,11 @@ class ScriptedBlackBoxBaselineRunner:
         }
         seed_summary = {
             "generated_at_utc": utc_now(),
-            "experiment_version": EXPERIMENT_VERSION,
-            "seed": SEED,
-            "family_name": FAMILY_SPEC.family_name,
+            "experiment_version": self.experiment_version,
+            "seed": self.seed,
+            "family_name": self.family_spec.family_name,
             "completed_scenarios": len(completed_rows),
-            "expected_scenarios": RUNS_PER_SEED,
+            "expected_scenarios": self.runs_per_seed,
             "split_counts": split_counts,
             "attack_metrics": attack_metrics,
             "trajectory_metrics": trajectory_metrics,
@@ -817,11 +835,11 @@ class ScriptedBlackBoxBaselineRunner:
         previous_resume_state = _read_json(self.resume_state_path, {})
         resume_state = {
             "updated_utc": utc_now(),
-            "experiment_version": EXPERIMENT_VERSION,
+            "experiment_version": self.experiment_version,
             "completed_runs": len(completed_rows),
             "failed_runs": len(failed_rows),
             "pending_runs": len(pending_rows),
-            "all_complete": len(completed_rows) == RUNS_PER_SEED,
+            "all_complete": len(completed_rows) == self.runs_per_seed,
             "next_run": next_run,
             "resume_event_detected": bool(
                 previous_resume_state.get("resume_event_detected")
@@ -859,14 +877,14 @@ class ScriptedBlackBoxBaselineRunner:
             "# Resume Notes",
             "",
             f"- Updated UTC: `{utc_now()}`",
-            f"- Experiment version: `{EXPERIMENT_VERSION}`",
+            f"- Experiment version: `{self.experiment_version}`",
             f"- Result root: `{portable_path(self.result_root)}`",
             f"- Seed root: `{portable_path(self.seed_root)}`",
             f"- Completed runs: `{completed_count}`",
             f"- Failed runs: `{failed_count}`",
             f"- Pending runs: `{pending_count}`",
             f"- Testbed: `{TESTBED_ID}`",
-            f"- Attacker: `{FAMILY_SPEC.attacker_profile_id}`",
+            f"- Attacker: `{self.family_spec.attacker_profile_id}`",
             f"- Defender: `agentic_defender`",
         ]
         if next_run:
@@ -959,7 +977,7 @@ class ScriptedBlackBoxBaselineRunner:
 
     def _ensure_env_defaults(self) -> None:
         os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-        os.environ["PYTHONHASHSEED"] = os.environ.get("PYTHONHASHSEED", str(SEED))
+        os.environ["PYTHONHASHSEED"] = os.environ.get("PYTHONHASHSEED", str(self.seed))
         os.environ.setdefault("QWEN_MODEL_ID", "Qwen/Qwen3.5-9B")
         if not os.environ.get("QWEN_MODEL_PATH"):
             os.environ["QWEN_MODEL_PATH"] = str(
@@ -1025,10 +1043,16 @@ class ScriptedBlackBoxBaselineRunner:
                 f"mrg {kind} preflight returned non-JSON output for `{ref}`"
             ) from exc
 
+    def _optionb_environment_cls(self):
+        return OpenPLCEnvironment
+
+    def _optionb_backend_cls(self):
+        return _SphereOpenPLCBackend
+
     def _validate_optionb_environment(self) -> None:
         self._set_phase("validated_optionb_environment", "in_progress")
         config = self._runtime_config()
-        env = OpenPLCEnvironment(config.get("environment", {}))
+        env = self._optionb_environment_cls()(config.get("environment", {}))
         scenario = self.scenarios()[0]
         preflight_refs = self._required_preflight_refs(config)
         result: dict[str, Any] = {
@@ -1050,7 +1074,7 @@ class ScriptedBlackBoxBaselineRunner:
             )
             startup = env.start()
             backend = env._backend_impl
-            if not isinstance(backend, _SphereOpenPLCBackend):
+            if not isinstance(backend, self._optionb_backend_cls()):
                 raise RuntimeError("expected sphere_openplc backend for water treatment")
             reset_snapshot = env.reset(scenario.execution.get("initial_conditions"))
             observation = env.observe_flat()
@@ -1155,7 +1179,7 @@ class ScriptedBlackBoxBaselineRunner:
             self.validate_log_path,
         )
         self._run_logged(
-            [python_exec, "-m", "pytest", *VALIDATION_TEST_PATHS],
+            [python_exec, "-m", "pytest", *self.validation_test_paths],
             self.pytest_log_path,
         )
         self._set_phase(
@@ -1192,7 +1216,7 @@ class ScriptedBlackBoxBaselineRunner:
         self.freeze_metadata()
         _append_log(
             self.experiment_log_path,
-            f"controller starting scripted black-box baseline under {portable_path(self.result_root)}",
+            f"controller starting {self.controller_run_label} under {portable_path(self.result_root)}",
         )
         rows = self._load_scenario_rows()
         self._mark_resume_event_if_needed(rows)
@@ -1201,26 +1225,32 @@ class ScriptedBlackBoxBaselineRunner:
         self._set_phase("scenario_run", "in_progress")
         completed_rows, _ = self._sync_state(
             expected_environment=self._expected_environment(self._runtime_config()),
-            reproducibility={"seed": SEED},
+            reproducibility={"seed": self.seed},
         )
-        if len(completed_rows) != RUNS_PER_SEED:
+        if len(completed_rows) != self.runs_per_seed:
             exit_code = self.run_worker(max_attempts=2)
             if exit_code != 0:
                 return exit_code
         completed_rows, failed_rows = self._sync_state(
             expected_environment=self._expected_environment(self._runtime_config()),
-            reproducibility={"seed": SEED},
+            reproducibility={"seed": self.seed},
         )
         if failed_rows:
             return 1
-        if len(completed_rows) != RUNS_PER_SEED:
+        if len(completed_rows) != self.runs_per_seed:
             raise RuntimeError(
-                f"expected {RUNS_PER_SEED} completed runs, found {len(completed_rows)}"
+                f"expected {self.runs_per_seed} completed runs, found {len(completed_rows)}"
             )
-        self._set_phase("scenario_run", "completed", completed_runs=RUNS_PER_SEED)
+        self._set_phase(
+            "scenario_run",
+            "completed",
+            completed_runs=self.runs_per_seed,
+        )
         self.write_aggregate()
         self.write_report()
         self.write_repo_note()
+        if self.repo_local_report_path is not None:
+            self.write_repo_local_report()
         return 0
 
     def run_worker(self, *, max_attempts: int) -> int:
@@ -1241,7 +1271,7 @@ class ScriptedBlackBoxBaselineRunner:
             expected_environment=expected_environment,
             reproducibility=reproducibility,
         )
-        if len(completed_rows) == RUNS_PER_SEED:
+        if len(completed_rows) == self.runs_per_seed:
             return 0
 
         scenario_by_id = {scenario.scenario_id: scenario for scenario in self.scenarios()}
@@ -1272,8 +1302,8 @@ class ScriptedBlackBoxBaselineRunner:
                 )
                 orchestrator._current_reproducibility = reproducibility
                 bundle = orchestrator._run_single(
-                    experiment_id=EXPERIMENT_VERSION,
-                    condition_name=FAMILY_SPEC.family_name,
+                    experiment_id=self.experiment_version,
+                    condition_name=self.family_spec.family_name,
                     condition=condition_spec["profiles"],
                     effective_profiles=condition_spec.get("effective_profiles"),
                     scenario=scenario,
@@ -1324,7 +1354,7 @@ class ScriptedBlackBoxBaselineRunner:
                 self.experiment_log_path,
                 f"completed scripted baseline scenario {scenario.scenario_id}",
             )
-            if len(completed_rows) == RUNS_PER_SEED and not failed_rows:
+            if len(completed_rows) == self.runs_per_seed and not failed_rows:
                 break
         return 0
 
@@ -1332,9 +1362,9 @@ class ScriptedBlackBoxBaselineRunner:
         self._set_phase("aggregating", "in_progress")
         with self.run_catalog_path.open(newline="") as handle:
             catalog_rows = list(csv.DictReader(handle))
-        if len(catalog_rows) != RUNS_PER_SEED:
+        if len(catalog_rows) != self.runs_per_seed:
             raise RuntimeError(
-                f"expected {RUNS_PER_SEED} catalog rows, found {len(catalog_rows)}"
+                f"expected {self.runs_per_seed} catalog rows, found {len(catalog_rows)}"
             )
         detection_values = [
             float(row["wall_clock_time_to_detection_from_attack_start_sec"])
@@ -1353,9 +1383,9 @@ class ScriptedBlackBoxBaselineRunner:
             if row.get("downtime_timestep_count") not in {"", "None", None}
         ]
         aggregate_row = {
-            "family_name": FAMILY_SPEC.family_name,
-            "seed": SEED,
-            "total_runs": RUNS_PER_SEED,
+            "family_name": self.family_spec.family_name,
+            "seed": self.seed,
+            "total_runs": self.runs_per_seed,
             "total_completed_runs": len(catalog_rows),
             "safety_violation_count": sum(
                 int(row["safety_violation"]) for row in catalog_rows
@@ -1377,28 +1407,27 @@ class ScriptedBlackBoxBaselineRunner:
         write_csv(self.seed_root / "aggregate_over_seed_101.csv", [aggregate_row])
         self._set_phase("aggregating", "completed")
 
-    def write_report(self) -> None:
-        self._set_phase("final_report", "in_progress")
+    def _report_lines(self) -> list[str]:
         condition_summary = _read_json(self.condition_summary_path, {})
         attack_metrics = dict(condition_summary.get("attack_metrics") or {})
         aggregate_row = _read_json(self.aggregate_json_path, {})
-        lines = [
+        return [
             "# Scripted Black-Box Baseline Report",
             "",
             f"- Generated UTC: `{utc_now()}`",
             f"- Testbed: `{TESTBED_ID}` only",
-            f"- Attacker: `{FAMILY_SPEC.attacker_profile_id}` deterministic scripted black-box baseline",
+            f"- Attacker: `{self.family_spec.attacker_profile_id}` deterministic scripted black-box baseline",
             f"- Defender: `agentic_defender` current full containment defender",
-            f"- Seed: `{SEED}` only",
+            f"- Seed: `{self.seed}` only",
             f"- Results root: `{portable_path(self.result_root)}`",
             f"- Seed root: `{portable_path(self.seed_root)}`",
             "- This pass is a deterministic attacker-baseline comparison and does not replace the LLM attacker results.",
             "",
             "## Outcome",
             f"- Completed scenarios: `{condition_summary.get('completed_run_count')}/{condition_summary.get('expected_run_count')}`",
-            f"- Detected scenarios: `{attack_metrics.get('defender_detected_attack_run_count')}/{RUNS_PER_SEED}`",
-            f"- Defender-action scenarios: `{attack_metrics.get('defender_acted_attack_run_count')}/{RUNS_PER_SEED}`",
-            f"- Safety-violation scenarios: `{attack_metrics.get('attacker_caused_safety_violation_run_count')}/{RUNS_PER_SEED}`",
+            f"- Detected scenarios: `{attack_metrics.get('defender_detected_attack_run_count')}/{self.runs_per_seed}`",
+            f"- Defender-action scenarios: `{attack_metrics.get('defender_acted_attack_run_count')}/{self.runs_per_seed}`",
+            f"- Safety-violation scenarios: `{attack_metrics.get('attacker_caused_safety_violation_run_count')}/{self.runs_per_seed}`",
             f"- Runtime containment cutoff activations: `{attack_metrics.get('attacker_execution_cutoff_run_count', attack_metrics.get('attacker_execution_cutoff_rate'))}`",
             f"- Average wall-clock detection from attack start: `{_format_mean_std(aggregate_row.get('mean_wall_clock_detection_from_attack_start_sec'), aggregate_row.get('std_wall_clock_detection_from_attack_start_sec'))}`",
             f"- Average attacker action count: `{_format_mean_std(aggregate_row.get('mean_attacker_action_count'), aggregate_row.get('std_attacker_action_count'))}`",
@@ -1409,32 +1438,53 @@ class ScriptedBlackBoxBaselineRunner:
             "- The blue-team roles remained the current agentic observer and full containment defender.",
             "- Resume ledgers were written under the result-root `_progress` directory and preserved per-scenario completion state.",
         ]
-        _write_text(self.report_path, "\n".join(lines) + "\n")
+
+    def write_report(self) -> None:
+        self._set_phase("final_report", "in_progress")
+        _write_text(self.report_path, "\n".join(self._report_lines()) + "\n")
         self._set_phase(
             "final_report",
             "completed",
             report_path=portable_path(self.report_path),
         )
 
-    def write_repo_note(self) -> None:
-        resume_state = _read_json(self.resume_state_path, {})
-        lines = [
+    def _repo_note_lines(self, resume_state: dict[str, Any]) -> list[str]:
+        return [
             "# Scripted Black-Box Baseline Note",
             "",
-            f"- Experiment version: `{EXPERIMENT_VERSION}`",
+            f"- Experiment version: `{self.experiment_version}`",
             f"- Result root: `{portable_path(self.result_root)}`",
             f"- Seed root: `{portable_path(self.seed_root)}`",
-            f"- Config: `{portable_path(CONFIG_PATH)}`",
-            f"- Attacker profile: `{FAMILY_SPEC.attacker_profile_id}`",
-            f"- Seed: `{SEED}`",
+            f"- Config: `{portable_path(self.config_path)}`",
+            f"- Attacker profile: `{self.family_spec.attacker_profile_id}`",
+            f"- Seed: `{self.seed}`",
             f"- Resume event occurred: `{'true' if resume_state.get('resume_event_detected') else 'false'}`",
             f"- Scenarios rerun after interruption: `{'true' if resume_state.get('scenarios_rerun_after_interruption') else 'false'}`",
-            f"- All {RUNS_PER_SEED} runs completed: `{'true' if resume_state.get('completed_runs') == RUNS_PER_SEED else 'false'}`",
+            f"- All {self.runs_per_seed} runs completed: `{'true' if resume_state.get('completed_runs') == self.runs_per_seed else 'false'}`",
             "- The attacker baseline is deterministic and does not invoke an LLM at runtime.",
             "- Defender and observer remained the current agentic full-containment stack.",
             "- No water-distribution runs were touched.",
         ]
-        _write_text(self.repo_note_path, "\n".join(lines) + "\n")
+
+    def write_repo_note(self) -> None:
+        resume_state = _read_json(self.resume_state_path, {})
+        _write_text(
+            self.repo_note_path,
+            "\n".join(self._repo_note_lines(resume_state)) + "\n",
+        )
+
+    def write_repo_local_report(self) -> None:
+        if self.repo_local_report_path is None:
+            return
+        self.repo_local_report_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            *self._report_lines(),
+            "",
+            "## Repo Note",
+            "- This repo-local note summarizes the local scripted-baseline pass and references the local result root above.",
+            "- Raw experiment artifacts remain under `Artifact/Results` and are not intended for git commit.",
+        ]
+        _write_text(self.repo_local_report_path, "\n".join(lines) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:
