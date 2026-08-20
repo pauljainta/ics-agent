@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 from copy import deepcopy
@@ -146,6 +148,10 @@ class ScriptedBlackBoxBaselineRunner:
     report_filename = "scripted_black_box_baseline_report.md"
     repo_note_filename = "scripted_black_box_baseline_note.md"
     default_repo_local_report_path = REPO_LOCAL_REPORT_PATH
+    preferred_xdc_short_names = ("example-xdc-05", "example-xdc-04")
+    candidate_xdc_prefix = "agenticwd"
+    optionb_validation_scenario_id = "wd-attack-coordinated-grid-rws-delay"
+    validation_attempt_timeout_sec = 480.0
 
     def __init__(self, result_root: Path) -> None:
         self.result_root = result_root.resolve()
@@ -236,7 +242,28 @@ class ScriptedBlackBoxBaselineRunner:
         config["resume"] = True
         config["use_canonical_result_root"] = True
         config["testbed"] = TESTBED_ID
+        selected_xdc = self._selected_xdc_short_name()
+        if selected_xdc:
+            config.setdefault("environment", {})
+            config["environment"]["xdc"] = selected_xdc
         return config
+
+    def _selected_xdc_short_name(self) -> str | None:
+        override = str(os.environ.get("ICS_AGENT_SPHERE_XDC_OVERRIDE", "")).strip()
+        if override:
+            return override.split(".", 1)[0]
+        payload = _read_json(self.optionb_validation_path, {})
+        if str(payload.get("status", "")).strip().lower() != "passed":
+            return None
+        selected = dict(payload.get("selected_xdc") or {})
+        short_name = str(selected.get("short_name", "")).strip()
+        if short_name:
+            return short_name
+        validated_target = dict(payload.get("validated_target") or {})
+        xdc_ref = str(validated_target.get("xdc", "")).strip()
+        if not xdc_ref:
+            return None
+        return xdc_ref.split(".", 1)[0]
 
     @staticmethod
     def _required_preflight_refs(config: dict[str, Any]) -> dict[str, str]:
@@ -1058,17 +1085,401 @@ class ScriptedBlackBoxBaselineRunner:
                 f"mrg {kind} preflight returned non-JSON output for `{ref}`"
             ) from exc
 
+    def _check_mrg_text(
+        self,
+        args: list[str],
+        *,
+        merge_server: str,
+        timeout_sec: float = 20.0,
+    ) -> str:
+        command = ["mrg"]
+        if merge_server:
+            command.extend(["-s", merge_server])
+        command.extend(args)
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                cwd=REPO_ROOT,
+                env=os.environ.copy(),
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"mrg {' '.join(args)} timed out after {timeout_sec:.0f}s"
+            ) from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(
+                f"mrg {' '.join(args)} failed ({completed.returncode}): {detail}"
+            )
+        return completed.stdout
+
+    @staticmethod
+    def _qualified_xdc_ref(short_name: str, merge_user: str) -> str:
+        return short_name if short_name.count(".") == 1 else f"{short_name}.{merge_user}"
+
+    @staticmethod
+    def _extract_xdc_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(payload.get("xdc"), dict):
+            return dict(payload["xdc"])
+        result = payload.get("result")
+        if isinstance(result, dict) and isinstance(result.get("xdc"), dict):
+            return dict(result["xdc"])
+        return {}
+
+    @staticmethod
+    def _parse_xdc_refs(list_output: str) -> list[str]:
+        refs: list[str] = []
+        for line in list_output.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("Name.Project"):
+                continue
+            token = stripped.split()[0]
+            if re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", token) and token not in refs:
+                refs.append(token)
+        return refs
+
+    def _runner_import_name(self) -> str:
+        module_name = str(self.__class__.__module__)
+        if module_name != "__main__":
+            return module_name
+        source_path = Path(inspect.getsourcefile(self.__class__) or "").resolve()
+        try:
+            relative = source_path.relative_to(REPO_ROOT)
+        except Exception as exc:
+            raise RuntimeError(
+                f"unable to derive import path for `{self.__class__.__name__}`"
+            ) from exc
+        return ".".join(relative.with_suffix("").parts)
+
+    def _listed_xdc_refs(self, *, merge_server: str) -> tuple[str, list[str]]:
+        output = self._check_mrg_text(
+            ["list", "xdcs"],
+            merge_server=merge_server,
+        )
+        return output, self._parse_xdc_refs(output)
+
+    def _candidate_xdc_short_names(
+        self,
+        *,
+        available_refs: list[str],
+        configured_xdc: str,
+    ) -> list[str]:
+        names: list[str] = []
+        available_short_names = sorted(
+            {
+                ref.split(".", 1)[0]
+                for ref in available_refs
+                if ref.split(".", 1)[0].startswith(self.candidate_xdc_prefix)
+            }
+        )
+        for name in (*self.preferred_xdc_short_names, configured_xdc, *available_short_names):
+            short_name = str(name).strip()
+            if short_name and short_name not in names:
+                names.append(short_name)
+        return names
+
+    def _inspect_xdc_candidates(
+        self,
+        *,
+        candidate_short_names: list[str],
+        merge_server: str,
+        merge_user: str,
+        realization_ref: str,
+    ) -> list[dict[str, Any]]:
+        inspections: list[dict[str, Any]] = []
+        for short_name in candidate_short_names:
+            ref = self._qualified_xdc_ref(short_name, merge_user)
+            entry: dict[str, Any] = {
+                "short_name": short_name,
+                "ref": ref,
+                "available": False,
+                "healthy": False,
+                "attached": False,
+            }
+            try:
+                payload = self._check_mrg_show_json(
+                    "xdc",
+                    ref,
+                    merge_server=merge_server,
+                )
+            except Exception as exc:
+                entry["error"] = str(exc)
+                inspections.append(entry)
+                continue
+            xdc_payload = self._extract_xdc_payload(payload)
+            materialization = str(
+                xdc_payload.get("materialization")
+                or xdc_payload.get("materialization_ref")
+                or xdc_payload.get("realization")
+                or ""
+            ).strip()
+            status = str(
+                xdc_payload.get("status")
+                or xdc_payload.get("state")
+                or xdc_payload.get("health")
+                or ""
+            ).strip()
+            status_token = status.lower()
+            healthy = status_token not in {
+                "error",
+                "failed",
+                "stale",
+                "deleting",
+                "deleted",
+            }
+            entry.update(
+                {
+                    "available": True,
+                    "healthy": healthy,
+                    "attached": materialization == realization_ref,
+                    "materialization": materialization,
+                    "status": status,
+                }
+            )
+            inspections.append(entry)
+        return inspections
+
+    def _ordered_xdc_candidates(
+        self,
+        *,
+        inspections: list[dict[str, Any]],
+        configured_xdc: str,
+    ) -> list[dict[str, Any]]:
+        by_short = {
+            str(entry.get("short_name")): entry
+            for entry in inspections
+            if entry.get("available") and entry.get("healthy")
+        }
+        ordered: list[dict[str, Any]] = []
+        for short_name in ("example-xdc-05", "example-xdc-04"):
+            entry = by_short.get(short_name)
+            if entry is not None and entry.get("attached"):
+                ordered.append(entry)
+        if not ordered:
+            for short_name in ("example-xdc-05", "example-xdc-04", configured_xdc):
+                entry = by_short.get(short_name)
+                if entry is not None and entry not in ordered:
+                    ordered.append(entry)
+        for entry in inspections:
+            if (
+                entry.get("available")
+                and entry.get("healthy")
+                and entry.get("attached")
+                and entry not in ordered
+            ):
+                ordered.append(entry)
+        return ordered[:2]
+
+    def _attempt_validation_path(self, xdc_short_name: str, attempt_index: int) -> Path:
+        token = _sanitize_token(xdc_short_name) or f"attempt_{attempt_index}"
+        return (
+            self.progress_root
+            / f"optionb_environment_validation_attempt_{attempt_index:02d}_{token}.json"
+        )
+
+    def _run_optionb_validation_attempt(
+        self,
+        *,
+        xdc_short_name: str,
+        validation_path: Path,
+        timeout_sec: float,
+    ) -> dict[str, Any]:
+        command = [
+            _python_executable(),
+            "-c",
+            (
+                "from pathlib import Path; "
+                f"from {self._runner_import_name()} import {self.__class__.__name__}; "
+                "import sys; "
+                "runner = "
+                f"{self.__class__.__name__}(Path(sys.argv[1])); "
+                "runner._validate_optionb_environment("
+                "validation_path=Path(sys.argv[2]), update_phase=False)"
+            ),
+            str(self.result_root),
+            str(validation_path),
+        ]
+        env = os.environ.copy()
+        env["ICS_AGENT_SPHERE_XDC_OVERRIDE"] = xdc_short_name
+        started_utc = utc_now()
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                cwd=REPO_ROOT,
+                env=env,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "hung",
+                "short_name": xdc_short_name,
+                "validation_path": portable_path(validation_path),
+                "started_utc": started_utc,
+                "completed_utc": utc_now(),
+                "timeout_sec": timeout_sec,
+                "stdout": "",
+                "stderr": "",
+                "error": (
+                    "optionb environment validation remained in progress without "
+                    "completing before the smoke timeout"
+                ),
+            }
+        payload = _read_json(validation_path, {})
+        status = "passed" if completed.returncode == 0 else "failed"
+        result = {
+            "status": status,
+            "short_name": xdc_short_name,
+            "validation_path": portable_path(validation_path),
+            "started_utc": started_utc,
+            "completed_utc": utc_now(),
+            "returncode": completed.returncode,
+            "stdout": completed.stdout.strip(),
+            "stderr": completed.stderr.strip(),
+            "payload_status": payload.get("status"),
+        }
+        if completed.returncode != 0:
+            result["error"] = str(payload.get("error") or completed.stderr.strip() or completed.stdout.strip())
+        return result
+
+    def _cleanup_failed_validation_attempt(self, xdc_short_name: str) -> None:
+        config = self._base_config()
+        environment = deepcopy(dict(config.get("environment") or {}))
+        environment["testbed"] = TESTBED_ID
+        environment["xdc"] = xdc_short_name
+        helper_root: Path | None = None
+        try:
+            env = self._optionb_environment_cls()(environment)
+            backend = env._backend_impl
+            helper_root = getattr(backend, "helper_root", None)
+            env.stop()
+        except Exception:
+            pass
+        if isinstance(helper_root, Path) and helper_root.exists():
+            shutil.rmtree(helper_root, ignore_errors=True)
+
+    def _optionb_validation_scenario(self) -> Any:
+        for scenario in self.scenarios():
+            if scenario.scenario_id == self.optionb_validation_scenario_id:
+                return scenario
+        raise RuntimeError(
+            f"missing distribution validation scenario `{self.optionb_validation_scenario_id}`"
+        )
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _validate_optionb_smoke_snapshot(
+        self,
+        *,
+        scenario: Any,
+        reset_snapshot: dict[str, Any],
+        observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        expected = {
+            key: float(value)
+            for key, value in (scenario.execution.get("initial_conditions") or {}).items()
+            if key
+            in {
+                "Supply_Tank_Level",
+                "Grid_Elev_Tank_Level",
+                "RWS_Tank_Level",
+            }
+        }
+        if expected != {
+            "Supply_Tank_Level": 930.0,
+            "Grid_Elev_Tank_Level": 920.0,
+            "RWS_Tank_Level": 320.0,
+        }:
+            raise RuntimeError(
+                "distribution smoke validation scenario no longer matches the required "
+                "`wd-attack-coordinated-grid-rws-delay` reset contract"
+            )
+        initial_state_validation = dict(reset_snapshot.get("initial_state_validation") or {})
+        if str(initial_state_validation.get("status", "")).strip().lower() != "passed":
+            raise RuntimeError(
+                "distribution smoke validation failed: initial-state validation did not pass"
+            )
+        post_reset_observation = dict(reset_snapshot.get("post_reset_observation") or {})
+        required_fields = ["STATE_NAME", *expected.keys()]
+        missing = [
+            field
+            for field in required_fields
+            if post_reset_observation.get(field) is None and observation.get(field) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "distribution smoke validation failed: reset observation is missing "
+                f"required distribution fields {missing}"
+            )
+        observed = {
+            field: post_reset_observation.get(field, observation.get(field))
+            for field in expected
+        }
+        mismatches: dict[str, dict[str, Any]] = {}
+        tolerance = 1.0
+        for field, expected_value in expected.items():
+            actual_value = self._coerce_float(observed.get(field))
+            if actual_value is None:
+                mismatches[field] = {
+                    "expected": expected_value,
+                    "observed": observed.get(field),
+                }
+                continue
+            difference = round(abs(actual_value - expected_value), 3)
+            if difference > tolerance:
+                mismatches[field] = {
+                    "expected": expected_value,
+                    "observed": actual_value,
+                    "difference": difference,
+                }
+        if mismatches:
+            details = "; ".join(
+                f"{field}: expected {payload.get('expected')}, observed {payload.get('observed')}"
+                for field, payload in mismatches.items()
+            )
+            raise RuntimeError(
+                "distribution smoke validation failed after reset: " + details
+            )
+        return {
+            "status": "passed",
+            "family": "water_distribution",
+            "scenario_id": scenario.scenario_id,
+            "expected": expected,
+            "observed": observed,
+            "tolerance": tolerance,
+            "state_name": post_reset_observation.get("STATE_NAME")
+            or observation.get("STATE_NAME"),
+            "initial_state_validation": initial_state_validation,
+        }
+
     def _optionb_environment_cls(self):
         return OpenPLCEnvironment
 
     def _optionb_backend_cls(self):
         return _SphereOpenPLCBackend
 
-    def _validate_optionb_environment(self) -> None:
-        self._set_phase("validated_optionb_environment", "in_progress")
+    def _validate_optionb_environment(
+        self,
+        *,
+        validation_path: Path | None = None,
+        update_phase: bool = True,
+    ) -> None:
+        target_validation_path = validation_path or self.optionb_validation_path
+        if update_phase:
+            self._set_phase("validated_optionb_environment", "in_progress")
+        self._ensure_env_defaults()
         config = self._runtime_config()
         env = self._optionb_environment_cls()(config.get("environment", {}))
-        scenario = self.scenarios()[0]
+        scenario = self._optionb_validation_scenario()
         preflight_refs = self._required_preflight_refs(config)
         result: dict[str, Any] = {
             "validated_at_utc": utc_now(),
@@ -1094,6 +1505,11 @@ class ScriptedBlackBoxBaselineRunner:
             reset_snapshot = env.reset(scenario.execution.get("initial_conditions"))
             observation = env.observe_flat()
             discovery = env.inspect_surface({"type": "inspect_surface", "surface": "tags"})
+            smoke_validation = self._validate_optionb_smoke_snapshot(
+                scenario=scenario,
+                reset_snapshot=reset_snapshot,
+                observation=observation,
+            )
             result.update(
                 {
                     "status": "passed",
@@ -1113,6 +1529,7 @@ class ScriptedBlackBoxBaselineRunner:
                         "xdc": backend._xdc_ref,
                         "merge_user": merge_user,
                     },
+                    "smoke_validation": smoke_validation,
                     "reset_state": {
                         "state_name": reset_snapshot.get("STATE_NAME")
                         or reset_snapshot.get("state_name"),
@@ -1132,32 +1549,137 @@ class ScriptedBlackBoxBaselineRunner:
                     "discovery_surface_sample": discovery.get("reconnaissance", {}),
                 }
             )
-            write_json(self.optionb_validation_path, result)
-            self._set_phase(
-                "validated_optionb_environment",
-                "completed",
-                validation_path=portable_path(self.optionb_validation_path),
-            )
+            write_json(target_validation_path, result)
+            if update_phase:
+                self._set_phase(
+                    "validated_optionb_environment",
+                    "completed",
+                    validation_path=portable_path(target_validation_path),
+                )
             return
         except Exception as exc:
             result["error"] = str(exc)
-            write_json(self.optionb_validation_path, result)
-            self._set_phase(
-                "validated_optionb_environment",
-                "failed",
-                error_message=str(exc),
-                validation_path=portable_path(self.optionb_validation_path),
-            )
-            _append_log(
-                self.experiment_log_path,
-                f"optionb environment validation failed: {exc}",
-            )
+            write_json(target_validation_path, result)
+            if update_phase:
+                self._set_phase(
+                    "validated_optionb_environment",
+                    "failed",
+                    error_message=str(exc),
+                    validation_path=portable_path(target_validation_path),
+                )
+                _append_log(
+                    self.experiment_log_path,
+                    f"optionb environment validation failed: {exc}",
+                )
             raise
         finally:
             try:
                 env.stop()
             except Exception:
                 pass
+
+    def _validate_optionb_environment_with_xdc_discovery(self) -> None:
+        self._set_phase("validated_optionb_environment", "in_progress")
+        config = self._base_config()
+        environment = dict(config.get("environment") or {})
+        preflight_refs = self._required_preflight_refs(config)
+        configured_xdc = str(environment.get("xdc", "")).strip()
+        candidate_selection: dict[str, Any] = {
+            "configured_xdc": configured_xdc,
+            "preferred_xdcs": list(self.preferred_xdc_short_names),
+            "realization_ref": preflight_refs["realization"],
+            "materialization_ref": preflight_refs["materialization"],
+            "prior_successful_distribution_xdc": "example-xdc-04",
+        }
+        final_result: dict[str, Any] = {
+            "validated_at_utc": utc_now(),
+            "config_path": portable_path(Path(config["_path"])),
+            "status": "failed",
+            "candidate_selection": candidate_selection,
+            "attempts": [],
+        }
+        try:
+            merge_user = self._check_mrg_transport()
+            candidate_selection["merge_user"] = merge_user
+            list_output, available_refs = self._listed_xdc_refs(
+                merge_server=preflight_refs["merge_server"]
+            )
+            candidate_selection["listed_xdcs"] = available_refs
+            candidate_selection["list_xdcs_output"] = list_output.strip()
+            candidate_short_names = self._candidate_xdc_short_names(
+                available_refs=available_refs,
+                configured_xdc=configured_xdc,
+            )
+            inspections = self._inspect_xdc_candidates(
+                candidate_short_names=candidate_short_names,
+                merge_server=preflight_refs["merge_server"],
+                merge_user=merge_user,
+                realization_ref=preflight_refs["realization"],
+            )
+            candidate_selection["inspected_xdcs"] = inspections
+            ordered_candidates = self._ordered_xdc_candidates(
+                inspections=inspections,
+                configured_xdc=configured_xdc,
+            )
+            if not ordered_candidates:
+                raise RuntimeError(
+                    "no healthy distribution XDC candidate is currently available for "
+                    f"`{preflight_refs['realization']}`"
+                )
+            for attempt_index, candidate in enumerate(ordered_candidates, start=1):
+                short_name = str(candidate.get("short_name", "")).strip()
+                candidate_selection["chosen_xdc"] = short_name
+                candidate_selection["chosen_xdc_ref"] = candidate.get("ref")
+                _append_log(
+                    self.experiment_log_path,
+                    f"trying distribution smoke validation with XDC `{short_name}`",
+                )
+                attempt_path = self._attempt_validation_path(short_name, attempt_index)
+                attempt = self._run_optionb_validation_attempt(
+                    xdc_short_name=short_name,
+                    validation_path=attempt_path,
+                    timeout_sec=self.validation_attempt_timeout_sec,
+                )
+                final_result["attempts"].append(attempt)
+                if attempt["status"] == "passed":
+                    payload = _read_json(attempt_path, {})
+                    payload["selected_xdc"] = {
+                        "short_name": short_name,
+                        "ref": candidate.get("ref"),
+                    }
+                    payload["candidate_selection"] = candidate_selection
+                    payload["attempts"] = final_result["attempts"]
+                    write_json(self.optionb_validation_path, payload)
+                    os.environ["ICS_AGENT_SPHERE_XDC_OVERRIDE"] = short_name
+                    self._set_phase(
+                        "validated_optionb_environment",
+                        "completed",
+                        validation_path=portable_path(self.optionb_validation_path),
+                        chosen_xdc=short_name,
+                    )
+                    _append_log(
+                        self.experiment_log_path,
+                        f"distribution smoke validation passed with XDC `{short_name}`",
+                    )
+                    return
+                self._cleanup_failed_validation_attempt(short_name)
+            last_attempt = final_result["attempts"][-1] if final_result["attempts"] else {}
+            raise RuntimeError(str(last_attempt.get("error") or "all distribution XDC attempts failed"))
+        except Exception as exc:
+            final_result["error"] = str(exc)
+            write_json(self.optionb_validation_path, final_result)
+            self._set_phase(
+                "validated_optionb_environment",
+                "failed",
+                error_message=str(exc),
+                validation_path=portable_path(self.optionb_validation_path),
+                chosen_xdc=candidate_selection.get("chosen_xdc"),
+            )
+            _append_log(
+                self.experiment_log_path,
+                f"optionb environment validation failed: {exc}",
+            )
+            raise
 
     def _run_logged(
         self,
@@ -1244,7 +1766,7 @@ class ScriptedBlackBoxBaselineRunner:
         )
         rows = self._load_scenario_rows()
         self._mark_resume_event_if_needed(rows)
-        self._validate_optionb_environment()
+        self._validate_optionb_environment_with_xdc_discovery()
         self._validate_runtime_and_tests()
         self._set_phase("scenario_run", "in_progress")
         completed_rows, _ = self._sync_state(

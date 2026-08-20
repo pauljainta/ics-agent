@@ -224,11 +224,28 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         def start(self) -> dict[str, str]:
             return {"status": "started"}
 
-        def reset(self, _initial_conditions) -> dict[str, str]:
-            return {"STATE_NAME": "IDLE"}
+        def reset(self, _initial_conditions) -> dict[str, object]:
+            return {
+                "STATE_NAME": "IDLE",
+                "post_reset_observation": _treatment_observation(
+                    STATE_NAME="IDLE",
+                    RW_Tank_Level=600.0,
+                    UF_UFFT_Tank_Level=400.0,
+                    ChemTreat_NaCl_Level=800.0,
+                    ChemTreat_NaOCl_Level=800.0,
+                    ChemTreat_HCl_Level=800.0,
+                ),
+            }
 
-        def observe_flat(self) -> dict[str, str]:
-            return {"STATE_NAME": "IDLE"}
+        def observe_flat(self) -> dict[str, float | str]:
+            return _treatment_observation(
+                STATE_NAME="IDLE",
+                RW_Tank_Level=600.0,
+                UF_UFFT_Tank_Level=400.0,
+                ChemTreat_NaCl_Level=800.0,
+                ChemTreat_NaOCl_Level=800.0,
+                ChemTreat_HCl_Level=800.0,
+            )
 
         def inspect_surface(self, _action) -> dict[str, object]:
             return {"reconnaissance": {"surface": "tags"}}

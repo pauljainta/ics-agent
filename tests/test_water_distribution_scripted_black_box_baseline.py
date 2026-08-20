@@ -234,11 +234,25 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         def start(self) -> dict[str, str]:
             return {"status": "started"}
 
-        def reset(self, _initial_conditions) -> dict[str, str]:
-            return {"STATE_NAME": "IDLE", "initial_state_validation": {"status": "passed"}}
+        def reset(self, _initial_conditions) -> dict[str, object]:
+            return {
+                "STATE_NAME": "IDLE",
+                "initial_state_validation": {"status": "passed"},
+                "post_reset_observation": _distribution_observation(
+                    STATE_NAME="IDLE",
+                    Supply_Tank_Level=930.0,
+                    Grid_Elev_Tank_Level=920.0,
+                    RWS_Tank_Level=320.0,
+                ),
+            }
 
         def observe_flat(self) -> dict[str, float | str]:
-            return _distribution_observation(STATE_NAME="IDLE")
+            return _distribution_observation(
+                STATE_NAME="IDLE",
+                Supply_Tank_Level=930.0,
+                Grid_Elev_Tank_Level=920.0,
+                RWS_Tank_Level=320.0,
+            )
 
         def inspect_surface(self, _action) -> dict[str, object]:
             return {"reconnaissance": {"surface": "tags"}}
@@ -269,3 +283,104 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
     assert payload["preflight"]["merge_user"] == "live-user"
     assert payload["validated_target"]["realization"] == FakeBackend._realization_ref
     assert calls == {"whoami": 1, "show": 2}
+
+
+def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd0_after_wd1_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
+    runner.ensure_root_layout()
+    cleanup_calls: list[str] = []
+
+    monkeypatch.setattr(runner, "_check_mrg_transport", lambda timeout_sec=20.0: "live-user")
+    monkeypatch.setattr(
+        runner,
+        "_listed_xdc_refs",
+        lambda merge_server: (
+            "XDC: example-xdc-05.live-user\nXDC: example-xdc-04.live-user\n",
+            ["example-xdc-05.live-user", "example-xdc-04.live-user"],
+        ),
+    )
+
+    def fake_inspect(
+        *,
+        candidate_short_names: list[str],
+        merge_server: str,
+        merge_user: str,
+        realization_ref: str,
+    ) -> list[dict[str, object]]:
+        assert candidate_short_names[:2] == ["example-xdc-05", "example-xdc-04"]
+        assert merge_server == "merge.example.invalid"
+        assert merge_user == "live-user"
+        assert realization_ref == "example-realization-02.openplcwater.lgarcia"
+        return [
+            {
+                "short_name": "example-xdc-05",
+                "ref": "example-xdc-05.live-user",
+                "available": True,
+                "healthy": True,
+                "attached": True,
+                "materialization": realization_ref,
+                "status": "Ready",
+            },
+            {
+                "short_name": "example-xdc-04",
+                "ref": "example-xdc-04.live-user",
+                "available": True,
+                "healthy": True,
+                "attached": True,
+                "materialization": realization_ref,
+                "status": "Ready",
+            },
+        ]
+
+    def fake_attempt(
+        *,
+        xdc_short_name: str,
+        validation_path: Path,
+        timeout_sec: float,
+    ) -> dict[str, object]:
+        assert timeout_sec == runner.validation_attempt_timeout_sec
+        if xdc_short_name == "example-xdc-05":
+            validation_path.write_text(json.dumps({"status": "failed", "error": "wrong reset"}))
+            return {
+                "status": "failed",
+                "short_name": xdc_short_name,
+                "validation_path": str(validation_path),
+                "error": "wrong reset",
+            }
+        validation_path.write_text(
+            json.dumps(
+                {
+                    "status": "passed",
+                    "validated_target": {
+                        "xdc": "example-xdc-04.live-user",
+                    },
+                }
+            )
+        )
+        return {
+            "status": "passed",
+            "short_name": xdc_short_name,
+            "validation_path": str(validation_path),
+        }
+
+    monkeypatch.setattr(runner, "_inspect_xdc_candidates", fake_inspect)
+    monkeypatch.setattr(runner, "_run_optionb_validation_attempt", fake_attempt)
+    monkeypatch.setattr(
+        runner,
+        "_cleanup_failed_validation_attempt",
+        lambda xdc_short_name: cleanup_calls.append(xdc_short_name),
+    )
+
+    runner._validate_optionb_environment_with_xdc_discovery()
+
+    payload = json.loads(runner.optionb_validation_path.read_text())
+    phase = json.loads(runner.global_phase_status_path.read_text())["phases"][
+        "validated_optionb_environment"
+    ]
+    assert cleanup_calls == ["example-xdc-05"]
+    assert payload["selected_xdc"]["short_name"] == "example-xdc-04"
+    assert phase["status"] == "completed"
+    assert phase["chosen_xdc"] == "example-xdc-04"

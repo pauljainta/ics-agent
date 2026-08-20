@@ -227,11 +227,28 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         def start(self) -> dict[str, str]:
             return {"status": "started"}
 
-        def reset(self, _initial_conditions) -> dict[str, str]:
-            return {"STATE_NAME": "IDLE"}
+        def reset(self, _initial_conditions) -> dict[str, object]:
+            return {
+                "STATE_NAME": "IDLE",
+                "post_reset_observation": _treatment_observation(
+                    STATE_NAME="IDLE",
+                    RW_Tank_Level=600.0,
+                    UF_UFFT_Tank_Level=400.0,
+                    ChemTreat_NaCl_Level=800.0,
+                    ChemTreat_NaOCl_Level=800.0,
+                    ChemTreat_HCl_Level=800.0,
+                ),
+            }
 
-        def observe_flat(self) -> dict[str, str]:
-            return {"STATE_NAME": "IDLE"}
+        def observe_flat(self) -> dict[str, float | str]:
+            return _treatment_observation(
+                STATE_NAME="IDLE",
+                RW_Tank_Level=600.0,
+                UF_UFFT_Tank_Level=400.0,
+                ChemTreat_NaCl_Level=800.0,
+                ChemTreat_NaOCl_Level=800.0,
+                ChemTreat_HCl_Level=800.0,
+            )
 
         def inspect_surface(self, _action) -> dict[str, object]:
             return {"reconnaissance": {"surface": "tags"}}
@@ -261,6 +278,92 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
     assert payload["status"] == "passed"
     assert payload["preflight"]["merge_user"] == "live-user"
     assert calls == {"whoami": 1, "show": 2}
+
+
+def test_validate_optionb_environment_with_xdc_discovery_prefers_attached_wt1(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
+    runner.ensure_root_layout()
+
+    monkeypatch.setattr(runner, "_check_mrg_transport", lambda timeout_sec=20.0: "live-user")
+    monkeypatch.setattr(
+        runner,
+        "_listed_xdc_refs",
+        lambda merge_server: (
+            "XDC: example-xdc-07.live-user\nXDC: example-xdc-08.live-user\n",
+            ["example-xdc-07.live-user", "example-xdc-08.live-user"],
+        ),
+    )
+
+    def fake_inspect(
+        *,
+        candidate_short_names: list[str],
+        merge_server: str,
+        merge_user: str,
+        realization_ref: str,
+    ) -> list[dict[str, object]]:
+        assert candidate_short_names[:2] == ["example-xdc-08", "example-xdc-07"]
+        assert merge_server == "merge.example.invalid"
+        assert merge_user == "live-user"
+        assert realization_ref == "example-realization-03.openplcwater.lgarcia"
+        return [
+            {
+                "short_name": "example-xdc-08",
+                "ref": "example-xdc-08.live-user",
+                "available": True,
+                "healthy": True,
+                "attached": True,
+                "materialization": realization_ref,
+                "status": "Ready",
+            },
+            {
+                "short_name": "example-xdc-07",
+                "ref": "example-xdc-07.live-user",
+                "available": True,
+                "healthy": False,
+                "attached": False,
+                "status": "Error",
+            },
+        ]
+
+    def fake_attempt(
+        *,
+        xdc_short_name: str,
+        validation_path: Path,
+        timeout_sec: float,
+    ) -> dict[str, object]:
+        assert xdc_short_name == "example-xdc-08"
+        assert timeout_sec == runner.validation_attempt_timeout_sec
+        validation_path.write_text(
+            json.dumps(
+                {
+                    "status": "passed",
+                    "validated_target": {
+                        "xdc": "example-xdc-08.live-user",
+                    },
+                }
+            )
+        )
+        return {
+            "status": "passed",
+            "short_name": xdc_short_name,
+            "validation_path": str(validation_path),
+        }
+
+    monkeypatch.setattr(runner, "_inspect_xdc_candidates", fake_inspect)
+    monkeypatch.setattr(runner, "_run_optionb_validation_attempt", fake_attempt)
+
+    runner._validate_optionb_environment_with_xdc_discovery()
+
+    payload = json.loads(runner.optionb_validation_path.read_text())
+    phase = json.loads(runner.global_phase_status_path.read_text())["phases"][
+        "validated_optionb_environment"
+    ]
+    assert payload["selected_xdc"]["short_name"] == "example-xdc-08"
+    assert phase["status"] == "completed"
+    assert phase["chosen_xdc"] == "example-xdc-08"
 
 
 def test_resume_compatible_config_hash_update_allows_runner_only_drift() -> None:
