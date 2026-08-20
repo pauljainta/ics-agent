@@ -835,12 +835,17 @@ class AgenticRoleAgent(RoleAgent):
     def _uses_scripted_black_box_policy(self) -> bool:
         if not self._is_black_box_attacker():
             return False
-        if str(self._state.get("testbed_id", "")).strip().lower() != "water_treatment":
-            return False
         behavior = self.profile.get("behavior_model")
         if not isinstance(behavior, dict):
             return False
-        return str(behavior.get("policy", "")).strip().lower() == "scripted_black_box"
+        if str(behavior.get("policy", "")).strip().lower() != "scripted_black_box":
+            return False
+        testbed_id = str(self._state.get("testbed_id", "")).strip().lower()
+        if testbed_id == "water_treatment":
+            return True
+        return testbed_id == "water_distribution" and (
+            self._uses_distribution_scripted_black_box_profile()
+        )
 
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
@@ -1232,12 +1237,23 @@ class AgenticRoleAgent(RoleAgent):
             mitre_context = self._black_box_visible_mitre_context(
                 internal_mitre_context
             )
-            candidate_actions = self._black_box_candidate_actions(
-                context=history_context,
-                telemetry_summary=telemetry_summary,
-                structured_memory=internal_structured_memory,
-                mitre_context=internal_mitre_context,
-            )
+            if (
+                self._uses_distribution_scripted_black_box_profile()
+                and self._is_water_distribution_scenario(scenario)
+            ):
+                candidate_actions = (
+                    self._scripted_black_box_distribution_candidate_actions(
+                        context=history_context,
+                        telemetry_summary=telemetry_summary,
+                    )
+                )
+            else:
+                candidate_actions = self._black_box_candidate_actions(
+                    context=history_context,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=internal_structured_memory,
+                    mitre_context=internal_mitre_context,
+                )
             compact_observation = self._black_box_visible_observation(observation)
             recent_observations = [
                 self._black_box_visible_observation(item)
@@ -1919,6 +1935,43 @@ class AgenticRoleAgent(RoleAgent):
                 "type": "inspect_surface",
                 "target": self._black_box_surface_alias(normalized.get("surface")),
             }
+        if (
+            action_type == "set_actuator"
+            and self._uses_distribution_scripted_black_box_profile()
+        ):
+            actuator_name = str(normalized.get("name", "")).strip() or "actuator"
+            target_alias = self._black_box_alias(
+                "control",
+                f"set_actuator:{actuator_name}",
+                "ctrl",
+            )
+            raw_value = normalized.get("value")
+            setting = "toggle"
+            if isinstance(raw_value, bool):
+                setting = "open" if raw_value else "close"
+            else:
+                numeric_value = self._coerce_number(raw_value)
+                current_value = None
+                if observation is not None:
+                    current_value = self._coerce_number(
+                        observation.get(f"{actuator_name}_Cmd")
+                    )
+                    if current_value is None:
+                        current_value = self._coerce_number(
+                            observation.get(f"{actuator_name}_Sts")
+                        )
+                if numeric_value is not None:
+                    if numeric_value <= 0.0:
+                        setting = "disable"
+                    elif current_value is not None and numeric_value < current_value:
+                        setting = "disable"
+                    else:
+                        setting = "enable"
+            return {
+                "type": "toggle_control",
+                "target": target_alias,
+                "setting": setting,
+            }
         if action_type == "set_sensor":
             field_name = str(normalized.get("name", "")).strip()
             target_alias = self._black_box_signal_alias(field_name)
@@ -2325,6 +2378,243 @@ class AgenticRoleAgent(RoleAgent):
             ),
             reverse=True,
         )
+
+    def _uses_distribution_scripted_black_box_profile(self) -> bool:
+        return self.profile_name == "scripted_black_box_distribution_attacker"
+
+    @staticmethod
+    def _scripted_black_box_distribution_recon_surfaces() -> list[str]:
+        return [
+            "tags",
+            "registers",
+            "io_image",
+            "alarm_bits",
+            "actuator_state_bits",
+            "sensor_write_path",
+            "actuator_write_path",
+        ]
+
+    @staticmethod
+    def _scripted_black_box_distribution_sensor_fields() -> tuple[str, ...]:
+        return (
+            "Supply_Tank_Level",
+            "Supply_Pump_Flow",
+            "Supply_NaOCl_Level",
+            "Supply_NH4Cl_Level",
+            "Grid_Elev_Tank_Level",
+            "Grid_Consum_Tank_Level",
+            "RWS_Tank_Level",
+        )
+
+    @staticmethod
+    def _scripted_black_box_distribution_actuator_actions() -> list[dict[str, Any]]:
+        return [
+            {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 100},
+            {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 0},
+            {"type": "set_actuator", "name": "Supply_Tank_Valve", "value": True},
+            {"type": "set_actuator", "name": "Supply_Tank_Valve", "value": False},
+            {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": True},
+            {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": False},
+            {"type": "set_actuator", "name": "RWS_Pump_Speed", "value": 100},
+            {"type": "set_actuator", "name": "RWS_Pump_Speed", "value": 0},
+            {"type": "set_actuator", "name": "RWS_Tank_Valve", "value": True},
+            {"type": "set_actuator", "name": "RWS_Tank_Valve", "value": False},
+        ]
+
+    def _scripted_black_box_distribution_sensor_actions(
+        self,
+        observation: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for field_name in self._scripted_black_box_distribution_sensor_fields():
+            current_value = self._coerce_number(observation.get(field_name))
+            if current_value is None:
+                continue
+            delta = max(abs(current_value) * 0.45, 25.0)
+            low_value = max(0, int(round(current_value - delta)))
+            high_value = min(65535, int(round(current_value + delta)))
+            if low_value == int(round(current_value)):
+                low_value = max(0, low_value - 20)
+            if high_value == int(round(current_value)):
+                high_value = min(65535, high_value + 20)
+            if low_value != int(round(current_value)):
+                actions.append(
+                    {
+                        "type": "set_sensor",
+                        "name": field_name,
+                        "value": low_value,
+                    }
+                )
+            if high_value != int(round(current_value)):
+                actions.append(
+                    {
+                        "type": "set_sensor",
+                        "name": field_name,
+                        "value": high_value,
+                    }
+                )
+        return actions
+
+    def _scripted_black_box_distribution_candidate_actions(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        observation = dict(context.get("observation") or {})
+        allowed = set(self.profile.get("allowed_action_types", []))
+        plant_running = str(observation.get("STATE_NAME", "")).strip().upper() in {
+            "RUNNING",
+            "START",
+            "STARTING",
+        }
+        visible_risk_flags = set(self._black_box_visible_risk_flags(telemetry_summary))
+        sensor_surface = self._black_box_surface_alias("sensor_write_path")
+        actuator_surface = self._black_box_surface_alias("actuator_write_path")
+        availability_surface = self._black_box_surface_alias("io_image")
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+        candidate_map: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            action: dict[str, Any] | str | None,
+            *,
+            category: str,
+            surface: str,
+            priority: int,
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", "")).strip()
+            if action_type not in allowed:
+                return
+            if action_type != "set_sensor" and self._action_satisfied(
+                normalized,
+                observation=observation,
+            ):
+                return
+            visible_action = self._black_box_visible_action(
+                normalized,
+                observation=observation,
+            )
+            if visible_action is None:
+                return
+            candidate_id = self._black_box_candidate_id(visible_action)
+            payload = {
+                "id": candidate_id,
+                "summary": self._black_box_candidate_summary(
+                    visible_action=visible_action,
+                    category=category,
+                ),
+                "action": visible_action,
+                "source": "scripted_black_box_distribution",
+                "priority": int(priority),
+                "surface": surface,
+                "category": category,
+            }
+            existing = candidates_by_id.get(candidate_id)
+            if existing is not None and int(existing.get("priority", 0)) >= int(
+                payload["priority"]
+            ):
+                return
+            candidates_by_id[candidate_id] = payload
+            candidate_map[candidate_id] = {
+                "action": normalized,
+                "summary": payload["summary"],
+                "visible_action": visible_action,
+            }
+
+        if "inspect_surface" in allowed:
+            for index, surface in enumerate(
+                self._scripted_black_box_distribution_recon_surfaces()
+            ):
+                add_candidate(
+                    {"type": "inspect_surface", "surface": surface},
+                    category="recon",
+                    surface=self._black_box_surface_alias(surface),
+                    priority=160 - (index * 6),
+                )
+
+        if "hmi_start" in allowed and not plant_running:
+            add_candidate(
+                {"type": "hmi_start", "process_id": "WD-UC0"},
+                category="probe",
+                surface=availability_surface,
+                priority=118,
+            )
+        if "hmi_stop" in allowed and plant_running:
+            add_candidate(
+                {"type": "hmi_stop", "process_id": "WD-UC0"},
+                category="exploit",
+                surface=availability_surface,
+                priority=92,
+            )
+        if "hmi_estop" in allowed and plant_running:
+            add_candidate(
+                {"type": "hmi_estop", "process_id": "WD-UC0"},
+                category="escalate",
+                surface=availability_surface,
+                priority=90,
+            )
+
+        if "set_sensor" in allowed:
+            sensor_priority = 124
+            if visible_risk_flags.intersection(
+                {"telemetry_shift", "single_alarm_pressure", "multi_alarm_pressure"}
+            ):
+                sensor_priority += 8
+            for action in self._scripted_black_box_distribution_sensor_actions(
+                observation
+            ):
+                add_candidate(
+                    action,
+                    category="exploit",
+                    surface=sensor_surface,
+                    priority=sensor_priority,
+                )
+                sensor_priority -= 1
+
+        if "set_actuator" in allowed:
+            actuator_priority = 120
+            if visible_risk_flags.intersection(
+                {"control_divergence", "state_disruption"}
+            ):
+                actuator_priority += 8
+            for action in self._scripted_black_box_distribution_actuator_actions():
+                raw_value = action.get("value")
+                category = (
+                    "exploit"
+                    if raw_value in {True, 100}
+                    else "fallback"
+                )
+                add_candidate(
+                    action,
+                    category=category,
+                    surface=actuator_surface,
+                    priority=actuator_priority,
+                )
+                actuator_priority -= 1
+
+        if "noop" in allowed:
+            add_candidate(
+                {"type": "noop"},
+                category="hold",
+                surface=availability_surface,
+                priority=8,
+            )
+
+        visible_candidates = sorted(
+            candidates_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                str(item.get("id", "")),
+            ),
+            reverse=True,
+        )
+        self._state["black_box_candidate_map"] = candidate_map
+        self.engine.black_box_candidate_map = dict(candidate_map)
+        return visible_candidates
 
     def _scripted_black_box_policy_state(self) -> dict[str, Any]:
         return self._state.setdefault(

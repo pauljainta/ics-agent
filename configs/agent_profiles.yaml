@@ -124,6 +124,40 @@ profiles:
     action_cooldown_sec: 1.0
     reasoning_cooldown_sec: 6.0
     reasoning_refresh_sec: 12.0
+  scripted_black_box_distribution_attacker:
+    role: attacker
+    family: agentic
+    mode: online
+    knowledge_mode: black_box
+    allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+    abort_on_backend_error: false
+    behavior_model:
+      id: optionb_mitre_staged
+      policy: scripted_black_box
+      notes: Deterministic staged black-box probe-and-perturb baseline for water distribution
+    llm:
+      backend: qwen_langchain
+      framework: langchain
+      use_langgraph: false
+      strict_backend: true
+      allow_langchain_fallback: false
+      model_id: Qwen/Qwen3.5-9B
+      prompt_file: testbeds/water_distribution/prompts/black_box_attacker.md
+      local_files_only: true
+      require_cuda: true
+      quantization: bf16
+      temperature: 0
+      max_new_tokens: 64
+    memory:
+      observation_window: 10
+      decision_window: 8
+      action_window: 12
+      alert_window: 8
+      summary_window: 6
+      attacker_candidate_window: 6
+    action_cooldown_sec: 2.0
+    reasoning_cooldown_sec: 12.0
+    reasoning_refresh_sec: 18.0
   scripted_black_box_treatment_attacker:
     role: attacker
     family: agentic
