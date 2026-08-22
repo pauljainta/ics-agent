@@ -573,6 +573,60 @@ profiles:
     note_cooldown_sec: 8.0
     reasoning_cooldown_sec: 6.0
     reasoning_refresh_sec: 12.0
+  rule_based_active_intervention_defender:
+    role: defender
+    family: rule_based
+    mode: online
+    knowledge_mode: white_box
+    allowed_action_types:
+      - hmi_stop
+      - hmi_estop
+      - select_process
+      - disable_hmi_session
+      - isolate_engineering_host
+      - block_sensor_write
+      - block_actuator_write
+      - block_process2_manual_path
+      - quarantine_signal_source
+      - noop
+    behavior_model:
+      id: optionb_mitre_staged
+      policy: rule_based_defender
+      response_mode: active_intervention
+      notes: Deterministic active containment policy for MITRE-style staged attack runs.
+  rule_based_advisory_response_defender:
+    role: defender
+    family: rule_based
+    mode: online
+    knowledge_mode: white_box
+    allowed_action_types: [noop]
+    behavior_model:
+      id: optionb_mitre_staged
+      policy: rule_based_defender
+      response_mode: advisory_response
+      notes: Deterministic alert-only policy that recommends containment without executing it.
+  rule_based_latency_constrained_intervention_defender:
+    role: defender
+    family: rule_based
+    mode: online
+    knowledge_mode: white_box
+    allowed_action_types:
+      - hmi_stop
+      - hmi_estop
+      - select_process
+      - disable_hmi_session
+      - isolate_engineering_host
+      - block_sensor_write
+      - block_actuator_write
+      - block_process2_manual_path
+      - quarantine_signal_source
+      - noop
+    behavior_model:
+      id: optionb_mitre_staged
+      policy: rule_based_defender
+      response_mode: latency_constrained_intervention
+      notes: Deterministic containment policy with delayed runtime cutoff activation.
+    runtime_containment_activation_delay_steps: 2
   agentic_defender_with_prior_knowledge:
     role: defender
     family: agentic
