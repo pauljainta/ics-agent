@@ -177,7 +177,7 @@ def _baseline_root_for(attacker_profile_id: str) -> Path | None:
 
 def _artifact_cleanup_status() -> list[dict[str, str]]:
     repo_configs_dir = REPO_ROOT / "configs"
-    repo_scenarios_dir = REPO_ROOT / "scenarios"
+    repo_scenarios_dir = REPO_ROOT / "testbeds" / "water_treatment" / "scenarios"
     configs_dir = WORKSPACE_ROOT / "Artifact" / "Configs"
     scenarios_dir = WORKSPACE_ROOT / "Artifact" / "Scenarios"
     experiments_dir = WORKSPACE_ROOT / "Artifact" / "Experiments"
@@ -195,7 +195,7 @@ def _artifact_cleanup_status() -> list[dict[str, str]]:
             "path": portable_path(repo_scenarios_dir),
             "status": "kept" if repo_scenarios_dir.exists() else "missing",
             "reason": (
-                "The selected attack suite now resolves from repo-local scenarios."
+                "The selected attack suite resolves from the water-treatment testbed scenario directory."
                 if repo_scenarios_dir.exists()
                 else "Repo-local scenarios unexpectedly missing."
             ),

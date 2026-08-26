@@ -50,8 +50,14 @@ assets.
 
 ### `water_treatment/`
 
-Water-treatment domain knowledge and experiment documentation used by the
-water-treatment profiles.
+Water-treatment scenario, domain knowledge, and experiment documentation used
+by the water-treatment profiles.
+
+- `scenarios/attack/`: Water-treatment attack scenario definitions.
+- `scenarios/normal/`: Nominal process scenario definitions.
+- `scenarios/readiness/`: Startup and readiness scenario definitions.
+- `scenarios/recheck/`: Recheck and regression scenario definitions.
+- `scenarios/smoke/`: Short smoke-run scenario definitions.
 
 - `knowledge/phase35/water_treatment_domain_primer.md`: Domain primer used by
   the phase-specific treatment profile.

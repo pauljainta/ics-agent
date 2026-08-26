@@ -11,7 +11,7 @@ OPENPLC_SUPPORT_DIR = REPO_ROOT / "vendor" / "openplc"
 OPENPLC_SUPPORT_SCRIPTS = OPENPLC_SUPPORT_DIR / "scripts"
 RUNTIME_CONFIG_ROOT = REPO_ROOT / "configs"
 RUNTIME_EXPERIMENT_ROOT = RUNTIME_CONFIG_ROOT / "experiments"
-RUNTIME_SCENARIO_ROOT = REPO_ROOT / "scenarios"
+RUNTIME_SCENARIO_ROOT = REPO_ROOT / "testbeds" / "water_treatment" / "scenarios"
 
 
 def artifact_root() -> Path:
