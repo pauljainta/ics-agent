@@ -20,7 +20,7 @@ from .metrics import compute_metrics
 from .paths import REPO_ROOT, portable_path, results_root
 from .reporting import write_json, write_run_bundle
 from .scenarios import ScenarioCatalog
-from .testbeds import normalize_testbed_id
+from testbeds.runtime import normalize_testbed_id
 from .types import RunBundle, ScenarioDefinition
 from .utils import load_yaml, stable_hash, utc_now
 

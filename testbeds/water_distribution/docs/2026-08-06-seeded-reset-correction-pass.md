@@ -12,7 +12,7 @@
 
 ## Code Paths Changed
 
-- `ics_agent/testbeds/water_distribution.py`
+- `testbeds/runtime/water_distribution_runtime.py`
   - remote reset now clears remote overrides, primes a simulator hold state, and zeroes simulator-side command inputs before reseeding
   - remote `hmi_start` releases the simulator hold, and remote `hmi_reset` reasserts it
 - `ics_agent/water_distribution_remote_runtime.py`

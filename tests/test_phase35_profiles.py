@@ -8,7 +8,7 @@ import yaml
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.testbeds.registry import observation_focus_fields, trend_fields
+from testbeds.runtime.registry import observation_focus_fields, trend_fields
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

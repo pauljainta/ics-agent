@@ -21,7 +21,7 @@ from ..mitre import (
     phase_metadata,
 )
 from ..paths import REPO_ROOT
-from ..testbeds import observation_focus_fields, trend_fields
+from testbeds.runtime import observation_focus_fields, trend_fields
 
 
 WHITE_BOX_KNOWLEDGE_ABLATIONS: dict[str, dict[str, Any]] = {

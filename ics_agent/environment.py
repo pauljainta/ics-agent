@@ -27,7 +27,7 @@ from .action_semantics import (
 )
 from .paths import OPENPLC_SUPPORT_DIR, OPENPLC_SUPPORT_SCRIPTS, REPO_ROOT, WORKSPACE_ROOT
 from .remote_roles import RemoteRoleAgentProxy
-from .testbeds import get_testbed_spec, normalize_testbed_id
+from testbeds.runtime import get_testbed_spec, normalize_testbed_id
 from .utils import stable_hash, utc_now
 
 
@@ -2875,7 +2875,7 @@ class OpenPLCEnvironment:
             return
 
         if self.testbed_id == "water_distribution":
-            from .testbeds import water_distribution as water_distribution_testbed
+            from testbeds.runtime import water_distribution_runtime as water_distribution_testbed
 
             self._testbed_module = water_distribution_testbed
             self._testbed_cls = water_distribution_testbed.OpenPLCWaterDistributionTestbed

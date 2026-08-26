@@ -1,9 +1,13 @@
 # Testbeds
 
-This folder contains the execution, deployment, and knowledge assets for the
-ICS experiments. It is required for the supported testbed-backed runs. It is
-not a disposable test-data directory, and it is separate from the pytest
-unit-test directory at `../tests/`.
+This folder contains the execution, deployment, knowledge assets, and runtime
+implementations for the ICS experiments. It is required for the supported
+testbed-backed runs. It is not a disposable test-data directory, and it is
+separate from the pytest unit-test directory at `../tests/`.
+
+The `runtime/` package contains the Python implementations shared by the
+orchestrator and testbed backends. The `water_treatment/` and
+`water_distribution/` folders contain domain-specific assets.
 
 ## Top-level testbeds
 

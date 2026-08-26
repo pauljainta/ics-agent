@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..paths import OPENPLC_SUPPORT_DIR, REPO_ROOT, RUNTIME_SCENARIO_ROOT
+from ics_agent.paths import OPENPLC_SUPPORT_DIR, REPO_ROOT, RUNTIME_SCENARIO_ROOT
 
 
 @dataclass(frozen=True)

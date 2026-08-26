@@ -16,7 +16,7 @@ from .orchestrator import ExperimentOrchestrator
 from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
 from .reporting import write_json
 from .scenarios import ScenarioCatalog
-from .testbeds.registry import observation_focus_fields, trend_fields
+from testbeds.runtime.registry import observation_focus_fields, trend_fields
 from .utils import dump_yaml, utc_now
 from . import water_treatment_seeded_backbone as seeded
 

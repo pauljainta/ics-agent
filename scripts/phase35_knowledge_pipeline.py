@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from ics_agent.knowledge import load_manual_bundle
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.testbeds.registry import observation_focus_fields, trend_fields
+from testbeds.runtime.registry import observation_focus_fields, trend_fields
 
 
 DOCUMENTS_ROOT = REPO_ROOT.parent / "Documents"

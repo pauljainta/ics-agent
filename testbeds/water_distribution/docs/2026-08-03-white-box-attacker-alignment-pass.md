@@ -15,7 +15,7 @@ Code, prompt, and runtime changes
   - aligned distribution white-box surface priors to treatment-style breach reasoning and stronger direct-commit bias
   - aligned distribution white-box candidate generation to prefer breach-capable sensor paths, stronger escalation, and sustain behavior after commitment
   - exposed breach-capable `set_sensor` semantics and leverage hints in white-box system knowledge
-- `ics_agent/testbeds/water_distribution.py`
+- `testbeds/runtime/water_distribution_runtime.py`
   - changed white-box sensor override normalization to clamp only to the 16-bit runtime register space instead of the nominal safety max
 - `testbeds/water_distribution/prompts/white_box_attacker.md`
   - told the white-box attacker to prefer above-bound sensor values when they shorten the path to impact

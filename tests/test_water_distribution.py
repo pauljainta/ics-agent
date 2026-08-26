@@ -9,7 +9,7 @@ from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.environment import OpenPLCEnvironment
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.testbeds.water_distribution import (
+from testbeds.runtime.water_distribution_runtime import (
     ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP,
     ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP,
     OpenPLCWaterDistributionTestbed,

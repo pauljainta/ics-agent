@@ -23,7 +23,7 @@ except ImportError:
     )
     from pymodbus.server import ModbusTcpServer
 
-from .testbeds.water_distribution import (
+from testbeds.runtime.water_distribution_runtime import (
     ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP,
     ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP,
     ALARM_COIL_MAP,

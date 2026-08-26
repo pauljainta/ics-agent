@@ -99,7 +99,7 @@ ACTION_SPACE_SOURCE_PATHS = [
     REPO_ROOT / "ics_agent" / "environment.py",
     REPO_ROOT / "ics_agent" / "agents" / "action_space.py",
     REPO_ROOT / "ics_agent" / "agents" / "agentic.py",
-    REPO_ROOT / "ics_agent" / "testbeds" / "water_distribution.py",
+    REPO_ROOT / "testbeds" / "runtime" / "water_distribution_runtime.py",
     REPO_ROOT
     / "testbeds"
     / "water_distribution"

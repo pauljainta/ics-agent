@@ -87,7 +87,7 @@ ACTION_SPACE_SOURCE_PATHS = [
     REPO_ROOT / "ics_agent" / "environment.py",
     REPO_ROOT / "ics_agent" / "agents" / "action_space.py",
     REPO_ROOT / "ics_agent" / "agents" / "agentic.py",
-    REPO_ROOT / "ics_agent" / "testbeds" / "water_distribution.py",
+    REPO_ROOT / "testbeds" / "runtime" / "water_distribution_runtime.py",
     REPO_ROOT
     / "testbeds"
     / "water_distribution"
@@ -882,7 +882,7 @@ class SeededBackboneRunner:
                 f"- {portable_path(REPO_ROOT / 'ics_agent' / 'action_semantics.py')}",
                 f"- {portable_path(REPO_ROOT / 'ics_agent' / 'environment.py')}",
                 f"- {portable_path(REPO_ROOT / 'ics_agent' / 'agents' / 'action_space.py')}",
-                f"- {portable_path(REPO_ROOT / 'ics_agent' / 'testbeds' / 'water_distribution.py')}",
+                f"- {portable_path(REPO_ROOT / 'testbeds' / 'runtime' / 'water_distribution_runtime.py')}",
                 "",
             ]
         )
