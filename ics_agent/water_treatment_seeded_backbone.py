@@ -69,15 +69,15 @@ FROZEN_CONFIG_PATHS = [
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_black_box_vs_agentic_defender_fast_containment.yaml",
+    / "water_treatment_agentic_black_box_attacker_vs_agentic_full_containment_defender.yaml",
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_gray_box_vs_agentic_defender_fast_containment.yaml",
+    / "water_treatment_agentic_gray_box_attacker_vs_agentic_full_containment_defender.yaml",
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml",
+    / "water_treatment_agentic_white_box_attacker_vs_agentic_full_containment_defender.yaml",
 ]
 ACTION_SPACE_SOURCE_PATHS = [
     REPO_ROOT / "ics_agent" / "action_semantics.py",

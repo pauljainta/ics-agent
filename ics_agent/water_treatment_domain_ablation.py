@@ -29,7 +29,7 @@ DOMAIN_CONFIG_PATH = (
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_black_box_high_cyber_high_domain_vs_agentic_defender_fast_containment.yaml"
+    / "water_treatment_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.yaml"
 )
 DOMAIN_RESULT_ROOT = (
     WORKSPACE_ROOT

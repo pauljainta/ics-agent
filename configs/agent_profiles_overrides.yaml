@@ -1,10 +1,10 @@
 profiles:
   black_box_attacker:
     llm:
-      prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/black_box_attacker.md
   gray_box_attacker:
     llm:
-      prompt_file: configs/prompts/gray_box_attacker_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/gray_box_attacker.md
   white_box_attacker:
     role: attacker
     family: agentic
@@ -13,8 +13,8 @@ profiles:
     allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
     abort_on_backend_error: true
     knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/attacker_manual.md
+      - testbeds/water_treatment/knowledge/shared_testbed_manual.md
+      - testbeds/water_treatment/knowledge/attacker_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -22,7 +22,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/white_box_attacker_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/white_box_attacker.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -40,7 +40,7 @@ profiles:
     reasoning_refresh_sec: 12.0
   agentic_defender:
     llm:
-      prompt_file: configs/prompts/defender_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/defender.md
   agentic_observer:
     llm:
-      prompt_file: configs/prompts/observer_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/observer.md

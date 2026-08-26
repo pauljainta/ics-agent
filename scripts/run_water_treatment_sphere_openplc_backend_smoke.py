@@ -27,7 +27,7 @@ from ics_agent.utils import utc_now
 
 
 CONFIG_PATH = (
-    REPO_ROOT / "configs" / "experiments" / "sphere_optionb_staged_smoke.yaml"
+    REPO_ROOT / "configs" / "experiments" / "water_treatment_sphere_smoke.yaml"
 )
 PROGRESS_ROOT = (
     WORKSPACE_ROOT / "Artifact" / "Results" / "New" / "_progress_water_treatment_sphere_smoke"
@@ -168,6 +168,13 @@ def _reasoning_pass(
 
 
 def main() -> int:
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print(
+            "usage: run_water_treatment_sphere_openplc_backend_smoke.py\n\n"
+            "Runs the water-treatment SPHERE/OpenPLC connectivity smoke check."
+        )
+        return 0
+
     PROGRESS_ROOT.mkdir(parents=True, exist_ok=True)
     _ensure_env_defaults()
     config = load_config(CONFIG_PATH)

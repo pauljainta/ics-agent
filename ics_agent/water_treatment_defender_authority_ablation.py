@@ -30,19 +30,19 @@ AUTHORITY_CONFIG_PATHS = [
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_black_box_vs_defender_authority_ablation.yaml",
+    / "water_treatment_agentic_black_box_attacker_vs_agentic_observe_only_and_delayed_containment_defenders.yaml",
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_gray_box_vs_defender_authority_ablation.yaml",
+    / "water_treatment_agentic_gray_box_attacker_vs_agentic_observe_only_and_delayed_containment_defenders.yaml",
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_white_box_vs_defender_authority_ablation.yaml",
+    / "water_treatment_agentic_white_box_attacker_vs_agentic_observe_only_and_delayed_containment_defenders.yaml",
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_black_box_high_cyber_high_domain_vs_defender_authority_ablation.yaml",
+    / "water_treatment_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_observe_only_and_delayed_containment_defenders.yaml",
 ]
 AUTHORITY_FAMILY_SPECS = [
     seeded.FamilySpec(

@@ -61,7 +61,7 @@ CONFIG_PATH = (
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_scripted_black_box_vs_agentic_defender_fast_containment.yaml"
+    / "water_treatment_scripted_black_box_attacker_vs_agentic_full_containment_defender.yaml"
 )
 FAMILY_SPEC = FamilySpec(
     family_name="scripted_black_box_attacker__agentic_defender",

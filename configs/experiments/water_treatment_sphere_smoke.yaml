@@ -1,5 +1,5 @@
-experiment_name: sphere_optionb_staged_smoke
-experiment_id: sphere_optionb_staged_smoke
+experiment_name: water_treatment_sphere_smoke
+experiment_id: water_treatment_sphere_smoke
 scenario_selectors:
   - smoke/wt-smoke-p1-short-nominal
 repeats: 1

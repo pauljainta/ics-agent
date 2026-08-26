@@ -149,13 +149,13 @@ def test_phase35_profiles_remain_black_box_and_keep_expected_knowledge_files() -
     assert distribution["family"] == "agentic"
 
     assert treatment["knowledge_files"] == [
-        "configs/knowledge/phase35/black_box_constraints_manual.md",
-        "configs/knowledge/phase35/high_cyber_ics_methodology_manual.md",
+        "configs/knowledge/shared/black_box_constraints_manual.md",
+        "configs/knowledge/shared/high_cyber_ics_methodology_manual.md",
         "testbeds/water_treatment/knowledge/phase35/water_treatment_domain_primer.md",
     ]
     assert distribution["knowledge_files"] == [
-        "configs/knowledge/phase35/black_box_constraints_manual.md",
-        "configs/knowledge/phase35/high_cyber_ics_methodology_manual.md",
+        "configs/knowledge/shared/black_box_constraints_manual.md",
+        "configs/knowledge/shared/high_cyber_ics_methodology_manual.md",
         "testbeds/water_distribution/knowledge/phase35/water_distribution_domain_primer.md",
     ]
 

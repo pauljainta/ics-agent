@@ -3,73 +3,45 @@ profiles:
     role: attacker
     family: scripted
     mode: online
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
   rule_based_attacker:
     role: attacker
     family: rule_based
     mode: online
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
-  scripted_attacker_optionb_mitre:
-    role: attacker
-    family: scripted
-    mode: online
-    allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
-    behavior_model:
-      id: optionb_mitre_staged
-      policy: scripted
-      notes: MITRE-informed staged Option B attacker sequence
-  rule_based_attacker_optionb_mitre:
-    role: attacker
-    family: rule_based
-    mode: online
-    allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
-    behavior_model:
-      id: optionb_mitre_staged
-      policy: adaptive
-      notes: MITRE-informed staged Option B attacker policy
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
   silent_attacker:
     role: attacker
     family: scripted
     mode: online
-    allowed_action_types: [noop]
-  agentic_attacker:
-    role: attacker
-    family: agentic
-    mode: online
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
-    abort_on_backend_error: true
-    knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/attacker_manual.md
-    llm:
-      backend: qwen_langgraph
-      framework: langchain
-      use_langgraph: true
-      strict_backend: true
-      allow_langchain_fallback: true
-      model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/attacker.md
-      local_files_only: true
-      require_cuda: true
-      quantization: bf16
-      max_new_tokens: 160
-    memory:
-      observation_window: 8
-      decision_window: 8
-      action_window: 12
-      alert_window: 8
-      summary_window: 6
-      attacker_candidate_window: 4
-    playbook_anticipation_sec: 1.0
-    action_cooldown_sec: 1.0
-    reasoning_cooldown_sec: 6.0
-    reasoning_refresh_sec: 12.0
+    allowed_action_types:
+    - noop
   gray_box_attacker:
     role: attacker
     family: agentic
     mode: online
     knowledge_mode: gray_box
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
     abort_on_backend_error: true
     llm:
       backend: qwen_langgraph
@@ -78,7 +50,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/gray_box_attacker.md
+      prompt_file: testbeds/water_treatment/prompts/gray_box_attacker.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -99,7 +71,14 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: black_box
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
     abort_on_backend_error: true
     llm:
       backend: qwen_langgraph
@@ -108,7 +87,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/black_box_attacker.md
+      prompt_file: testbeds/water_treatment/prompts/black_box_attacker.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -129,7 +108,14 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: black_box
-    allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+    allowed_action_types:
+    - inspect_surface
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - set_sensor
+    - set_actuator
+    - noop
     abort_on_backend_error: false
     behavior_model:
       id: optionb_mitre_staged
@@ -163,7 +149,14 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: black_box
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
     abort_on_backend_error: false
     behavior_model:
       id: optionb_mitre_staged
@@ -176,7 +169,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/black_box_attacker.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -197,7 +190,14 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: gray_box
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
     abort_on_backend_error: false
     behavior_model:
       id: optionb_mitre_staged
@@ -210,7 +210,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/gray_box_attacker_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/gray_box_attacker.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -231,11 +231,18 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: white_box
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
     abort_on_backend_error: false
     knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/attacker_manual.md
+    - testbeds/water_treatment/knowledge/shared_testbed_manual.md
+    - testbeds/water_treatment/knowledge/attacker_manual.md
     behavior_model:
       id: optionb_mitre_staged
       policy: scripted_white_box
@@ -247,7 +254,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/white_box_attacker_optionb_mitre.md
+      prompt_file: testbeds/water_treatment/prompts/white_box_attacker.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -269,15 +276,22 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: white_box
-    allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+    allowed_action_types:
+    - inspect_surface
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - set_sensor
+    - set_actuator
+    - noop
     abort_on_backend_error: false
     knowledge_files:
-      - testbeds/water_distribution/knowledge/shared_testbed_manual.md
-      - testbeds/water_distribution/knowledge/attacker_manual.md
-      - testbeds/water_distribution/docs/process-models/wd-supply-line.md
-      - testbeds/water_distribution/docs/process-models/wd-distribution-grid.md
-      - testbeds/water_distribution/docs/process-models/wd-return-water.md
-      - testbeds/water_distribution/openplc/configs/openplc_map.yaml
+    - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+    - testbeds/water_distribution/knowledge/attacker_manual.md
+    - testbeds/water_distribution/docs/process-models/wd-supply-line.md
+    - testbeds/water_distribution/docs/process-models/wd-distribution-grid.md
+    - testbeds/water_distribution/docs/process-models/wd-return-water.md
+    - testbeds/water_distribution/openplc/configs/openplc_map.yaml
     behavior_model:
       id: optionb_mitre_staged
       policy: scripted_white_box
@@ -311,11 +325,18 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: gray_box
-    allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+    allowed_action_types:
+    - inspect_surface
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - set_sensor
+    - set_actuator
+    - noop
     abort_on_backend_error: false
     knowledge_files:
-      - testbeds/water_distribution/knowledge/shared_testbed_manual.md
-      - testbeds/water_distribution/knowledge/attacker_manual.md
+    - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+    - testbeds/water_distribution/knowledge/attacker_manual.md
     behavior_model:
       id: optionb_mitre_staged
       policy: scripted_gray_box
@@ -348,12 +369,19 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: black_box
-    allowed_action_types: [hmi_start, hmi_stop, hmi_estop, select_process, set_manual_valve, set_sensor, noop]
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
     abort_on_backend_error: true
     knowledge_files:
-      - configs/knowledge/phase35/black_box_constraints_manual.md
-      - configs/knowledge/phase35/high_cyber_ics_methodology_manual.md
-      - testbeds/water_treatment/knowledge/phase35/water_treatment_domain_primer.md
+    - configs/knowledge/shared/black_box_constraints_manual.md
+    - configs/knowledge/shared/high_cyber_ics_methodology_manual.md
+    - testbeds/water_treatment/knowledge/phase35/water_treatment_domain_primer.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -361,7 +389,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/black_box_attacker.md
+      prompt_file: testbeds/water_treatment/prompts/black_box_attacker.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -382,12 +410,19 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: black_box
-    allowed_action_types: [inspect_surface, hmi_start, hmi_stop, hmi_estop, set_sensor, set_actuator, noop]
+    allowed_action_types:
+    - inspect_surface
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - set_sensor
+    - set_actuator
+    - noop
     abort_on_backend_error: false
     knowledge_files:
-      - configs/knowledge/phase35/black_box_constraints_manual.md
-      - configs/knowledge/phase35/high_cyber_ics_methodology_manual.md
-      - testbeds/water_distribution/knowledge/phase35/water_distribution_domain_primer.md
+    - configs/knowledge/shared/black_box_constraints_manual.md
+    - configs/knowledge/shared/high_cyber_ics_methodology_manual.md
+    - testbeds/water_distribution/knowledge/phase35/water_distribution_domain_primer.md
     llm:
       backend: qwen_langchain
       framework: langchain
@@ -415,76 +450,88 @@ profiles:
     role: defender
     family: scripted
     mode: online
-    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
-  scripted_defender_optionb_mitre:
-    role: defender
-    family: scripted
-    mode: online
-    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
-    behavior_model:
-      id: optionb_mitre_staged
-      policy: scripted
-      notes: Fixed-threshold MITRE-informed staged Option B defender
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - noop
   rule_based_defender:
     role: defender
     family: rule_based
     mode: online
-    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - noop
     rules:
-      - id: rw-low-mitigation
-        once_per_run: true
-        when:
-          any:
-            - { field: RW_Tank_Level, below: 450 }
-            - { field: Alarm_RW_Tank_LL, equals: 1 }
-        alert: Raw-water level low; stop the plant before unsafe operation persists.
-        action_summary: Stop WT-P1 because raw-water low condition indicates fault or spoofing.
-        diagnosis: raw_water_low_or_spoof
-        action: { type: hmi_stop, process_id: WT-P1 }
-      - id: rw-high-high
-        once_per_run: true
-        when:
-          any:
-            - { field: Alarm_RW_Tank_HH, equals: 1 }
-            - { field: RW_Tank_Level, above: 1180 }
-        alert: Raw-water tank high-high condition observed.
-        action_summary: Emergency stop WT-P1 due to high-high raw-water condition.
-        diagnosis: raw_water_alarm_condition
-        action: { type: hmi_estop, process_id: WT-P1 }
-      - id: p2-unauthorized-dosing
-        once_per_run: true
-        when:
-          all:
-            - { field: P2_Selected, equals: 1 }
-            - { planned_role_action_absent: { role: operator, action: { process_id: WT-P2, type: select_process, active: true } } }
-            - { time_after_sec: 6 }
-        alert: Process 2 dosing remains active; deselect when not explicitly planned.
-        action_summary: Deselect Process 2 to constrain unauthorized chemical actuation.
-        diagnosis: unauthorized_chemical_dosing
-        action: { process_id: WT-P2, type: select_process, active: false }
-  rule_based_defender_optionb_mitre:
-    role: defender
-    family: rule_based
-    mode: online
-    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
-    behavior_model:
-      id: optionb_mitre_staged
-      policy: adaptive
-      notes: Adaptive MITRE-informed staged Option B defender
+    - id: rw-low-mitigation
+      once_per_run: true
+      when:
+        any:
+        - field: RW_Tank_Level
+          below: 450
+        - field: Alarm_RW_Tank_LL
+          equals: 1
+      alert: Raw-water level low; stop the plant before unsafe operation persists.
+      action_summary: Stop WT-P1 because raw-water low condition indicates fault or spoofing.
+      diagnosis: raw_water_low_or_spoof
+      action:
+        type: hmi_stop
+        process_id: WT-P1
+    - id: rw-high-high
+      once_per_run: true
+      when:
+        any:
+        - field: Alarm_RW_Tank_HH
+          equals: 1
+        - field: RW_Tank_Level
+          above: 1180
+      alert: Raw-water tank high-high condition observed.
+      action_summary: Emergency stop WT-P1 due to high-high raw-water condition.
+      diagnosis: raw_water_alarm_condition
+      action:
+        type: hmi_estop
+        process_id: WT-P1
+    - id: p2-unauthorized-dosing
+      once_per_run: true
+      when:
+        all:
+        - field: P2_Selected
+          equals: 1
+        - planned_role_action_absent:
+            role: operator
+            action:
+              process_id: WT-P2
+              type: select_process
+              active: true
+        - time_after_sec: 6
+      alert: Process 2 dosing remains active; deselect when not explicitly planned.
+      action_summary: Deselect Process 2 to constrain unauthorized chemical actuation.
+      diagnosis: unauthorized_chemical_dosing
+      action:
+        process_id: WT-P2
+        type: select_process
+        active: false
   silent_defender:
     role: defender
     family: scripted
     mode: online
-    allowed_action_types: [noop]
+    allowed_action_types:
+    - noop
   agentic_defender:
     role: defender
     family: agentic
     mode: online
-    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - noop
     abort_on_backend_error: true
     knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/defender_manual.md
+    - testbeds/water_treatment/knowledge/shared_testbed_manual.md
+    - testbeds/water_treatment/knowledge/defender_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -492,7 +539,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/defender.md
+      prompt_file: testbeds/water_treatment/prompts/defender.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -512,11 +559,12 @@ profiles:
     role: defender
     family: agentic
     mode: online
-    allowed_action_types: [noop]
+    allowed_action_types:
+    - noop
     abort_on_backend_error: true
     knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/defender_manual.md
+    - testbeds/water_treatment/knowledge/shared_testbed_manual.md
+    - testbeds/water_treatment/knowledge/defender_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -524,7 +572,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/defender.md
+      prompt_file: testbeds/water_treatment/prompts/defender.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -544,11 +592,15 @@ profiles:
     role: defender
     family: agentic
     mode: online
-    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - noop
     abort_on_backend_error: true
     knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/defender_manual.md
+    - testbeds/water_treatment/knowledge/shared_testbed_manual.md
+    - testbeds/water_treatment/knowledge/defender_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -556,7 +608,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/defender.md
+      prompt_file: testbeds/water_treatment/prompts/defender.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -579,16 +631,16 @@ profiles:
     mode: online
     knowledge_mode: white_box
     allowed_action_types:
-      - hmi_stop
-      - hmi_estop
-      - select_process
-      - disable_hmi_session
-      - isolate_engineering_host
-      - block_sensor_write
-      - block_actuator_write
-      - block_process2_manual_path
-      - quarantine_signal_source
-      - noop
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_actuator_write
+    - block_process2_manual_path
+    - quarantine_signal_source
+    - noop
     behavior_model:
       id: optionb_mitre_staged
       policy: rule_based_defender
@@ -599,7 +651,8 @@ profiles:
     family: rule_based
     mode: online
     knowledge_mode: white_box
-    allowed_action_types: [noop]
+    allowed_action_types:
+    - noop
     behavior_model:
       id: optionb_mitre_staged
       policy: rule_based_defender
@@ -611,124 +664,86 @@ profiles:
     mode: online
     knowledge_mode: white_box
     allowed_action_types:
-      - hmi_stop
-      - hmi_estop
-      - select_process
-      - disable_hmi_session
-      - isolate_engineering_host
-      - block_sensor_write
-      - block_actuator_write
-      - block_process2_manual_path
-      - quarantine_signal_source
-      - noop
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_actuator_write
+    - block_process2_manual_path
+    - quarantine_signal_source
+    - noop
     behavior_model:
       id: optionb_mitre_staged
       policy: rule_based_defender
       response_mode: latency_constrained_intervention
       notes: Deterministic containment policy with delayed runtime cutoff activation.
     runtime_containment_activation_delay_steps: 2
-  agentic_defender_with_prior_knowledge:
-    role: defender
-    family: agentic
-    mode: online
-    knowledge_mode: prior_knowledge
-    allowed_action_types: [hmi_stop, hmi_estop, select_process, noop]
-    abort_on_backend_error: true
-    knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/defender_manual.md
-      - configs/knowledge/defender_prior_knowledge.md
-    llm:
-      backend: qwen_langgraph
-      framework: langchain
-      use_langgraph: true
-      strict_backend: true
-      allow_langchain_fallback: true
-      model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/defender_with_prior_knowledge.md
-      local_files_only: true
-      require_cuda: true
-      quantization: bf16
-      temperature: 0
-      max_new_tokens: 160
-    memory:
-      observation_window: 12
-      decision_window: 12
-      action_window: 12
-      alert_window: 8
-      summary_window: 6
-    action_cooldown_sec: 1.0
-    note_cooldown_sec: 6.0
-    reasoning_cooldown_sec: 4.0
-    reasoning_refresh_sec: 10.0
   scripted_observer:
     role: observer
     family: scripted
     mode: online
-    allowed_action_types: [noop]
-  scripted_observer_optionb_mitre:
-    role: observer
-    family: scripted
-    mode: online
-    allowed_action_types: [noop]
-    behavior_model:
-      id: optionb_mitre_staged
-      policy: scripted
-      notes: Fixed-threshold MITRE-informed staged Option B observer
+    allowed_action_types:
+    - noop
   rule_based_observer:
     role: observer
     family: rule_based
     mode: online
-    allowed_action_types: [noop]
+    allowed_action_types:
+    - noop
     rules:
-      - id: observer-rw-low
-        once_per_run: true
-        when:
-          any:
-            - { field: RW_Tank_Level, below: 450 }
-            - { field: Alarm_RW_Tank_LL, equals: 1 }
-        alert: Observer flagged a raw-water low condition.
-        diagnosis: raw_water_low_or_spoof
-      - id: observer-rw-hh
-        once_per_run: true
-        when:
-          any:
-            - { field: Alarm_RW_Tank_HH, equals: 1 }
-            - { field: RW_Tank_Level, above: 1180 }
-        alert: Observer flagged a raw-water high-high condition.
-        diagnosis: raw_water_alarm_condition
-      - id: observer-p2
-        once_per_run: true
-        when:
-          all:
-            - { field: P2_Selected, equals: 1 }
-            - { planned_role_action_absent: { role: operator, action: { process_id: WT-P2, type: select_process, active: true } } }
-            - { time_after_sec: 6 }
-        alert: Observer detected sustained Process 2 actuation.
-        diagnosis: unauthorized_chemical_dosing
-  rule_based_observer_optionb_mitre:
-    role: observer
-    family: rule_based
-    mode: online
-    allowed_action_types: [noop]
-    behavior_model:
-      id: optionb_mitre_staged
-      policy: adaptive
-      notes: Adaptive MITRE-informed staged Option B observer
+    - id: observer-rw-low
+      once_per_run: true
+      when:
+        any:
+        - field: RW_Tank_Level
+          below: 450
+        - field: Alarm_RW_Tank_LL
+          equals: 1
+      alert: Observer flagged a raw-water low condition.
+      diagnosis: raw_water_low_or_spoof
+    - id: observer-rw-hh
+      once_per_run: true
+      when:
+        any:
+        - field: Alarm_RW_Tank_HH
+          equals: 1
+        - field: RW_Tank_Level
+          above: 1180
+      alert: Observer flagged a raw-water high-high condition.
+      diagnosis: raw_water_alarm_condition
+    - id: observer-p2
+      once_per_run: true
+      when:
+        all:
+        - field: P2_Selected
+          equals: 1
+        - planned_role_action_absent:
+            role: operator
+            action:
+              process_id: WT-P2
+              type: select_process
+              active: true
+        - time_after_sec: 6
+      alert: Observer detected sustained Process 2 actuation.
+      diagnosis: unauthorized_chemical_dosing
   silent_observer:
     role: observer
     family: scripted
     mode: online
-    allowed_action_types: [noop]
+    allowed_action_types:
+    - noop
   agentic_observer:
     role: observer
     family: agentic
     mode: online
-    allowed_action_types: [noop]
+    allowed_action_types:
+    - noop
     abort_on_backend_error: true
     knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/observer_manual.md
+    - testbeds/water_treatment/knowledge/shared_testbed_manual.md
+    - testbeds/water_treatment/knowledge/observer_manual.md
     llm:
       backend: qwen_langgraph
       framework: langchain
@@ -736,7 +751,7 @@ profiles:
       strict_backend: true
       allow_langchain_fallback: true
       model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/observer.md
+      prompt_file: testbeds/water_treatment/prompts/observer.md
       local_files_only: true
       require_cuda: true
       quantization: bf16
@@ -751,121 +766,27 @@ profiles:
     note_cooldown_sec: 8.0
     reasoning_cooldown_sec: 6.0
     reasoning_refresh_sec: 12.0
-  agentic_observer_with_prior_knowledge:
-    role: observer
-    family: agentic
-    mode: online
-    knowledge_mode: prior_knowledge
-    allowed_action_types: [noop]
-    abort_on_backend_error: true
-    knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/observer_manual.md
-      - configs/knowledge/defender_prior_knowledge.md
-    llm:
-      backend: qwen_langgraph
-      framework: langchain
-      use_langgraph: true
-      strict_backend: true
-      allow_langchain_fallback: true
-      model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/observer_with_prior_knowledge.md
-      local_files_only: true
-      require_cuda: true
-      quantization: bf16
-      temperature: 0
-      max_new_tokens: 144
-    memory:
-      observation_window: 12
-      decision_window: 12
-      action_window: 8
-      alert_window: 8
-      summary_window: 6
-    note_cooldown_sec: 6.0
-    reasoning_cooldown_sec: 4.0
-    reasoning_refresh_sec: 10.0
   scripted_planner:
     role: planner
     family: scripted
     mode: online
-    allowed_action_types: [noop]
-  agentic_planner:
-    role: planner
-    family: agentic
-    mode: online
-    allowed_action_types: [noop]
-    knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-    llm:
-      backend: qwen_langgraph
-      framework: langchain
-      use_langgraph: true
-      strict_backend: true
-      allow_langchain_fallback: true
-      model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/planner.md
-      local_files_only: true
-      require_cuda: true
-      quantization: bf16
-      max_new_tokens: 96
-    note_cooldown_sec: 20.0
-    reasoning_cooldown_sec: 20.0
-    reasoning_refresh_sec: 24.0
+    allowed_action_types:
+    - noop
   scripted_operator:
     role: operator
     family: scripted
     mode: online
-    allowed_action_types: [hmi_start, hmi_stop, hmi_reset, hmi_estop, select_process, set_manual_valve, noop]
-  agentic_operator:
-    role: operator
-    family: agentic
-    mode: online
-    allowed_action_types: [hmi_start, hmi_stop, hmi_reset, hmi_estop, select_process, set_manual_valve, noop]
-    knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/operator_manual.md
-    llm:
-      backend: qwen_langgraph
-      framework: langchain
-      use_langgraph: true
-      strict_backend: true
-      allow_langchain_fallback: true
-      model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/operator.md
-      local_files_only: true
-      require_cuda: true
-      quantization: bf16
-      max_new_tokens: 128
-    memory:
-      observation_window: 10
-      decision_window: 10
-      action_window: 10
-      alert_window: 6
-    playbook_anticipation_sec: 1.0
-    reasoning_cooldown_sec: 8.0
-    reasoning_refresh_sec: 12.0
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_reset
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - noop
   scripted_offline_analyst:
     role: offline_analysis
     family: scripted
     mode: offline
-    allowed_action_types: [noop]
-  agentic_offline_analyst:
-    role: offline_analysis
-    family: agentic
-    mode: offline
-    allowed_action_types: [noop]
-    knowledge_files:
-      - configs/knowledge/shared_testbed_manual.md
-      - configs/knowledge/offline_analyst_manual.md
-    llm:
-      backend: qwen_langgraph
-      framework: langchain
-      use_langgraph: true
-      strict_backend: true
-      allow_langchain_fallback: true
-      model_id: Qwen/Qwen3.5-9B
-      prompt_file: configs/prompts/offline_analyst.md
-      local_files_only: true
-      require_cuda: true
-      quantization: bf16
-      max_new_tokens: 128
+    allowed_action_types:
+    - noop

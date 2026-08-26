@@ -66,13 +66,13 @@ def test_authority_configs_preserve_existing_attacker_resolutions() -> None:
     orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
     baseline_paths = {
         "black_box_attacker": REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_black_box_vs_agentic_defender_fast_containment.yaml",
+        / "configs/experiments/water_treatment_agentic_black_box_attacker_vs_agentic_full_containment_defender.yaml",
         "gray_box_attacker": REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_gray_box_vs_agentic_defender_fast_containment.yaml",
+        / "configs/experiments/water_treatment_agentic_gray_box_attacker_vs_agentic_full_containment_defender.yaml",
         "white_box_attacker": REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml",
+        / "configs/experiments/water_treatment_agentic_white_box_attacker_vs_agentic_full_containment_defender.yaml",
         "black_box_high_cyber_high_domain_treatment_attacker": REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_black_box_high_cyber_high_domain_vs_agentic_defender_fast_containment.yaml",
+        / "configs/experiments/water_treatment_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.yaml",
     }
     authority_conditions = {
         "black_box_attacker": (
@@ -122,7 +122,7 @@ def test_existing_full_containment_defender_resolution_remains_unchanged() -> No
     baseline = _condition_by_name(
         orchestrator,
         REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_black_box_vs_agentic_defender_fast_containment.yaml",
+        / "configs/experiments/water_treatment_agentic_black_box_attacker_vs_agentic_full_containment_defender.yaml",
         "black_box_attacker__agentic_defender",
     )
     defender = baseline["effective_profiles"]["defender"]

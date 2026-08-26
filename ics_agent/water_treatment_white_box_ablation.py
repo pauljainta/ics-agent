@@ -75,15 +75,15 @@ CONFIG_PATHS = [
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_white_box_no_safety_bounds_vs_agentic_defender_fast_containment.yaml",
+    / "water_treatment_agentic_white_box_no_safety_bounds_attacker_vs_agentic_full_containment_defender.yaml",
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_white_box_no_surface_priors_vs_agentic_defender_fast_containment.yaml",
+    / "water_treatment_agentic_white_box_no_surface_priors_attacker_vs_agentic_full_containment_defender.yaml",
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "sphere_optionb_mitre_white_box_no_control_semantics_vs_agentic_defender_fast_containment.yaml",
+    / "water_treatment_agentic_white_box_no_control_semantics_attacker_vs_agentic_full_containment_defender.yaml",
 ]
 FAMILY_SPECS = [
     FamilySpec(

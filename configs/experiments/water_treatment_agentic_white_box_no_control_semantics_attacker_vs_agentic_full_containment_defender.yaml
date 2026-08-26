@@ -1,20 +1,19 @@
-experiment_name: DefendervsWhiteBoxAttackerConcreteContainment
-experiment_id: DefendervsWhiteBoxAttackerConcreteContainment
+experiment_name: DefendervsWhiteBoxNoControlSemanticsAttackerConcreteContainment
+experiment_id: DefendervsWhiteBoxNoControlSemanticsAttackerConcreteContainment
 scenario_selectors:
   - attack/*
 repeats: 1
 resume: true
 use_canonical_result_root: true
 reproducibility:
-  seed: 20260623
+  seed: 101
 results_root: ../../../Artifact/Results
 study_metadata:
-  family: defender_vs_white_box_attacker_concrete_containment_optionb_mitre18
+  family: defender_vs_white_box_no_control_semantics_attacker_concrete_containment_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
-    - Stronger white-box attacker versus the current LLM defender on the staged Option B testbed
-    - Concrete-containment pass replaces symbolic cutoff shortcuts with runtime-enforced surface isolation
-    - Primary timing summaries use the interaction-ready wargame_t0 boundary and exclude setup or transfer latency
+    - White-box attacker ablation with control semantics removed versus the current LLM defender
+    - Concrete-containment semantics remain unchanged from the seeded treatment backbone
 environment:
   backend: sphere_openplc
   merge_server: merge.example.invalid
@@ -33,7 +32,7 @@ environment:
   reset_wait_sec: 1.5
   loop_sleep_sec: 0.05
 conditions:
-  - name: white_box_attacker__agentic_defender
+  - name: white_box_no_control_semantics__agentic_defender
     profiles:
       attacker: white_box_attacker
       defender: agentic_defender
@@ -46,9 +45,12 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B stronger white-box attacker
+          notes: MITRE-informed staged white-box attacker with control semantics removed
+        white_box_knowledge_ablation: no_control_semantics
+        knowledge_files:
+          - testbeds/water_treatment/knowledge/white_box_no_control_semantics_attacker_manual.md
         llm:
-          prompt_file: configs/prompts/white_box_attacker_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/white_box_attacker_ablation.md
         action_cooldown_sec: 0.5
         note_cooldown_sec: 2.0
         reasoning_cooldown_sec: 1.0
@@ -71,7 +73,7 @@ conditions:
           - quarantine_signal_source
           - noop
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -81,4 +83,4 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/observer.md

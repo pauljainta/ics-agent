@@ -1,6 +1,5 @@
-experiment_name: WaterTreatmentDomainAblation
-experiment_id: WaterTreatmentDomainAblation
-testbed: water_treatment
+experiment_name: DefendervsWhiteBoxNoSurfacePriorsAttackerConcreteContainment
+experiment_id: DefendervsWhiteBoxNoSurfacePriorsAttackerConcreteContainment
 scenario_selectors:
   - attack/*
 repeats: 1
@@ -8,15 +7,13 @@ resume: true
 use_canonical_result_root: true
 reproducibility:
   seed: 101
-results_root: ../../../Artifact/Results/Water-treatment/domain-ablation
+results_root: ../../../Artifact/Results
 study_metadata:
-  family: water_treatment_black_box_high_cyber_high_domain_vs_agentic_defender_optionb_mitre18
+  family: defender_vs_white_box_no_surface_priors_attacker_concrete_containment_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
-    - Single-family water-treatment domain-ablation pass for the current high-cyber high-domain target-blind attacker
-    - Treatment primer intentionally enriched with sanitized SWaT-derived attack and process knowledge while preserving the black-box runtime interface
-    - Reuses the staged Option B backbone semantics and concrete runtime containment defender
-    - Restricts execution to seed 101 and preserves scenario-granular resume behavior
+    - White-box attacker ablation with leverage priors removed versus the current LLM defender
+    - Concrete-containment semantics remain unchanged from the seeded treatment backbone
 environment:
   backend: sphere_openplc
   merge_server: merge.example.invalid
@@ -35,9 +32,9 @@ environment:
   reset_wait_sec: 1.5
   loop_sleep_sec: 0.05
 conditions:
-  - name: black_box_high_cyber_high_domain__agentic_defender
+  - name: white_box_no_surface_priors__agentic_defender
     profiles:
-      attacker: black_box_high_cyber_high_domain_treatment_attacker
+      attacker: white_box_attacker
       defender: agentic_defender
       observer: agentic_observer
       planner: scripted_planner
@@ -48,9 +45,18 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B phase35 black-box attacker with high-cyber high-domain priors
+          notes: MITRE-informed staged white-box attacker with surface priors removed
+        white_box_knowledge_ablation: no_surface_priors
+        knowledge_files:
+          - testbeds/water_treatment/knowledge/white_box_no_surface_priors_attacker_manual.md
         llm:
-          prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/white_box_attacker_ablation.md
+        action_cooldown_sec: 0.5
+        note_cooldown_sec: 2.0
+        reasoning_cooldown_sec: 1.0
+        reasoning_refresh_sec: 2.0
+        memory:
+          attacker_candidate_window: 8
       defender:
         behavior_model:
           id: optionb_mitre_staged
@@ -67,7 +73,7 @@ conditions:
           - quarantine_signal_source
           - noop
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -77,4 +83,4 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/observer.md

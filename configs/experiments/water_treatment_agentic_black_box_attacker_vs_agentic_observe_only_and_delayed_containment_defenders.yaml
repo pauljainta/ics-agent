@@ -1,5 +1,5 @@
-experiment_name: WaterTreatmentDefenderAuthorityAblationWhiteBox
-experiment_id: WaterTreatmentDefenderAuthorityAblationWhiteBox
+experiment_name: WaterTreatmentDefenderAuthorityAblationBlackBox
+experiment_id: WaterTreatmentDefenderAuthorityAblationBlackBox
 scenario_selectors:
   - attack/*
 repeats: 1
@@ -9,10 +9,10 @@ reproducibility:
   seed: 101
 results_root: ../../../Artifact/Results/Water-treatment/defender-authority-ablation
 study_metadata:
-  family: defender_authority_ablation_white_box_optionb_mitre18
+  family: defender_authority_ablation_black_box_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
-    - Water-treatment Phase 4 defender-authority ablation for the staged Option B stronger white-box attacker
+    - Water-treatment Phase 4 defender-authority ablation for the staged Option B black-box attacker
     - Preserves the existing attacker, observer, scenarios, and safety thresholds
     - Compares observe-alert-only authority against delayed runtime containment under seed 101
 environment:
@@ -33,9 +33,9 @@ environment:
   reset_wait_sec: 1.5
   loop_sleep_sec: 0.05
 conditions:
-  - name: white_box_attacker__observe_alert_only_defender
+  - name: black_box_attacker__observe_alert_only_defender
     profiles:
-      attacker: white_box_attacker
+      attacker: black_box_attacker
       defender: observe_alert_only_defender
       observer: agentic_observer
       planner: scripted_planner
@@ -46,15 +46,9 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B stronger white-box attacker
+          notes: MITRE-informed staged Option B black-box attacker
         llm:
-          prompt_file: configs/prompts/white_box_attacker_optionb_mitre.md
-        action_cooldown_sec: 0.5
-        note_cooldown_sec: 2.0
-        reasoning_cooldown_sec: 1.0
-        reasoning_refresh_sec: 2.0
-        memory:
-          attacker_candidate_window: 8
+          prompt_file: testbeds/water_treatment/prompts/black_box_attacker.md
       defender:
         behavior_model:
           id: optionb_mitre_staged
@@ -63,7 +57,7 @@ conditions:
         allowed_action_types:
           - noop
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -73,10 +67,10 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
-  - name: white_box_attacker__delayed_containment_defender
+          prompt_file: testbeds/water_treatment/prompts/observer.md
+  - name: black_box_attacker__delayed_containment_defender
     profiles:
-      attacker: white_box_attacker
+      attacker: black_box_attacker
       defender: delayed_containment_defender
       observer: agentic_observer
       planner: scripted_planner
@@ -87,15 +81,9 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B stronger white-box attacker
+          notes: MITRE-informed staged Option B black-box attacker
         llm:
-          prompt_file: configs/prompts/white_box_attacker_optionb_mitre.md
-        action_cooldown_sec: 0.5
-        note_cooldown_sec: 2.0
-        reasoning_cooldown_sec: 1.0
-        reasoning_refresh_sec: 2.0
-        memory:
-          attacker_candidate_window: 8
+          prompt_file: testbeds/water_treatment/prompts/black_box_attacker.md
       defender:
         behavior_model:
           id: optionb_mitre_staged
@@ -113,7 +101,7 @@ conditions:
           - noop
         runtime_containment_activation_delay_steps: 2
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -123,4 +111,4 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/observer.md

@@ -626,7 +626,7 @@ def test_distribution_white_box_config_matches_treatment_strength_knobs() -> Non
     treatment_config = yaml.safe_load(
         (
             repo_root
-            / "configs/experiments/sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml"
+            / "configs/experiments/water_treatment_agentic_white_box_attacker_vs_agentic_full_containment_defender.yaml"
         ).read_text()
     )
     distribution_config = yaml.safe_load(
@@ -638,7 +638,7 @@ def test_distribution_white_box_config_matches_treatment_strength_knobs() -> Non
     attack_families_config = yaml.safe_load(
         (
             repo_root
-            / "configs/experiments/water_distribution_attack_families.yaml"
+            / "tests/fixtures/water_distribution_attack_families.yaml"
         ).read_text()
     )
     orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")

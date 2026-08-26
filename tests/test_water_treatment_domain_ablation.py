@@ -95,7 +95,7 @@ def test_domain_ablation_methodology_manual_avoids_forbidden_ranking_phrase() ->
         Path(__file__).resolve().parents[1]
         / "configs"
         / "knowledge"
-        / "phase35"
+        / "shared"
         / "high_cyber_ics_methodology_manual.md"
     ).read_text().lower()
 

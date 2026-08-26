@@ -1,5 +1,5 @@
-experiment_name: DefendervsBlackBoxAttackerConcreteContainment
-experiment_id: DefendervsBlackBoxAttackerConcreteContainment
+experiment_name: DefendervsGrayBoxAttackerConcreteContainment
+experiment_id: DefendervsGrayBoxAttackerConcreteContainment
 scenario_selectors:
   - attack/*
 repeats: 1
@@ -9,10 +9,10 @@ reproducibility:
   seed: 20260623
 results_root: ../../../Artifact/Results
 study_metadata:
-  family: defender_vs_black_box_attacker_concrete_containment_optionb_mitre18
+  family: defender_vs_gray_box_attacker_concrete_containment_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
-    - Strict black-box attacker versus the improved LLM defender on the staged Option B testbed
+    - Gray-box attacker versus the current LLM defender on the staged Option B testbed
     - Concrete-containment pass replaces symbolic cutoff shortcuts with runtime-enforced surface isolation
     - Primary timing summaries use the interaction-ready wargame_t0 boundary and exclude setup or transfer latency
 environment:
@@ -33,9 +33,9 @@ environment:
   reset_wait_sec: 1.5
   loop_sleep_sec: 0.05
 conditions:
-  - name: black_box_attacker__agentic_defender
+  - name: gray_box_attacker__agentic_defender
     profiles:
-      attacker: black_box_attacker
+      attacker: gray_box_attacker
       defender: agentic_defender
       observer: agentic_observer
       planner: scripted_planner
@@ -46,9 +46,9 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B black-box attacker
+          notes: MITRE-informed staged Option B gray-box attacker
         llm:
-          prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/gray_box_attacker.md
       defender:
         behavior_model:
           id: optionb_mitre_staged
@@ -65,7 +65,7 @@ conditions:
           - quarantine_signal_source
           - noop
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -75,4 +75,4 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/observer.md

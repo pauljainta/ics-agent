@@ -1,5 +1,5 @@
-experiment_name: WaterTreatmentScriptedWhiteBoxVsFullContainmentDefender
-experiment_id: WaterTreatmentScriptedWhiteBoxVsFullContainmentDefender
+experiment_name: WaterTreatmentScriptedBlackBoxVsFullContainmentDefender
+experiment_id: WaterTreatmentScriptedBlackBoxVsFullContainmentDefender
 scenario_selectors:
   - attack/*
 repeats: 1
@@ -7,12 +7,12 @@ resume: true
 use_canonical_result_root: true
 reproducibility:
   seed: 101
-results_root: ../../../Artifact/Results/Water-treatment/scripted_baselines/white_box_attacker_vs_full_containment_defender
+results_root: ../../../Artifact/Results/Water-treatment/scripted_baselines/black_box_attacker_vs_full_containment_defender
 study_metadata:
-  family: scripted_white_box_attacker_vs_full_containment_defender_optionb_mitre18
+  family: scripted_black_box_attacker_vs_full_containment_defender_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
-    - Deterministic scripted white-box attacker baseline on the water-treatment Option B testbed
+    - Deterministic scripted black-box attacker baseline on the water-treatment Option B testbed
     - Reuses the current full agentic defender with concrete runtime containment unchanged
     - This pass is a scripted attacker-baseline comparison and does not replace the LLM attacker results
 environment:
@@ -33,9 +33,9 @@ environment:
   reset_wait_sec: 1.5
   loop_sleep_sec: 0.05
 conditions:
-  - name: scripted_white_box_attacker__agentic_defender
+  - name: scripted_black_box_attacker__agentic_defender
     profiles:
-      attacker: scripted_white_box_treatment_attacker
+      attacker: scripted_black_box_treatment_attacker
       defender: agentic_defender
       observer: agentic_observer
       planner: scripted_planner
@@ -58,7 +58,7 @@ conditions:
           - quarantine_signal_source
           - noop
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -68,4 +68,4 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/observer.md

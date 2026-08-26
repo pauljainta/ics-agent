@@ -1,6 +1,5 @@
-experiment_name: WaterTreatmentDefenderAuthorityAblationHighCyberHighDomain
-experiment_id: WaterTreatmentDefenderAuthorityAblationHighCyberHighDomain
-testbed: water_treatment
+experiment_name: WaterTreatmentDefenderAuthorityAblationGrayBox
+experiment_id: WaterTreatmentDefenderAuthorityAblationGrayBox
 scenario_selectors:
   - attack/*
 repeats: 1
@@ -10,10 +9,10 @@ reproducibility:
   seed: 101
 results_root: ../../../Artifact/Results/Water-treatment/defender-authority-ablation
 study_metadata:
-  family: defender_authority_ablation_black_box_high_cyber_high_domain_optionb_mitre18
+  family: defender_authority_ablation_gray_box_optionb_mitre18
   timing_primary_origin: wargame_t0
   notes:
-    - Water-treatment Phase 4 defender-authority ablation for the staged Option B high-cyber high-domain target-blind attacker
+    - Water-treatment Phase 4 defender-authority ablation for the staged Option B gray-box attacker
     - Preserves the existing attacker, observer, scenarios, and safety thresholds
     - Compares observe-alert-only authority against delayed runtime containment under seed 101
 environment:
@@ -34,9 +33,9 @@ environment:
   reset_wait_sec: 1.5
   loop_sleep_sec: 0.05
 conditions:
-  - name: black_box_high_cyber_high_domain__observe_alert_only_defender
+  - name: gray_box_attacker__observe_alert_only_defender
     profiles:
-      attacker: black_box_high_cyber_high_domain_treatment_attacker
+      attacker: gray_box_attacker
       defender: observe_alert_only_defender
       observer: agentic_observer
       planner: scripted_planner
@@ -47,9 +46,9 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B phase35 black-box attacker with high-cyber high-domain priors
+          notes: MITRE-informed staged Option B gray-box attacker
         llm:
-          prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/gray_box_attacker.md
       defender:
         behavior_model:
           id: optionb_mitre_staged
@@ -58,7 +57,7 @@ conditions:
         allowed_action_types:
           - noop
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -68,10 +67,10 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
-  - name: black_box_high_cyber_high_domain__delayed_containment_defender
+          prompt_file: testbeds/water_treatment/prompts/observer.md
+  - name: gray_box_attacker__delayed_containment_defender
     profiles:
-      attacker: black_box_high_cyber_high_domain_treatment_attacker
+      attacker: gray_box_attacker
       defender: delayed_containment_defender
       observer: agentic_observer
       planner: scripted_planner
@@ -82,9 +81,9 @@ conditions:
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
-          notes: MITRE-informed staged Option B phase35 black-box attacker with high-cyber high-domain priors
+          notes: MITRE-informed staged Option B gray-box attacker
         llm:
-          prompt_file: configs/prompts/black_box_attacker_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/gray_box_attacker.md
       defender:
         behavior_model:
           id: optionb_mitre_staged
@@ -102,7 +101,7 @@ conditions:
           - noop
         runtime_containment_activation_delay_steps: 2
         llm:
-          prompt_file: configs/prompts/defender_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/defender.md
         note_cooldown_sec: 4.0
         reasoning_cooldown_sec: 2.0
         reasoning_refresh_sec: 4.0
@@ -112,4 +111,4 @@ conditions:
           policy: agentic
           notes: MITRE-informed staged Option B agentic observer
         llm:
-          prompt_file: configs/prompts/observer_optionb_mitre.md
+          prompt_file: testbeds/water_treatment/prompts/observer.md

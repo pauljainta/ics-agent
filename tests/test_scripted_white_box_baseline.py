@@ -102,7 +102,7 @@ def test_scripted_white_box_profile_and_condition_resolve_distinct_from_llm_whit
     baseline = _condition_by_name(
         orchestrator,
         REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml",
+        / "configs/experiments/water_treatment_agentic_white_box_attacker_vs_agentic_full_containment_defender.yaml",
         "white_box_attacker__agentic_defender",
     )
     scripted = _condition_by_name(orchestrator, CONFIG_PATH, FAMILY_SPEC.family_name)
@@ -131,7 +131,7 @@ def test_scripted_white_box_config_keeps_full_defender_resolution_unchanged() ->
     baseline = _condition_by_name(
         orchestrator,
         REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml",
+        / "configs/experiments/water_treatment_agentic_white_box_attacker_vs_agentic_full_containment_defender.yaml",
         "white_box_attacker__agentic_defender",
     )
     scripted = _condition_by_name(orchestrator, CONFIG_PATH, FAMILY_SPEC.family_name)
