@@ -180,5 +180,5 @@ def test_distribution_authority_freeze_metadata_is_stable_under_local_model_defa
     monkeypatch.delenv("QWEN_MODEL_ID", raising=False)
     runner.freeze_metadata()
 
-    monkeypatch.setenv("QWEN_MODEL_PATH", "/tmp/alternate-qwen-path")
+    monkeypatch.setenv("QWEN_MODEL_PATH", "alternate-qwen-path")
     runner.freeze_metadata()

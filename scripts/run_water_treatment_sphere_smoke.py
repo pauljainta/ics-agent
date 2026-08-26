@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the current staged Option B smoke validation path.
+"""Run the current staged water-treatment SPHERE smoke validation path.
 
 This is a runtime/connectivity smoke check, not a full 18-scenario study.
 """
@@ -30,7 +30,7 @@ CONFIG_PATH = (
     REPO_ROOT / "configs" / "experiments" / "sphere_optionb_staged_smoke.yaml"
 )
 PROGRESS_ROOT = (
-    WORKSPACE_ROOT / "Artifact" / "Results" / "New" / "_progress_optionb"
+    WORKSPACE_ROOT / "Artifact" / "Results" / "New" / "_progress_water_treatment_sphere_smoke"
 )
 UNIT_TEST_RESULT_PATH = PROGRESS_ROOT / "unit_test_result.json"
 
@@ -118,9 +118,9 @@ def _reasoning_pass(
     condition_spec = list(config.get("conditions", []))[0]
     condition = dict(condition_spec.get("profiles") or {})
     bundle = RunBundle(
-        experiment_id="sphere_optionb_staged_smoke",
-        condition_name=str(condition_spec.get("name") or "optionb_smoke"),
-        run_id="sphere_optionb_staged_smoke",
+        experiment_id="water_treatment_sphere_smoke",
+        condition_name=str(condition_spec.get("name") or "water_treatment_sphere_smoke"),
+        run_id="water_treatment_sphere_smoke",
         scenario=scenario,
         run_dir=PROGRESS_ROOT,
         config_snapshot={},
@@ -182,7 +182,7 @@ def main() -> int:
         startup = env.start()
         backend = env._backend_impl
         if not isinstance(backend, _SphereOpenPLCBackend):
-            raise RuntimeError("Option B smoke requires the sphere_openplc backend")
+            raise RuntimeError("water-treatment SPHERE smoke requires the sphere_openplc backend")
 
         scenario_selector = list(config.get("scenario_selectors", []))[0]
         scenario = ScenarioCatalog().resolve_selectors([scenario_selector])[0]

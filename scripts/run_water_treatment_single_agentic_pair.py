@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one staged Option B attacker-vs-agentic-defender pair.
+"""Run one staged water-treatment attacker-vs-agentic-defender pair.
 
 Current supported pair configs:
 - black-box attacker vs current concrete-containment agentic defender
@@ -139,7 +139,7 @@ COMPARISON_METRICS: tuple[tuple[str, str, str], ...] = (
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run one seeded staged Option B attacker-vs-agentic-defender pair "
+            "Run one seeded staged water-treatment attacker-vs-agentic-defender pair "
             "using an explicit pair config."
         )
     )
@@ -660,7 +660,7 @@ def _validate_optionb_environment(
         startup = env.start()
         backend = env._backend_impl
         if not isinstance(backend, _SphereOpenPLCBackend):
-            raise RuntimeError("Option B MITRE agentic study requires the sphere_openplc backend")
+            raise RuntimeError("water-treatment MITRE agentic study requires the sphere_openplc backend")
         scenario = scenarios[0]
         reset_snapshot = env.reset(scenario.execution.get("initial_conditions"))
         observation = env.observe_flat()
@@ -885,7 +885,7 @@ def _write_knowledge_note() -> None:
         f"- Generated UTC: `{utc_now()}`",
         f"- Attacker profile: `{ATTACKER_PROFILE_ID}`",
         f"- Knowledge mode: `{ATTACKER_KNOWLEDGE_MODE}`",
-        "- Defender family remained the current staged Option B agentic defender with concrete runtime-enforced containment.",
+        "- Defender family remained the current staged water-treatment agentic defender with concrete runtime-enforced containment.",
         "- The attacker continued to use the same bounded candidate-action surface and MITRE-inspired staged progression.",
         "",
         "## Notes",
@@ -906,9 +906,9 @@ def _write_defender_change_note(
         "",
         f"- Generated UTC: `{utc_now()}`",
         f"- Attacker family under test: `{ATTACKER_PROFILE_ID}`",
-        "- Defender family remained the current staged Option B agentic defender.",
+        "- Defender family remained the current staged water-treatment agentic defender.",
         "- This pass changed the defender from symbolic containment execution to concrete runtime-enforced containment execution.",
-        "- Preserved the MITRE-inspired staged Option B path: staged entry context, discovery, process understanding, control-path qualification, manipulation, impact.",
+        "- Preserved the MITRE-inspired staged water-treatment path: staged entry context, discovery, process understanding, control-path qualification, manipulation, impact.",
         f"- New results saved under: `{portable_path(experiment_root)}`",
         "",
         "## Concrete Actions",
@@ -965,12 +965,12 @@ def _write_final_report(
         f"- Attacker profile: `{ATTACKER_PROFILE_ID}`",
         f"- Knowledge mode: `{ATTACKER_KNOWLEDGE_MODE}`",
         "- Defender change in this pass: symbolic containment execution was replaced with concrete runtime-enforced containment execution.",
-        "- Defender family remained the current staged Option B agentic defender.",
-        "- MITRE-inspired staged Option B path was preserved.",
+        "- Defender family remained the current staged water-treatment agentic defender.",
+        "- MITRE-inspired staged water-treatment path was preserved.",
         "",
         "## Study Scope",
         "",
-        "- Staged Option B path: local orchestrator -> access -> engineering -> plant runtime.",
+        "- Staged water-treatment path: local orchestrator -> access -> engineering -> plant runtime.",
         f"- Attacker/defender pair run in this pass: `{condition_summary['condition_name']}`.",
         f"- Suite size: `{attack_metrics.get('attack_run_count', 0)}` attack scenarios.",
         "- Trajectory diversity: not computed in this pass.",
@@ -1121,7 +1121,7 @@ def main() -> int:
             validation = _validate_optionb_environment(config=config, scenarios=scenarios)
             if validation.get("status") != "passed":
                 raise RuntimeError(
-                    f"Option B environment validation failed: {validation.get('error')}"
+                    f"water-treatment environment validation failed: {validation.get('error')}"
                 )
             _set_phase(
                 "validated_optionb_environment",

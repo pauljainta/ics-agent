@@ -73,7 +73,7 @@ def _bundle() -> RunBundle:
         condition_name="cond",
         run_id="run-001",
         scenario=scenario,
-        run_dir=Path("/tmp/run-001"),
+        run_dir=Path("run-001"),
         config_snapshot={},
     )
 

@@ -42,7 +42,7 @@ def test_configure_reproducibility_keeps_seeded_run_metadata(monkeypatch) -> Non
     payload = orchestrator._configure_reproducibility(
         config={
             "reproducibility": {"seed": 20260623},
-            "_path": Path("/tmp/concrete-containment.yaml"),
+            "_path": Path("concrete-containment.yaml"),
         },
         conditions=[
             {
@@ -61,7 +61,7 @@ def test_configure_reproducibility_keeps_seeded_run_metadata(monkeypatch) -> Non
     assert payload["seed"] == 20260623
     assert payload["pythonhashseed"] == "20260623"
     assert payload["suite_decoding"]
-    assert payload["experiment_config_path"] == "/tmp/concrete-containment.yaml"
+    assert payload["experiment_config_path"] == "concrete-containment.yaml"
     attacker_decoding = payload["suite_decoding"]["attacker-gray_box_attacker__defender-agentic_defender__observer-agentic_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-scripted_planner"]["attacker"]
     assert attacker_decoding["context_limit"] == 262144
     assert attacker_decoding["top_p"] is None
