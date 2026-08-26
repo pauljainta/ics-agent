@@ -8,6 +8,15 @@ import pytest
 
 from ics_agent import environment as environment_module
 from ics_agent.environment import EnvironmentError, OpenPLCEnvironment
+from test_config import (
+    TEST_ACCESS_IP,
+    TEST_CONTROLLER_IP,
+    TEST_ENGINEERING_IP,
+    TEST_MERGE_USER,
+    TEST_SIMULATOR_IP,
+    TEST_XDC_HOST,
+    TEST_XDC_REF,
+)
 
 
 def _fresh_env(fake_openplc) -> OpenPLCEnvironment:
@@ -163,7 +172,7 @@ def test_sphere_backend_delay_configuration_does_not_force_transport_start() -> 
             "testbed": "water_treatment",
             "backend": "sphere_openplc",
             "start_bridge": False,
-            "experiment": "openplcwater.lgarcia",
+            "experiment": "replace-with-local-experiment",
             "realization": "example-realization-03",
             "revision": "test-revision",
             "xdc": "example-xdc-07",
@@ -194,30 +203,30 @@ def test_sphere_backend_ssh_config_uses_realization_node_ips_when_available(
             "start_bridge": False,
             "helper_root": tmp_path / "helper",
             "ssh_config_path": tmp_path / "openplc_ssh_config",
-            "identity_file": tmp_path / "missing_merge_key",
+            "identity_file": tmp_path / "missing-test-key",
             "remote_roles": {},
         }
     )
-    backend._merge_user = "researcher"
-    backend._xdc_host = "example-xdc-04-researcher"
+    backend._merge_user = TEST_MERGE_USER
+    backend._xdc_host = TEST_XDC_HOST
     backend._node_ssh_hostnames = {
-        "access": "198.18.8.11",
-        "engineering": "198.18.8.13",
-        "controller": "198.18.8.12",
-        "simulator": "198.18.8.14",
+        "access": TEST_ACCESS_IP,
+        "engineering": TEST_ENGINEERING_IP,
+        "controller": TEST_CONTROLLER_IP,
+        "simulator": TEST_SIMULATOR_IP,
     }
 
     backend._write_ssh_config()
 
     config_text = backend.ssh_config_path.read_text()
-    assert "Host example-xdc-04-researcher\n    HostName example-xdc-04-researcher\n" in config_text
-    assert "Host access\n    HostName 198.18.8.11\n" in config_text
-    assert "Host engineering\n    HostName 198.18.8.13\n" in config_text
-    assert "Host controller\n    HostName 198.18.8.12\n" in config_text
-    assert "Host simulator\n    HostName 198.18.8.14\n" in config_text
-    assert "Host access\n    HostName 198.18.8.11\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
-    assert "Host engineering\n    HostName 198.18.8.13\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
-    assert "Host controller\n    HostName 198.18.8.12\n    User researcher\n    ProxyJump example-xdc-04-researcher\n" in config_text
+    assert f"Host {TEST_XDC_HOST}\n    HostName {TEST_XDC_HOST}\n" in config_text
+    assert f"Host access\n    HostName {TEST_ACCESS_IP}\n" in config_text
+    assert f"Host engineering\n    HostName {TEST_ENGINEERING_IP}\n" in config_text
+    assert f"Host controller\n    HostName {TEST_CONTROLLER_IP}\n" in config_text
+    assert f"Host simulator\n    HostName {TEST_SIMULATOR_IP}\n" in config_text
+    assert f"Host access\n    HostName {TEST_ACCESS_IP}\n    User {TEST_MERGE_USER}\n    ProxyJump {TEST_XDC_HOST}\n" in config_text
+    assert f"Host engineering\n    HostName {TEST_ENGINEERING_IP}\n    User {TEST_MERGE_USER}\n    ProxyJump {TEST_XDC_HOST}\n" in config_text
+    assert f"Host controller\n    HostName {TEST_CONTROLLER_IP}\n    User {TEST_MERGE_USER}\n    ProxyJump {TEST_XDC_HOST}\n" in config_text
 
 
 def test_sphere_backend_mrg_xdc_ssh_command_uses_node_id_target() -> None:
@@ -228,11 +237,11 @@ def test_sphere_backend_mrg_xdc_ssh_command_uses_node_id_target() -> None:
             "start_bridge": False,
         }
     )
-    backend._xdc_ref = "example-xdc-04.researcher"
-    backend._node_ssh_hostnames = {"controller": "198.18.8.12"}
+    backend._xdc_ref = TEST_XDC_REF
+    backend._node_ssh_hostnames = {"controller": TEST_CONTROLLER_IP}
     backend._node_mrg_targets = {
         "controller": "controller",
-        "198.18.8.12": "controller",
+        TEST_CONTROLLER_IP: "controller",
     }
 
     command = backend._mrg_xdc_ssh_command("controller")
@@ -250,11 +259,11 @@ def test_sphere_backend_mrg_target_for_resolves_infranet_ip_back_to_node_id() ->
     )
     backend._node_mrg_targets = {
         "controller": "controller",
-        "198.18.8.12": "controller",
+        TEST_CONTROLLER_IP: "controller",
     }
 
     assert backend._mrg_target_for("controller") == "controller"
-    assert backend._mrg_target_for("198.18.8.12") == "controller"
+    assert backend._mrg_target_for(TEST_CONTROLLER_IP) == "controller"
 
 
 def test_sphere_backend_default_helper_root_is_isolated_by_testbed_realization_and_xdc() -> None:
@@ -293,7 +302,7 @@ def test_sphere_backend_parses_mrg_xdc_ssh_transcript() -> None:
     begin_marker = "__CODEX_MRG_BEGIN_test__"
     rc_marker_prefix = "__CODEX_MRG_RC_test__:"
     transcript = (
-        "\x1b[?2004hresearcher@controller:~$ unset PROMPT_COMMAND\r\n"
+        "\x1b[?2004htest-user@controller:~$ unset PROMPT_COMMAND\r\n"
         "\x1b[?2004l\r"
         "__CODEX_MRG_BEGIN_test__\r\n"
         "line one\r\n"
@@ -320,7 +329,7 @@ def test_sphere_backend_ssh_checked_falls_back_to_mrg_xdc_transport() -> None:
             "start_bridge": False,
         }
     )
-    backend._xdc_ref = "example-xdc-05.researcher"
+    backend._xdc_ref = TEST_XDC_REF
     raw_calls: list[str] = []
     mrg_calls: list[str] = []
 

@@ -1,9 +1,12 @@
-git+https://github.com/huggingface/transformers.git
+# Python 3.10.x
+transformers>=4.57.6,<5.0.0
+huggingface-hub>=0.34.0,<1.0.0
 torch>=2.6.0,<2.7.0
 safetensors>=0.4.0,<1.0.0
 accelerate>=1.13.0,<2.0.0
 bitsandbytes>=0.43.0,<1.0.0
 PyYAML>=6.0,<7.0
+pymodbus>=3.0.0,<4.0.0
 langchain>=0.3.0,<0.4.0
 langchain-core>=0.3.0,<0.4.0
 langchain-huggingface>=0.1.0,<1.0.0

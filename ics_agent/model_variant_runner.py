@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ConfigError, load_config
+from .environment import OpenPLCEnvironment
 from .orchestrator import ExperimentOrchestrator
 from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
 from .reporting import write_json
@@ -28,6 +29,7 @@ class ModelVariant:
     model_id: str
     local_dir: Path
     quantization: str
+    trust_remote_code: bool = False
     max_new_tokens_override: int | None = None
     requires_bitsandbytes: bool = False
 
@@ -192,6 +194,8 @@ def _model_env(model: ModelVariant) -> dict[str, str]:
         "ICS_AGENT_MODEL_PATH": local_dir,
         "QWEN_MODEL_ID": model.model_id,
         "QWEN_MODEL_PATH": local_dir,
+        "TRANSFORMERS_VERBOSITY": "error",
+        "TOKENIZERS_PARALLELISM": "false",
     }
 
 
@@ -200,6 +204,7 @@ def _llm_override(model: ModelVariant) -> dict[str, Any]:
         "model_id": model.model_id,
         "local_files_only": True,
         "quantization": model.quantization,
+        "trust_remote_code": model.trust_remote_code,
     }
     if model.max_new_tokens_override is not None:
         payload["max_new_tokens"] = model.max_new_tokens_override
@@ -231,6 +236,7 @@ def _apply_model_override(
             "model_id": model.model_id,
             "model_local_dir": portable_path(model.local_dir),
             "model_quantization": model.quantization,
+            "trust_remote_code": model.trust_remote_code,
             "seed": SEED,
             "scope": "model-only robustness runner",
         },
@@ -249,7 +255,10 @@ def _apply_model_override(
         role_override = dict(profile_overrides.get(role) or {})
         role_override["llm"] = _deep_merge_mapping(
             dict(role_override.get("llm") or {}),
-            _llm_override(model),
+            {
+                **_llm_override(model),
+                "fatal_on_parse_error": False,
+            },
         )
         profile_overrides[role] = role_override
     condition["profile_overrides"] = profile_overrides
@@ -312,6 +321,13 @@ def _dependency_status(model: ModelVariant) -> dict[str, Any]:
         "bitsandbytes_available": False,
         "hf_cli_available": bool(shutil.which("hf") or shutil.which("huggingface-cli")),
     }
+    try:
+        import transformers  # type: ignore
+
+        status["transformers_version"] = getattr(transformers, "__version__", "unknown")
+        status["transformers_file"] = getattr(transformers, "__file__", "")
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        status["transformers_error"] = str(exc)
     if model.requires_bitsandbytes:
         try:
             import bitsandbytes  # type: ignore  # noqa: F401
@@ -320,6 +336,42 @@ def _dependency_status(model: ModelVariant) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - environment-dependent
             status["bitsandbytes_error"] = str(exc)
     return status
+
+
+def _validate_model_backend_imports(model: ModelVariant) -> dict[str, Any]:
+    """Catch local model/backend incompatibilities before scenario execution."""
+    try:
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer  # type: ignore
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        raise ConfigError(f"transformers backend import failed: {exc}") from exc
+
+    try:
+        config = AutoConfig.from_pretrained(
+            model.local_dir,
+            trust_remote_code=model.trust_remote_code,
+            local_files_only=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model.local_dir,
+            trust_remote_code=model.trust_remote_code,
+            local_files_only=True,
+        )
+        # Resolve the model class without loading checkpoint weights. This catches
+        # stale cached remote modules and incompatible transformers releases early.
+        model_cls = AutoModelForCausalLM._model_mapping[type(config)]  # noqa: SLF001
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        raise ConfigError(
+            f"{model.label} local backend is not loadable with the current Python "
+            f"environment: {exc}"
+        ) from exc
+
+    return {
+        "model_type": getattr(config, "model_type", None),
+        "architectures": list(getattr(config, "architectures", []) or []),
+        "tokenizer_class": tokenizer.__class__.__name__,
+        "model_class": getattr(model_cls, "__name__", str(model_cls)),
+        "trust_remote_code": model.trust_remote_code,
+    }
 
 
 def _validate_generated_config(
@@ -383,6 +435,7 @@ def _validate_generated_config(
             raise ConfigError(
                 f"{model.label} is configured for 4-bit loading, but bitsandbytes is unavailable"
             )
+        backend_import_status = _validate_model_backend_imports(model)
         return {
             "family": family.family_name,
             "config_path": portable_path(config_path),
@@ -392,6 +445,7 @@ def _validate_generated_config(
             "llm_roles": sorted(settings),
             "model_status": model_status,
             "dependency_status": deps,
+            "backend_import_status": backend_import_status,
             "result_root": portable_path(_result_model_root(model) / testbed.result_experiment_name),
         }
     finally:
@@ -469,6 +523,37 @@ def _require_mrg_auth(config_paths: list[Path]) -> dict[str, Any]:
         "merge_server": merge_server,
         "identity": completed.stdout.strip(),
     }
+
+
+def _cleanup_sphere_local_transports(config_paths: list[Path]) -> list[dict[str, Any]]:
+    cleanup: list[dict[str, Any]] = []
+    for config_path in config_paths:
+        config = load_config(config_path)
+        environment = dict(config.get("environment") or {})
+        if str(environment.get("backend", "")).strip() != "sphere_openplc":
+            continue
+        environment["keep_running"] = True
+        environment["stop_remote_runtime"] = False
+        try:
+            env = OpenPLCEnvironment(environment)
+            env.stop()
+            cleanup.append(
+                {
+                    "config_path": portable_path(config_path),
+                    "status": "cleaned",
+                    "controller_port": environment.get("controller_port"),
+                    "simulator_port": environment.get("simulator_port"),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - environment-dependent
+            cleanup.append(
+                {
+                    "config_path": portable_path(config_path),
+                    "status": "failed",
+                    "error": str(exc),
+                }
+            )
+    return cleanup
 
 
 def _purge_failed_or_incomplete_runs(
@@ -564,6 +649,20 @@ def run_experiments(
     if not selected:
         raise ConfigError("no family configs selected")
 
+    model_status = _model_dir_status(model)
+    if not (
+        model_status["has_config"]
+        and model_status["has_tokenizer"]
+        and model_status["has_safetensors"]
+    ):
+        raise ConfigError(
+            f"local model files are incomplete for {model.label}; run "
+            f"`python scripts/download_local_model.py --model {model.key}` first"
+        )
+    backend_import_status = _validate_model_backend_imports(model)
+    local_transport_cleanup = _cleanup_sphere_local_transports(
+        [path for _, path in selected]
+    )
     preflight = (
         {"required": False, "status": "skipped_by_user"}
         if skip_environment_preflight
@@ -607,6 +706,9 @@ def run_experiments(
             "model_id": model.model_id,
             "testbed": testbed.key,
             "seed": SEED,
+            "model_status": model_status,
+            "backend_import_status": backend_import_status,
+            "local_transport_cleanup": local_transport_cleanup,
             "environment_preflight": preflight,
             "removed_failed_or_incomplete_runs": removed_failed_runs,
             "runs": suite_runs,

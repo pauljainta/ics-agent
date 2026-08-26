@@ -76,6 +76,8 @@ class CachedQwenDecisionEngine:
             llm_cfg.get("allow_langchain_fallback", True)
         )
         self.local_files_only = bool(llm_cfg.get("local_files_only", True))
+        self.trust_remote_code = bool(llm_cfg.get("trust_remote_code", True))
+        self.fatal_on_parse_error = bool(llm_cfg.get("fatal_on_parse_error", True))
         self.max_new_tokens = int(llm_cfg.get("max_new_tokens", 192))
         self.temperature = float(llm_cfg.get("temperature", 0.0))
         self.quantization = str(llm_cfg.get("quantization", "bf16")).strip().lower()
@@ -141,7 +143,12 @@ class CachedQwenDecisionEngine:
     def _llm(self):
         import torch  # type: ignore
         from langchain_huggingface import HuggingFacePipeline  # type: ignore
-        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline  # type: ignore
+        from transformers import (  # type: ignore
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            pipeline,
+        )
 
         if self.require_cuda and not torch.cuda.is_available():
             raise RuntimeError("CUDA GPU is required for agentic execution")
@@ -156,31 +163,36 @@ class CachedQwenDecisionEngine:
         model_cache_key = (
             model_ref,
             self.local_files_only,
+            self.trust_remote_code,
             self.quantization,
         )
         if model_cache_key not in self._model_cache:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_ref,
-                trust_remote_code=True,
+                trust_remote_code=self.trust_remote_code,
                 local_files_only=self.local_files_only,
             )
             load_kwargs: dict[str, Any] = {
-                "trust_remote_code": True,
+                "trust_remote_code": self.trust_remote_code,
                 "local_files_only": self.local_files_only,
                 "device_map": "auto",
             }
             if self.quantization == "4bit":
-                load_kwargs["load_in_4bit"] = True
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True
+                )
             elif self.quantization == "8bit":
-                load_kwargs["load_in_8bit"] = True
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_8bit=True
+                )
             else:
                 if (
                     self.quantization == "bf16"
                     and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
                 ):
-                    load_kwargs["torch_dtype"] = torch.bfloat16
+                    load_kwargs["dtype"] = torch.bfloat16
                 else:
-                    load_kwargs["torch_dtype"] = torch.float16
+                    load_kwargs["dtype"] = torch.float16
             model = AutoModelForCausalLM.from_pretrained(model_ref, **load_kwargs)
             self._model_cache[model_cache_key] = (tokenizer, model)
 
@@ -201,6 +213,15 @@ class CachedQwenDecisionEngine:
         if self.temperature > 0:
             generator_kwargs["temperature"] = self.temperature
 
+        if (
+            not generator_kwargs["do_sample"]
+            and getattr(model, "generation_config", None) is not None
+        ):
+            model.generation_config.max_length = None
+            model.generation_config.temperature = None
+            model.generation_config.top_p = None
+            model.generation_config.top_k = None
+
         generator = pipeline(
             "text-generation",
             model=model,
@@ -213,8 +234,16 @@ class CachedQwenDecisionEngine:
         # warnings while preserving the repo-configured token budget.
         if getattr(generator, "generation_config", None) is not None:
             generator.generation_config.max_length = None
+            if not generator_kwargs["do_sample"]:
+                generator.generation_config.temperature = None
+                generator.generation_config.top_p = None
+                generator.generation_config.top_k = None
         if getattr(model, "generation_config", None) is not None:
             model.generation_config.max_length = None
+            if not generator_kwargs["do_sample"]:
+                model.generation_config.temperature = None
+                model.generation_config.top_p = None
+                model.generation_config.top_k = None
         llm = HuggingFacePipeline(pipeline=generator)
         self._llm_cache[llm_cache_key] = llm
         return llm
@@ -299,6 +328,8 @@ class CachedQwenDecisionEngine:
         self.last_raw_output = self._raw_excerpt(raw)
         payload = self._parse_output(raw)
         if payload is None:
+            if not self.fatal_on_parse_error:
+                return self._parse_failure_payload(context)
             raise RuntimeError(
                 f"model output did not contain valid JSON: {self.last_raw_output}"
             )
@@ -328,10 +359,38 @@ class CachedQwenDecisionEngine:
         self.last_raw_output = self._raw_excerpt(raw)
         payload = self._parse_output(raw)
         if payload is None:
+            if not self.fatal_on_parse_error:
+                return self._parse_failure_payload(context)
             raise RuntimeError(
                 f"model output did not contain valid JSON: {self.last_raw_output}"
             )
         return self._finalize_payload(payload, context)
+
+    def _parse_failure_payload(self, context: dict[str, Any]) -> dict[str, Any]:
+        self.last_error = (
+            "model output did not contain valid JSON; using schema-fallback"
+        )
+        candidate_id = None
+        for item in context.get("candidate_actions", []):
+            action = normalize_action(item.get("action"))
+            if action == {"type": "noop"}:
+                candidate_id = item.get("id")
+                break
+        return self._finalize_payload(
+            {
+                "summary": "Hold because model output was not parseable.",
+                "candidate_id": candidate_id,
+                "confidence": 0.0,
+                "diagnosis": None,
+                "labels": ["agentic", self.role, "schema-fallback"],
+                "decision_type": "note",
+                "metadata": {
+                    "parse_failure_fallback": True,
+                    "raw_excerpt": self.last_raw_output,
+                },
+            },
+            context,
+        )
 
     @staticmethod
     def _parse_output(raw: Any) -> dict[str, Any] | None:
@@ -369,6 +428,8 @@ class CachedQwenDecisionEngine:
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:].strip()
         add_candidate(cleaned)
+        for variant in CachedQwenDecisionEngine._field_fragment_variants(cleaned):
+            add_candidate(variant)
 
         for block in re.findall(
             r"```(?:json)?\s*(.*?)```",
@@ -377,6 +438,16 @@ class CachedQwenDecisionEngine:
         ):
             add_candidate(block)
 
+        parsed_payloads: list[dict[str, Any]] = []
+
+        def collect_payload(payload: Any) -> None:
+            if isinstance(payload, dict):
+                parsed_payloads.append(payload)
+            elif isinstance(payload, list):
+                parsed_payloads.extend(
+                    item for item in payload if isinstance(item, dict)
+                )
+
         decoder = json.JSONDecoder()
         for candidate in candidates:
             for variant in CachedQwenDecisionEngine._candidate_variants(candidate):
@@ -384,28 +455,19 @@ class CachedQwenDecisionEngine:
                     payload = json.loads(variant)
                 except json.JSONDecodeError:
                     payload = None
-                if isinstance(payload, dict):
-                    return payload
-                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                    return payload[0]
+                collect_payload(payload)
 
                 try:
                     payload = yaml.safe_load(variant)
                 except yaml.YAMLError:
                     payload = None
-                if isinstance(payload, dict):
-                    return payload
-                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                    return payload[0]
+                collect_payload(payload)
 
                 try:
                     payload = ast.literal_eval(variant)
                 except (SyntaxError, ValueError):
                     payload = None
-                if isinstance(payload, dict):
-                    return payload
-                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                    return payload[0]
+                collect_payload(payload)
 
             for index, char in enumerate(candidate):
                 if char != "{":
@@ -414,9 +476,74 @@ class CachedQwenDecisionEngine:
                     payload, _ = decoder.raw_decode(candidate[index:])
                 except json.JSONDecodeError:
                     continue
-                if isinstance(payload, dict):
-                    return payload
+                collect_payload(payload)
+        scored_payloads = [
+            (CachedQwenDecisionEngine._decision_payload_score(payload), payload)
+            for payload in parsed_payloads
+        ]
+        scored_payloads = [item for item in scored_payloads if item[0] > 0]
+        if scored_payloads:
+            scored_payloads.sort(key=lambda item: item[0], reverse=True)
+            return scored_payloads[0][1]
         return None
+
+    @staticmethod
+    def _decision_payload_score(payload: dict[str, Any]) -> int:
+        decision_fields = {
+            "summary",
+            "candidate_id",
+            "confidence",
+            "diagnosis",
+            "labels",
+            "decision_type",
+            "action",
+            "metadata",
+        }
+        context_fields = {
+            "role",
+            "scenario_id",
+            "suite",
+            "intent",
+            "observation",
+            "candidate_actions",
+            "recent_actions",
+            "structured_memory",
+        }
+        score = sum(2 for field in decision_fields if field in payload)
+        if "summary" in payload:
+            score += 2
+        if "decision_type" in payload:
+            score += 2
+        if "candidate_id" in payload or "action" in payload:
+            score += 1
+        if score == 0:
+            return 0
+        score -= sum(1 for field in context_fields if field in payload)
+        return max(0, score)
+
+    @staticmethod
+    def _field_fragment_variants(candidate: str) -> list[str]:
+        variants: list[str] = []
+        field_names = (
+            "summary",
+            "candidate_id",
+            "confidence",
+            "diagnosis",
+            "labels",
+            "decision_type",
+            "action",
+            "metadata",
+        )
+        for field_name in field_names:
+            match = re.search(rf'"{re.escape(field_name)}"\s*:', candidate)
+            if not match:
+                continue
+            fragment = candidate[match.start() :].lstrip(" ,;")
+            if fragment.startswith("{"):
+                variants.append(fragment)
+            else:
+                variants.append("{" + fragment)
+        return variants
 
     @staticmethod
     def _candidate_variants(candidate: str) -> list[str]:
@@ -9064,7 +9191,6 @@ class AgenticRoleAgent(RoleAgent):
         allowed = set(self.profile.get("allowed_action_types", []))
         observation = context.get("observation", {})
         state_name = str(observation.get("STATE_NAME", "")).upper()
-        now = float(context.get("time_sec", 0.0))
         memory_state = self._state.setdefault("role_memory", {})
         surface_state = memory_state.get("_surface_state", {})
         commitment = dict(memory_state.get("_exploit_commitment") or {})
@@ -9088,13 +9214,6 @@ class AgenticRoleAgent(RoleAgent):
             preconditions.get("defender_attention")
             or structured_memory.get("detection_pressure", "low")
         ).lower()
-        prior_actions = {
-            action_key(action)
-            for item in context.get("executed_actions", [])
-            if item.get("role") == "attacker"
-            for action in [normalize_action(item.get("action"))]
-            if action is not None
-        }
         direct_commit = bool(structured_memory.get("white_box_direct_commit"))
         current_phase = str(structured_memory.get("current_phase", "probing"))
         committed_surface = str(

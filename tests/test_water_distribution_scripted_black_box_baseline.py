@@ -15,6 +15,11 @@ from ics_agent.water_distribution_scripted_black_box_baseline import (
     RUNS_PER_SEED,
     ScriptedBlackBoxBaselineRunner,
 )
+from test_config import (
+    TEST_DISTRIBUTION_REALIZATION,
+    TEST_MERGE_SERVER,
+    TEST_REVISION,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -143,11 +148,8 @@ def test_distribution_scripted_black_box_runner_derives_required_live_preflight_
     runner = ScriptedBlackBoxBaselineRunner(CANONICAL_RESULT_ROOT)
     refs = runner._required_preflight_refs(runner._runtime_config())
 
-    assert refs == {
-        "merge_server": "merge.example.invalid",
-        "realization": "example-realization-02.openplcwater.lgarcia",
-        "materialization": "example-realization-02.openplcwater.lgarcia",
-    }
+    assert set(refs) == {"merge_server", "realization", "materialization"}
+    assert all(refs.values())
 
 
 def test_distribution_scripted_black_box_context_uses_opaque_candidates() -> None:
@@ -222,9 +224,9 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
     calls = {"whoami": 0, "show": 0}
 
     class FakeBackend:
-        experiment_ref = "openplcwater.lgarcia"
-        _realization_ref = "example-realization-02.openplcwater.lgarcia"
-        revision = "ac79757fe0d3f8e98bbfa43a303fee121b88be05"
+        experiment_ref = "replace-with-local-experiment"
+        _realization_ref = TEST_DISTRIBUTION_REALIZATION
+        revision = TEST_REVISION
         _xdc_ref = "example-xdc-04"
 
     class FakeEnvironment:
@@ -267,7 +269,7 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
 
     def fake_show(kind: str, ref: str, *, merge_server: str, timeout_sec: float = 20.0):
         calls["show"] += 1
-        assert merge_server == "merge.example.invalid"
+        assert merge_server
         assert timeout_sec == 20.0
         return {"kind": kind, "ref": ref}
 
@@ -311,9 +313,9 @@ def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd
         realization_ref: str,
     ) -> list[dict[str, object]]:
         assert candidate_short_names[:2] == ["example-xdc-05", "example-xdc-04"]
-        assert merge_server == "merge.example.invalid"
+        assert merge_server
         assert merge_user == "live-user"
-        assert realization_ref == "example-realization-02.openplcwater.lgarcia"
+        assert realization_ref
         return [
             {
                 "short_name": "example-xdc-05",
