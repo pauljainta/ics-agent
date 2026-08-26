@@ -425,14 +425,21 @@ class ExperimentOrchestrator:
             llm = profile.get("llm", {})
             if not isinstance(llm, dict):
                 continue
-            model_path = os.environ.get("QWEN_MODEL_PATH", "").strip() or llm.get(
-                "model_id"
+            model_id = (
+                os.environ.get("ICS_AGENT_MODEL_ID", "").strip()
+                or os.environ.get("QWEN_MODEL_ID", "").strip()
+                or llm.get("model_id")
+            )
+            model_path = (
+                os.environ.get("ICS_AGENT_MODEL_PATH", "").strip()
+                or os.environ.get("QWEN_MODEL_PATH", "").strip()
+                or model_id
             )
             settings[str(role)] = {
                 "profile_id": str(profile_id),
                 "backend": llm.get("backend"),
                 "framework": llm.get("framework"),
-                "model_id": llm.get("model_id"),
+                "model_id": model_id,
                 "model_path": model_path,
                 "temperature": float(llm.get("temperature", 0.0) or 0.0),
                 "top_p": llm.get("top_p"),

@@ -32,6 +32,9 @@ logs/*.log
 nohup.out
 slurm-*.out
 vendor/openplc/artifacts/
+configs/private/
+*.local.yaml
+*.local.yml
 
 # Local model weights/artifacts (keep code under models/ tracked)
 models/local_models/*

@@ -148,7 +148,11 @@ class CachedQwenDecisionEngine:
         if not torch.cuda.is_available():
             raise RuntimeError("No CUDA GPU detected for agentic execution")
 
-        model_ref = os.environ.get("QWEN_MODEL_PATH", "").strip() or self.model_id
+        model_ref = (
+            os.environ.get("ICS_AGENT_MODEL_PATH", "").strip()
+            or os.environ.get("QWEN_MODEL_PATH", "").strip()
+            or self.model_id
+        )
         model_cache_key = (
             model_ref,
             self.local_files_only,
