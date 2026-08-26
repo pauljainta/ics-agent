@@ -364,6 +364,17 @@ class RuntimeContainmentState:
 class _SphereOpenPLCBackend:
     """Manage the SPHERE-hosted OpenPLC runtime and expose local testbed semantics."""
 
+    @staticmethod
+    def _required_config_str(config: dict[str, Any], key: str) -> str:
+        value = str(config.get(key, "")).strip()
+        if not value:
+            raise EnvironmentError(
+                "sphere_openplc backend is missing required infrastructure field "
+                f"`{key}`. Use `environment.infrastructure_profile` with an ignored "
+                "local SPHERE profile config."
+            )
+        return value
+
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
         self.keep_running = bool(config.get("keep_running", False))
@@ -371,41 +382,30 @@ class _SphereOpenPLCBackend:
         self.testbed_id = normalize_testbed_id(config.get("testbed"))
         self.testbed_spec = get_testbed_spec(self.testbed_id)
 
-        self.experiment_ref = str(
-            config.get("experiment", "openplcwater.lgarcia")
-        ).strip()
-        self.merge_server = str(
-            config.get(
-                "merge_server",
-                os.environ.get(
-                    "MRG_SERVER",
-                    os.environ.get("MERGE_SERVER", "merge.example.invalid"),
-                ),
-            )
-        ).strip() or None
-        self.realization_name = str(config.get("realization", "wargamestable")).strip()
-        self.revision = str(config.get("revision", "")).strip() or None
-        self.configured_xdc_name = str(config.get("xdc", "")).strip() or "x0"
-        self.xdc_name = (
-            str(os.environ.get("ICS_AGENT_SPHERE_XDC_OVERRIDE", "")).strip()
-            or self.configured_xdc_name
-        )
-        self.access_host = str(config.get("access_host", "access")).strip() or None
+        self.experiment_ref = self._required_config_str(config, "experiment")
+        self.merge_server = self._required_config_str(config, "merge_server")
+        self.realization_name = self._required_config_str(config, "realization")
+        self.revision = self._required_config_str(config, "revision")
+        self.configured_xdc_name = self._required_config_str(config, "xdc")
+        self.xdc_name = self.configured_xdc_name
+        self.access_host = self._required_config_str(config, "access_host")
         self.engineering_host = (
-            str(config.get("engineering_host", "engineering")).strip() or None
+            self._required_config_str(config, "engineering_host")
         )
+        self.jump_host = self._required_config_str(config, "jump_host")
+        self.jump_port = int(config.get("jump_port", 2022))
 
         self.controller_forward_port = int(config.get("controller_port", 2502))
         self.simulator_forward_port = int(config.get("simulator_port", 2503))
         self.remote_controller_port = int(config.get("remote_controller_port", 1502))
         self.remote_simulator_port = int(config.get("remote_simulator_port", 1503))
-        self.remote_bind_host = str(config.get("remote_bind_host", "0.0.0.0")).strip()
-        self.controller_process_ip = str(
-            config.get("controller_process_ip", "198.18.4.10")
-        ).strip()
-        self.simulator_process_ip = str(
-            config.get("simulator_process_ip", "198.18.4.20")
-        ).strip()
+        self.remote_bind_host = self._required_config_str(config, "remote_bind_host")
+        self.controller_process_ip = self._required_config_str(
+            config, "controller_process_ip"
+        )
+        self.simulator_process_ip = self._required_config_str(
+            config, "simulator_process_ip"
+        )
         self.bridge_host = str(config.get("bridge_host", "controller")).strip()
         self.bridge_cycle_ms = int(config.get("bridge_cycle_ms", 100))
         self.bridge_package_targets = tuple(
@@ -1604,8 +1604,8 @@ class _SphereOpenPLCBackend:
             f"    User {self._merge_user}",
             "",
             "Host jump",
-            "    HostName gateway.example.invalid",
-            "    Port 2022",
+            f"    HostName {self.jump_host}",
+            f"    Port {self.jump_port}",
             f"    User {self._merge_user}",
         ]
         if self.identity_file.exists():

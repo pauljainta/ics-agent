@@ -4,7 +4,7 @@
 # register type and address for the OpenPLC backend.
 #
 # Architecture:
-#   Controller PLC (198.18.4.10:502) <-> Modbus Bridge <-> Simulator PLC (198.18.4.20:502)
+#   Controller PLC <-> Modbus Bridge <-> Simulator PLC
 #
 # The Modbus bridge shuttles data between controller and simulator:
 #   - Controller outputs (coils, holding regs) → Simulator inputs
@@ -28,8 +28,8 @@ metadata:
   backend: openplc
   protocol: modbus_tcp
   status: active
-  controller_address: "198.18.4.10:502"
-  simulator_address: "198.18.4.20:502"
+  controller_address: "controller:502"
+  simulator_address: "simulator:502"
 
 # Bridge register allocation:
 #

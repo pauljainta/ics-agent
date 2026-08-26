@@ -11,9 +11,14 @@ from ics_agent.environment import EnvironmentError, OpenPLCEnvironment
 from test_config import (
     TEST_ACCESS_IP,
     TEST_CONTROLLER_IP,
+    TEST_DISTRIBUTION_REALIZATION,
     TEST_ENGINEERING_IP,
+    TEST_MERGE_SERVER,
     TEST_MERGE_USER,
+    TEST_REVISION,
     TEST_SIMULATOR_IP,
+    TEST_TREATMENT_EXPERIMENT,
+    TEST_TREATMENT_REALIZATION,
     TEST_XDC_HOST,
     TEST_XDC_REF,
 )
@@ -24,6 +29,35 @@ def _fresh_env(fake_openplc) -> OpenPLCEnvironment:
     env.start()
     env.reset()
     return env
+
+
+def _sphere_backend_config(testbed: str = "water_distribution", **overrides) -> dict[str, object]:
+    if testbed == "water_treatment":
+        realization = TEST_TREATMENT_REALIZATION
+        xdc = "treatment-test-xdc"
+    else:
+        realization = TEST_DISTRIBUTION_REALIZATION
+        xdc = "distribution-test-xdc"
+    config: dict[str, object] = {
+        "testbed": testbed,
+        "backend": "sphere_openplc",
+        "start_bridge": False,
+        "merge_server": TEST_MERGE_SERVER,
+        "experiment": TEST_TREATMENT_EXPERIMENT,
+        "realization": realization,
+        "revision": TEST_REVISION,
+        "xdc": xdc,
+        "remote_bind_host": "0.0.0.0",
+        "controller_process_ip": TEST_CONTROLLER_IP,
+        "simulator_process_ip": TEST_SIMULATOR_IP,
+        "jump_host": "jump-test-host",
+        "jump_port": 2022,
+        "access_host": "access",
+        "engineering_host": "engineering",
+        "remote_roles": {},
+    }
+    config.update(overrides)
+    return config
 
 
 def test_block_sensor_write_blocks_later_attacker_sensor_writes(fake_openplc) -> None:
@@ -168,15 +202,7 @@ def test_delayed_runtime_containment_activates_after_two_steps(fake_openplc) -> 
 
 def test_sphere_backend_delay_configuration_does_not_force_transport_start() -> None:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_treatment",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-            "experiment": "replace-with-local-experiment",
-            "realization": "example-realization-03",
-            "revision": "test-revision",
-            "xdc": "example-xdc-07",
-        }
+        _sphere_backend_config("water_treatment")
     )
     start_calls = 0
 
@@ -197,15 +223,12 @@ def test_sphere_backend_ssh_config_uses_realization_node_ips_when_available(
     tmp_path: Path,
 ) -> None:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_distribution",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-            "helper_root": tmp_path / "helper",
-            "ssh_config_path": tmp_path / "openplc_ssh_config",
-            "identity_file": tmp_path / "missing-test-key",
-            "remote_roles": {},
-        }
+        _sphere_backend_config(
+            "water_distribution",
+            helper_root= tmp_path / "helper",
+            ssh_config_path= tmp_path / "openplc_ssh_config",
+            identity_file= tmp_path / "missing-test-key",
+        )
     )
     backend._merge_user = TEST_MERGE_USER
     backend._xdc_host = TEST_XDC_HOST
@@ -231,11 +254,7 @@ def test_sphere_backend_ssh_config_uses_realization_node_ips_when_available(
 
 def test_sphere_backend_mrg_xdc_ssh_command_uses_node_id_target() -> None:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_distribution",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-        }
+        _sphere_backend_config("water_distribution")
     )
     backend._xdc_ref = TEST_XDC_REF
     backend._node_ssh_hostnames = {"controller": TEST_CONTROLLER_IP}
@@ -251,11 +270,7 @@ def test_sphere_backend_mrg_xdc_ssh_command_uses_node_id_target() -> None:
 
 def test_sphere_backend_mrg_target_for_resolves_infranet_ip_back_to_node_id() -> None:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_distribution",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-        }
+        _sphere_backend_config("water_distribution")
     )
     backend._node_mrg_targets = {
         "controller": "controller",
@@ -268,34 +283,25 @@ def test_sphere_backend_mrg_target_for_resolves_infranet_ip_back_to_node_id() ->
 
 def test_sphere_backend_default_helper_root_is_isolated_by_testbed_realization_and_xdc() -> None:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_distribution",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-            "realization": "example-realization-02",
-            "xdc": "example-xdc-04",
-        }
+        _sphere_backend_config(
+            "water_distribution",
+            realization="distribution-realization",
+            xdc="distribution-xdc",
+        )
     )
 
     helper_suffix = backend.helper_root.as_posix().split("/.cache/ics-sphere/")[-1]
-    assert helper_suffix == "water_distribution/example-realization-02/example-xdc-04"
+    assert helper_suffix == "water_distribution/distribution-realization/distribution-xdc"
     assert backend.ssh_config_path == backend.helper_root / "openplc_ssh_config"
 
 
-def test_sphere_backend_xdc_name_can_be_overridden_by_environment(monkeypatch) -> None:
-    monkeypatch.setenv("ICS_AGENT_SPHERE_XDC_OVERRIDE", "example-xdc-05")
+def test_sphere_backend_xdc_name_is_taken_from_resolved_config() -> None:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_distribution",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-            "realization": "example-realization-02",
-            "xdc": "example-xdc-04",
-        }
+        _sphere_backend_config("water_distribution", xdc="distribution-xdc")
     )
 
-    assert backend.configured_xdc_name == "example-xdc-04"
-    assert backend.xdc_name == "example-xdc-05"
+    assert backend.configured_xdc_name == "distribution-xdc"
+    assert backend.xdc_name == "distribution-xdc"
 
 
 def test_sphere_backend_parses_mrg_xdc_ssh_transcript() -> None:
@@ -323,11 +329,7 @@ def test_sphere_backend_parses_mrg_xdc_ssh_transcript() -> None:
 
 def test_sphere_backend_ssh_checked_falls_back_to_mrg_xdc_transport() -> None:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_distribution",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-        }
+        _sphere_backend_config("water_distribution")
     )
     backend._xdc_ref = TEST_XDC_REF
     raw_calls: list[str] = []
@@ -446,15 +448,13 @@ def _distribution_backend(
     fake_direct_env: _FakeDistributionDirectEnv,
 ) -> environment_module._SphereOpenPLCBackend:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "testbed": "water_distribution",
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-            "remote_reset_mode": "soft_reseed",
-            "soft_reset_level_wait_sec": 0.0,
-            "reset_wait_sec": 0.0,
-            "initial_state_validation_timeout_sec": 0.0,
-        }
+        _sphere_backend_config(
+            "water_distribution",
+            remote_reset_mode= "soft_reseed",
+            soft_reset_level_wait_sec= 0.0,
+            reset_wait_sec= 0.0,
+            initial_state_validation_timeout_sec= 0.0,
+        )
     )
     backend._require_direct_env = MethodType(lambda self: fake_direct_env, backend)
     backend._local_port_listening = MethodType(lambda self, port: True, backend)
@@ -465,13 +465,12 @@ def _treatment_backend(
     fake_direct_env: _FakeDistributionDirectEnv,
 ) -> environment_module._SphereOpenPLCBackend:
     backend = environment_module._SphereOpenPLCBackend(
-        {
-            "backend": "sphere_openplc",
-            "start_bridge": False,
-            "remote_reset_mode": "soft_reseed",
-            "soft_reset_level_wait_sec": 0.25,
-            "reset_wait_sec": 0.0,
-        }
+        _sphere_backend_config(
+            "water_treatment",
+            remote_reset_mode= "soft_reseed",
+            soft_reset_level_wait_sec= 0.25,
+            reset_wait_sec= 0.0,
+        )
     )
     backend._require_direct_env = MethodType(lambda self: fake_direct_env, backend)
     backend._local_port_listening = MethodType(lambda self, port: True, backend)

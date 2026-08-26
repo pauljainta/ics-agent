@@ -221,7 +221,7 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         experiment_ref = TEST_TREATMENT_EXPERIMENT
         _realization_ref = TEST_TREATMENT_REALIZATION
         revision = TEST_REVISION
-        _xdc_ref = "example-xdc-07"
+        _xdc_ref = "treatment-xdc-b"
 
     class FakeEnvironment:
         def __init__(self, _config):
@@ -259,8 +259,9 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         def stop(self) -> None:
             return None
 
-    def fake_transport(*, timeout_sec: float = 20.0) -> str:
+    def fake_transport(*, merge_server: str | None = None, timeout_sec: float = 20.0) -> str:
         calls["whoami"] += 1
+        assert merge_server
         assert timeout_sec == 20.0
         return "live-user"
 
@@ -279,7 +280,9 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
 
     payload = json.loads(runner.optionb_validation_path.read_text())
     assert payload["status"] == "passed"
-    assert payload["preflight"]["merge_user"] == "live-user"
+    assert payload["preflight"]["mrg_whoami_ok"] is True
+    assert payload["preflight"]["realization_check_ok"] is True
+    assert payload["validated_target"]["xdc_configured"] is True
     assert calls == {"whoami": 1, "show": 2}
 
 
@@ -289,14 +292,20 @@ def test_validate_optionb_environment_with_xdc_discovery_prefers_attached_wt1(
 ) -> None:
     runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
     runner.ensure_root_layout()
+    runner.preferred_xdc_short_names = ("treatment-xdc-a", "treatment-xdc-b")
 
-    monkeypatch.setattr(runner, "_check_mrg_transport", lambda timeout_sec=20.0: "live-user")
+    monkeypatch.setenv("ICS_AGENT_ALLOW_XDC_DISCOVERY", "1")
+    monkeypatch.setattr(
+        runner,
+        "_check_mrg_transport",
+        lambda merge_server=None, timeout_sec=20.0: "live-user",
+    )
     monkeypatch.setattr(
         runner,
         "_listed_xdc_refs",
         lambda merge_server: (
-            "XDC: example-xdc-07.live-user\nXDC: example-xdc-08.live-user\n",
-            ["example-xdc-07.live-user", "example-xdc-08.live-user"],
+            "XDC: treatment-xdc-b.live-user\nXDC: treatment-xdc-a.live-user\n",
+            ["treatment-xdc-b.live-user", "treatment-xdc-a.live-user"],
         ),
     )
 
@@ -307,14 +316,14 @@ def test_validate_optionb_environment_with_xdc_discovery_prefers_attached_wt1(
         merge_user: str,
         realization_ref: str,
     ) -> list[dict[str, object]]:
-        assert candidate_short_names[:2] == ["example-xdc-08", "example-xdc-07"]
+        assert candidate_short_names[:2] == ["treatment-xdc-a", "treatment-xdc-b"]
         assert merge_server
         assert merge_user == "live-user"
         assert realization_ref
         return [
             {
-                "short_name": "example-xdc-08",
-                "ref": "example-xdc-08.live-user",
+                "short_name": "treatment-xdc-a",
+                "ref": "treatment-xdc-a.live-user",
                 "available": True,
                 "healthy": True,
                 "attached": True,
@@ -322,8 +331,8 @@ def test_validate_optionb_environment_with_xdc_discovery_prefers_attached_wt1(
                 "status": "Ready",
             },
             {
-                "short_name": "example-xdc-07",
-                "ref": "example-xdc-07.live-user",
+                "short_name": "treatment-xdc-b",
+                "ref": "treatment-xdc-b.live-user",
                 "available": True,
                 "healthy": False,
                 "attached": False,
@@ -337,14 +346,14 @@ def test_validate_optionb_environment_with_xdc_discovery_prefers_attached_wt1(
         validation_path: Path,
         timeout_sec: float,
     ) -> dict[str, object]:
-        assert xdc_short_name == "example-xdc-08"
+        assert xdc_short_name == "treatment-xdc-a"
         assert timeout_sec == runner.validation_attempt_timeout_sec
         validation_path.write_text(
             json.dumps(
                 {
                     "status": "passed",
                     "validated_target": {
-                        "xdc": "example-xdc-08.live-user",
+                        "xdc": "treatment-xdc-a.live-user",
                     },
                 }
             )
@@ -364,9 +373,9 @@ def test_validate_optionb_environment_with_xdc_discovery_prefers_attached_wt1(
     phase = json.loads(runner.global_phase_status_path.read_text())["phases"][
         "validated_optionb_environment"
     ]
-    assert payload["selected_xdc"]["short_name"] == "example-xdc-08"
+    assert payload["selected_xdc"]["short_name"] == "treatment-xdc-a"
     assert phase["status"] == "completed"
-    assert phase["chosen_xdc"] == "example-xdc-08"
+    assert phase["chosen_xdc"] == "treatment-xdc-a"
 
 
 def test_resume_compatible_config_hash_update_allows_runner_only_drift() -> None:

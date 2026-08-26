@@ -227,7 +227,7 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         experiment_ref = "replace-with-local-experiment"
         _realization_ref = TEST_DISTRIBUTION_REALIZATION
         revision = TEST_REVISION
-        _xdc_ref = "example-xdc-04"
+        _xdc_ref = "distribution-xdc-b"
 
     class FakeEnvironment:
         def __init__(self, _config):
@@ -262,8 +262,9 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         def stop(self) -> None:
             return None
 
-    def fake_transport(*, timeout_sec: float = 20.0) -> str:
+    def fake_transport(*, merge_server: str | None = None, timeout_sec: float = 20.0) -> str:
         calls["whoami"] += 1
+        assert merge_server
         assert timeout_sec == 20.0
         return "live-user"
 
@@ -282,8 +283,9 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
 
     payload = json.loads(runner.optionb_validation_path.read_text())
     assert payload["status"] == "passed"
-    assert payload["preflight"]["merge_user"] == "live-user"
-    assert payload["validated_target"]["realization"] == FakeBackend._realization_ref
+    assert payload["preflight"]["mrg_whoami_ok"] is True
+    assert payload["preflight"]["realization_check_ok"] is True
+    assert payload["validated_target"]["realization_configured"] is True
     assert calls == {"whoami": 1, "show": 2}
 
 
@@ -293,15 +295,21 @@ def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd
 ) -> None:
     runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
     runner.ensure_root_layout()
+    runner.preferred_xdc_short_names = ("distribution-xdc-a", "distribution-xdc-b")
     cleanup_calls: list[str] = []
 
-    monkeypatch.setattr(runner, "_check_mrg_transport", lambda timeout_sec=20.0: "live-user")
+    monkeypatch.setenv("ICS_AGENT_ALLOW_XDC_DISCOVERY", "1")
+    monkeypatch.setattr(
+        runner,
+        "_check_mrg_transport",
+        lambda merge_server=None, timeout_sec=20.0: "live-user",
+    )
     monkeypatch.setattr(
         runner,
         "_listed_xdc_refs",
         lambda merge_server: (
-            "XDC: example-xdc-05.live-user\nXDC: example-xdc-04.live-user\n",
-            ["example-xdc-05.live-user", "example-xdc-04.live-user"],
+            "XDC: distribution-xdc-a.live-user\nXDC: distribution-xdc-b.live-user\n",
+            ["distribution-xdc-a.live-user", "distribution-xdc-b.live-user"],
         ),
     )
 
@@ -312,14 +320,14 @@ def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd
         merge_user: str,
         realization_ref: str,
     ) -> list[dict[str, object]]:
-        assert candidate_short_names[:2] == ["example-xdc-05", "example-xdc-04"]
+        assert candidate_short_names[:2] == ["distribution-xdc-a", "distribution-xdc-b"]
         assert merge_server
         assert merge_user == "live-user"
         assert realization_ref
         return [
             {
-                "short_name": "example-xdc-05",
-                "ref": "example-xdc-05.live-user",
+                "short_name": "distribution-xdc-a",
+                "ref": "distribution-xdc-a.live-user",
                 "available": True,
                 "healthy": True,
                 "attached": True,
@@ -327,8 +335,8 @@ def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd
                 "status": "Ready",
             },
             {
-                "short_name": "example-xdc-04",
-                "ref": "example-xdc-04.live-user",
+                "short_name": "distribution-xdc-b",
+                "ref": "distribution-xdc-b.live-user",
                 "available": True,
                 "healthy": True,
                 "attached": True,
@@ -344,7 +352,7 @@ def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd
         timeout_sec: float,
     ) -> dict[str, object]:
         assert timeout_sec == runner.validation_attempt_timeout_sec
-        if xdc_short_name == "example-xdc-05":
+        if xdc_short_name == "distribution-xdc-a":
             validation_path.write_text(json.dumps({"status": "failed", "error": "wrong reset"}))
             return {
                 "status": "failed",
@@ -357,7 +365,7 @@ def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd
                 {
                     "status": "passed",
                     "validated_target": {
-                        "xdc": "example-xdc-04.live-user",
+                        "xdc": "distribution-xdc-b.live-user",
                     },
                 }
             )
@@ -382,7 +390,7 @@ def test_distribution_validate_optionb_environment_with_xdc_discovery_retries_wd
     phase = json.loads(runner.global_phase_status_path.read_text())["phases"][
         "validated_optionb_environment"
     ]
-    assert cleanup_calls == ["example-xdc-05"]
-    assert payload["selected_xdc"]["short_name"] == "example-xdc-04"
+    assert cleanup_calls == ["distribution-xdc-a"]
+    assert payload["selected_xdc"]["short_name"] == "distribution-xdc-b"
     assert phase["status"] == "completed"
-    assert phase["chosen_xdc"] == "example-xdc-04"
+    assert phase["chosen_xdc"] == "distribution-xdc-b"

@@ -202,7 +202,7 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         experiment_ref = "replace-with-local-experiment"
         _realization_ref = TEST_DISTRIBUTION_REALIZATION
         revision = "replace-with-local-revision"
-        _xdc_ref = "example-xdc-04"
+        _xdc_ref = "distribution-xdc-b"
 
     class FakeEnvironment:
         def __init__(self, _config):
@@ -237,8 +237,9 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
         def stop(self) -> None:
             return None
 
-    def fake_transport(*, timeout_sec: float = 20.0) -> str:
+    def fake_transport(*, merge_server: str | None = None, timeout_sec: float = 20.0) -> str:
         calls["whoami"] += 1
+        assert merge_server
         assert timeout_sec == 20.0
         return "live-user"
 
@@ -257,5 +258,6 @@ def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
 
     payload = json.loads(runner.optionb_validation_path.read_text())
     assert payload["status"] == "passed"
-    assert payload["preflight"]["merge_user"] == "live-user"
+    assert payload["preflight"]["mrg_whoami_ok"] is True
+    assert payload["preflight"]["realization_check_ok"] is True
     assert calls == {"whoami": 1, "show": 2}

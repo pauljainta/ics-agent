@@ -149,8 +149,8 @@ class ScriptedBlackBoxBaselineRunner:
     report_filename = "scripted_black_box_baseline_report.md"
     repo_note_filename = "scripted_black_box_baseline_note.md"
     default_repo_local_report_path = REPO_LOCAL_REPORT_PATH
-    preferred_xdc_short_names = ("example-xdc-05", "example-xdc-04")
-    candidate_xdc_prefix = "agenticwd"
+    preferred_xdc_short_names: tuple[str, ...] = ()
+    candidate_xdc_prefix = ""
     optionb_validation_scenario_id = "wd-attack-coordinated-grid-rws-delay"
     validation_attempt_timeout_sec = 480.0
 
@@ -1027,8 +1027,13 @@ class ScriptedBlackBoxBaselineRunner:
                 (REPO_ROOT / "models" / "local_models" / "qwen3.5-9b").resolve()
             )
 
-    def _check_mrg_transport(self, *, timeout_sec: float = 20.0) -> str:
-        command = ["mrg", "-s", "merge.example.invalid", "whoami"]
+    def _check_mrg_transport(
+        self, *, merge_server: str | None = None, timeout_sec: float = 20.0
+    ) -> str:
+        command = ["mrg"]
+        if merge_server:
+            command.extend(["-s", merge_server])
+        command.append("whoami")
         try:
             completed = subprocess.run(
                 command,
@@ -1167,16 +1172,19 @@ class ScriptedBlackBoxBaselineRunner:
         *,
         available_refs: list[str],
         configured_xdc: str,
+        preferred_xdcs: list[str] | tuple[str, ...] = (),
+        candidate_xdc_prefix: str = "",
     ) -> list[str]:
         names: list[str] = []
         available_short_names = sorted(
             {
                 ref.split(".", 1)[0]
                 for ref in available_refs
-                if ref.split(".", 1)[0].startswith(self.candidate_xdc_prefix)
+                if candidate_xdc_prefix
+                and ref.split(".", 1)[0].startswith(candidate_xdc_prefix)
             }
         )
-        for name in (*self.preferred_xdc_short_names, configured_xdc, *available_short_names):
+        for name in (*preferred_xdcs, configured_xdc, *available_short_names):
             short_name = str(name).strip()
             if short_name and short_name not in names:
                 names.append(short_name)
@@ -1249,30 +1257,29 @@ class ScriptedBlackBoxBaselineRunner:
         inspections: list[dict[str, Any]],
         configured_xdc: str,
     ) -> list[dict[str, Any]]:
-        by_short = {
-            str(entry.get("short_name")): entry
+        attached = [
+            entry
             for entry in inspections
-            if entry.get("available") and entry.get("healthy")
-        }
-        ordered: list[dict[str, Any]] = []
-        for short_name in ("example-xdc-05", "example-xdc-04"):
-            entry = by_short.get(short_name)
-            if entry is not None and entry.get("attached"):
-                ordered.append(entry)
-        if not ordered:
-            for short_name in ("example-xdc-05", "example-xdc-04", configured_xdc):
-                entry = by_short.get(short_name)
-                if entry is not None and entry not in ordered:
-                    ordered.append(entry)
-        for entry in inspections:
-            if (
-                entry.get("available")
-                and entry.get("healthy")
-                and entry.get("attached")
-                and entry not in ordered
-            ):
-                ordered.append(entry)
-        return ordered[:2]
+            if entry.get("available") and entry.get("healthy") and entry.get("attached")
+        ]
+        attached.sort(
+            key=lambda entry: (
+                entry.get("short_name") != configured_xdc,
+                str(entry.get("short_name", "")),
+            )
+        )
+        if attached:
+            return attached
+        detached = [
+            entry for entry in inspections if entry.get("available") and entry.get("healthy")
+        ]
+        detached.sort(
+            key=lambda entry: (
+                entry.get("short_name") != configured_xdc,
+                str(entry.get("short_name", "")),
+            )
+        )
+        return detached
 
     def _attempt_validation_path(self, xdc_short_name: str, attempt_index: int) -> Path:
         token = _sanitize_token(xdc_short_name) or f"attempt_{attempt_index}"
@@ -1488,7 +1495,9 @@ class ScriptedBlackBoxBaselineRunner:
             "status": "failed",
         }
         try:
-            merge_user = self._check_mrg_transport()
+            merge_user = self._check_mrg_transport(
+                merge_server=preflight_refs["merge_server"]
+            )
             realization_payload = self._check_mrg_show_json(
                 "realization",
                 preflight_refs["realization"],
@@ -1515,20 +1524,17 @@ class ScriptedBlackBoxBaselineRunner:
                 {
                     "status": "passed",
                     "preflight": {
-                        "merge_server": preflight_refs["merge_server"],
-                        "merge_user": merge_user,
-                        "realization_ref": preflight_refs["realization"],
-                        "materialization_ref": preflight_refs["materialization"],
-                        "realization": realization_payload,
-                        "materialization": materialization_payload,
+                        "merge_server_configured": bool(preflight_refs["merge_server"]),
+                        "mrg_whoami_ok": bool(merge_user),
+                        "realization_check_ok": bool(realization_payload),
+                        "materialization_check_ok": bool(materialization_payload),
                     },
                     "startup": startup,
                     "validated_target": {
-                        "experiment": backend.experiment_ref,
-                        "realization": backend._realization_ref,
-                        "revision": backend.revision,
-                        "xdc": backend._xdc_ref,
-                        "merge_user": merge_user,
+                        "experiment_configured": bool(backend.experiment_ref),
+                        "realization_configured": bool(backend._realization_ref),
+                        "revision_configured": bool(backend.revision),
+                        "xdc_configured": bool(backend._xdc_ref),
                     },
                     "smoke_validation": smoke_validation,
                     "reset_state": {
@@ -1585,12 +1591,17 @@ class ScriptedBlackBoxBaselineRunner:
         environment = dict(config.get("environment") or {})
         preflight_refs = self._required_preflight_refs(config)
         configured_xdc = str(environment.get("xdc", "")).strip()
+        discovery_allowed = bool(environment.get("allow_xdc_discovery", False))
+        preferred_xdcs = list(environment.get("preferred_xdcs") or self.preferred_xdc_short_names)
+        candidate_xdc_prefix = str(
+            environment.get("xdc_candidate_prefix") or self.candidate_xdc_prefix
+        ).strip()
         candidate_selection: dict[str, Any] = {
             "configured_xdc": configured_xdc,
-            "preferred_xdcs": list(self.preferred_xdc_short_names),
+            "preferred_xdcs": preferred_xdcs,
+            "xdc_discovery_allowed": discovery_allowed,
             "realization_ref": preflight_refs["realization"],
             "materialization_ref": preflight_refs["materialization"],
-            "prior_successful_distribution_xdc": "example-xdc-04",
         }
         final_result: dict[str, Any] = {
             "validated_at_utc": utc_now(),
@@ -1600,33 +1611,46 @@ class ScriptedBlackBoxBaselineRunner:
             "attempts": [],
         }
         try:
-            merge_user = self._check_mrg_transport()
-            candidate_selection["merge_user"] = merge_user
-            list_output, available_refs = self._listed_xdc_refs(
+            merge_user = self._check_mrg_transport(
                 merge_server=preflight_refs["merge_server"]
             )
-            candidate_selection["listed_xdcs"] = available_refs
-            candidate_selection["list_xdcs_output"] = list_output.strip()
-            candidate_short_names = self._candidate_xdc_short_names(
-                available_refs=available_refs,
-                configured_xdc=configured_xdc,
-            )
-            inspections = self._inspect_xdc_candidates(
-                candidate_short_names=candidate_short_names,
-                merge_server=preflight_refs["merge_server"],
-                merge_user=merge_user,
-                realization_ref=preflight_refs["realization"],
-            )
-            candidate_selection["inspected_xdcs"] = inspections
-            ordered_candidates = self._ordered_xdc_candidates(
-                inspections=inspections,
-                configured_xdc=configured_xdc,
-            )
-            if not ordered_candidates:
-                raise RuntimeError(
-                    "no healthy distribution XDC candidate is currently available for "
-                    f"`{preflight_refs['realization']}`"
+            candidate_selection["mrg_whoami_ok"] = bool(merge_user)
+            if discovery_allowed:
+                list_output, available_refs = self._listed_xdc_refs(
+                    merge_server=preflight_refs["merge_server"]
                 )
+                candidate_selection["listed_xdc_count"] = len(available_refs)
+                candidate_selection["xdc_candidate_prefix"] = candidate_xdc_prefix
+                candidate_short_names = self._candidate_xdc_short_names(
+                    available_refs=available_refs,
+                    configured_xdc=configured_xdc,
+                    preferred_xdcs=preferred_xdcs,
+                    candidate_xdc_prefix=candidate_xdc_prefix,
+                )
+                inspections = self._inspect_xdc_candidates(
+                    candidate_short_names=candidate_short_names,
+                    merge_server=preflight_refs["merge_server"],
+                    merge_user=merge_user,
+                    realization_ref=preflight_refs["realization"],
+                )
+                candidate_selection["inspected_xdc_count"] = len(inspections)
+                ordered_candidates = self._ordered_xdc_candidates(
+                    inspections=inspections,
+                    configured_xdc=configured_xdc,
+                )
+                if not ordered_candidates:
+                    raise RuntimeError(
+                        "no healthy distribution XDC candidate is currently available for "
+                        f"`{preflight_refs['realization']}`"
+                    )
+            else:
+                ordered_candidates = [
+                    {
+                        "short_name": configured_xdc,
+                        "ref": self._qualified_xdc_ref(configured_xdc, merge_user),
+                        "configured_only": True,
+                    }
+                ]
             for attempt_index, candidate in enumerate(ordered_candidates, start=1):
                 short_name = str(candidate.get("short_name", "")).strip()
                 candidate_selection["chosen_xdc"] = short_name

@@ -17,23 +17,9 @@ study_metadata:
     - Reuses the current full agentic defender with concrete runtime containment unchanged
     - This pass is a scripted attacker-baseline comparison and does not replace the LLM attacker results
 environment:
-  testbed: water_distribution
   backend: sphere_openplc
-  merge_server: merge.example.invalid
-  experiment: openplcwater.lgarcia
-  realization: example-realization-02
-  revision: ac79757fe0d3f8e98bbfa43a303fee121b88be05
-  xdc: example-xdc-04
-  keep_running: true
-  start_bridge: true
-  remote_bind_host: 0.0.0.0
-  controller_port: 2502
-  simulator_port: 2503
-  access_host: access
-  engineering_host: engineering
-  remote_roles: {}
-  reset_wait_sec: 1.5
-  loop_sleep_sec: 0.05
+  testbed: water_distribution
+  infrastructure_profile: water_distribution
 conditions:
   - name: scripted_white_box_attacker__agentic_defender
     profiles:
@@ -46,7 +32,14 @@ conditions:
     profile_overrides:
       defender:
         allowed_action_types:
-          [hmi_stop, hmi_estop, disable_hmi_session, isolate_engineering_host, block_sensor_write, block_actuator_write, quarantine_signal_source, noop]
+          - hmi_stop
+          - hmi_estop
+          - disable_hmi_session
+          - isolate_engineering_host
+          - block_sensor_write
+          - block_actuator_write
+          - quarantine_signal_source
+          - noop
         knowledge_files:
           - testbeds/water_distribution/knowledge/shared_testbed_manual.md
           - testbeds/water_distribution/knowledge/defender_manual.md

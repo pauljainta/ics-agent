@@ -47,8 +47,8 @@ TESTBEDS: dict[str, TestbedSpec] = {
         support_root=REPO_ROOT / "testbeds" / "water_distribution" / "openplc",
         prompt_root=REPO_ROOT / "testbeds" / "water_distribution" / "prompts",
         knowledge_root=REPO_ROOT / "testbeds" / "water_distribution" / "knowledge",
-        canonical_sphere_realization="example-realization-02",
-        canonical_sphere_deployment_name="example-realization-02",
+        canonical_sphere_realization=None,
+        canonical_sphere_deployment_name=None,
         primary_process_id="WD-UC0",
     ),
 }
