@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from copy import deepcopy
 from dataclasses import dataclass
@@ -429,6 +430,84 @@ def _prepare_configs(
     return generated
 
 
+def _sphere_merge_server(config_path: Path) -> str | None:
+    config = load_config(config_path)
+    environment = dict(config.get("environment") or {})
+    if str(environment.get("backend", "")).strip() != "sphere_openplc":
+        return None
+    return str(environment.get("merge_server", "")).strip() or None
+
+
+def _require_mrg_auth(config_paths: list[Path]) -> dict[str, Any]:
+    merge_servers = {
+        server
+        for config_path in config_paths
+        if (server := _sphere_merge_server(config_path))
+    }
+    if not merge_servers:
+        return {"required": False, "status": "skipped"}
+    if len(merge_servers) != 1:
+        raise ConfigError(
+            "model-variant run selected multiple Merge servers; split the run first"
+        )
+    mrg_path = shutil.which("mrg")
+    if mrg_path is None:
+        raise ConfigError("SPHERE backend requires `mrg`, but it was not found on PATH")
+    merge_server = next(iter(merge_servers))
+    command = [mrg_path, "-s", merge_server, "whoami"]
+    completed = subprocess.run(command, text=True, capture_output=True)
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or completed.stdout.strip()
+        raise ConfigError(
+            "SPHERE/MRG authentication is not active. Run `mrg login` first, "
+            "then rerun the same model-variant command. "
+            f"Preflight failed with: {stderr}"
+        )
+    return {
+        "required": True,
+        "status": "passed",
+        "merge_server": merge_server,
+        "identity": completed.stdout.strip(),
+    }
+
+
+def _purge_failed_or_incomplete_runs(
+    *,
+    model: ModelVariant,
+    testbed: TestbedVariant,
+    family_names: set[str] | None,
+) -> list[dict[str, Any]]:
+    experiment_root = _result_model_root(model) / testbed.result_experiment_name
+    selected_families = family_names or {
+        family.family_name for family in testbed.family_configs
+    }
+    removed: list[dict[str, Any]] = []
+    for family_name in sorted(selected_families):
+        family_root = experiment_root / family_name
+        if not family_root.exists():
+            continue
+        for trial_dir in sorted(family_root.glob("*/*/trial-*")):
+            summary_path = trial_dir / "summary.json"
+            keep = False
+            if summary_path.exists():
+                try:
+                    summary = json.loads(summary_path.read_text())
+                    keep = isinstance(summary, dict) and summary.get("status") == "completed"
+                except Exception:
+                    keep = False
+            if keep:
+                continue
+            shutil.rmtree(trial_dir)
+            removed.append(
+                {
+                    "family": family_name,
+                    "run_dir": portable_path(trial_dir),
+                    "reason": "removed failed or incomplete trial before resume",
+                }
+            )
+    return removed
+
+
 def smoke(
     *,
     model: ModelVariant,
@@ -474,6 +553,7 @@ def run_experiments(
     model: ModelVariant,
     testbed: TestbedVariant,
     family_names: set[str] | None = None,
+    skip_environment_preflight: bool = False,
 ) -> dict[str, Any]:
     generated = _prepare_configs(model=model, testbed=testbed)
     selected = [
@@ -483,6 +563,17 @@ def run_experiments(
     ]
     if not selected:
         raise ConfigError("no family configs selected")
+
+    preflight = (
+        {"required": False, "status": "skipped_by_user"}
+        if skip_environment_preflight
+        else _require_mrg_auth([path for _, path in selected])
+    )
+    removed_failed_runs = _purge_failed_or_incomplete_runs(
+        model=model,
+        testbed=testbed,
+        family_names={family.family_name for family, _ in selected},
+    )
 
     env_before = {key: os.environ.get(key) for key in _model_env(model)}
     os.environ.update(_model_env(model))
@@ -516,6 +607,8 @@ def run_experiments(
             "model_id": model.model_id,
             "testbed": testbed.key,
             "seed": SEED,
+            "environment_preflight": preflight,
+            "removed_failed_or_incomplete_runs": removed_failed_runs,
             "runs": suite_runs,
         }
         run_path = (
@@ -562,6 +655,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         help="Optional family name to run. Repeat to select multiple families.",
     )
+    parser.add_argument(
+        "--skip-environment-preflight",
+        action="store_true",
+        help="Skip the SPHERE/MRG auth preflight before full runs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -581,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
                 model=model,
                 testbed=testbed,
                 family_names=set(args.family) if args.family else None,
+                skip_environment_preflight=bool(args.skip_environment_preflight),
             )
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if payload.get("status") in {"passed", "completed"} else 1
