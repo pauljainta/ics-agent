@@ -708,12 +708,15 @@ class CachedQwenDecisionEngine:
 
         selected["action"] = action
         selected.setdefault("summary", f"Agentic {self.role} assessment")
-        selected.setdefault("confidence", 0.55)
+        selected["confidence"] = self._coerce_confidence(
+            selected.get("confidence"),
+            default=0.55,
+        )
         selected["diagnosis"] = self._normalize_diagnosis(selected.get("diagnosis"))
-        labels = selected.get("labels", ["agentic", self.role])
-        if not isinstance(labels, list):
-            labels = [str(labels)]
-        selected["labels"] = [str(label) for label in labels]
+        selected["labels"] = self._coerce_labels(
+            selected.get("labels"),
+            default=["agentic", self.role],
+        )
         selected.setdefault(
             "decision_type",
             "analysis" if self.role == "offline_analysis" else "note",
@@ -1044,9 +1047,15 @@ class AgenticRoleAgent(RoleAgent):
                 decision_type="analysis",
                 summary=str(payload.get("summary", "Agentic offline analysis")),
                 time_sec=float(context.get("duration_sec", 0.0)),
-                confidence=float(payload.get("confidence", 0.7)),
+                confidence=self._coerce_confidence(
+                    payload.get("confidence"),
+                    default=0.7,
+                ),
                 diagnosis=payload.get("diagnosis"),
-                labels=list(payload.get("labels", ["offline", "agentic"])),
+                labels=self._coerce_labels(
+                    payload.get("labels"),
+                    default=["offline", "agentic"],
+                ),
                 metadata={
                     "backend": self.engine.last_mode,
                     "error": self.engine.last_error,
@@ -11967,9 +11976,15 @@ class AgenticRoleAgent(RoleAgent):
             summary=summary or f"{self.role} decision",
             time_sec=now,
             action=action,
-            confidence=float(payload.get("confidence", 0.65)),
+            confidence=self._coerce_confidence(
+                payload.get("confidence"),
+                default=0.65,
+            ),
             diagnosis=payload.get("diagnosis"),
-            labels=list(payload.get("labels", ["agentic", self.role])),
+            labels=self._coerce_labels(
+                payload.get("labels"),
+                default=["agentic", self.role],
+            ),
             metadata={
                 "backend": self.engine.last_mode,
                 "error": self.engine.last_error,
@@ -12458,6 +12473,21 @@ class AgenticRoleAgent(RoleAgent):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _coerce_confidence(cls, value: Any, *, default: float) -> float:
+        numeric = cls._coerce_number(value)
+        if numeric is None:
+            return float(default)
+        return max(0.0, min(1.0, float(numeric)))
+
+    @staticmethod
+    def _coerce_labels(value: Any, *, default: list[str]) -> list[str]:
+        if value is None:
+            return list(default)
+        if isinstance(value, list):
+            return [str(label) for label in value if label is not None]
+        return [str(value)]
 
     def _compact_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
         fields = ["timestamp_utc", "elapsed_sec", "sample_phase"]
