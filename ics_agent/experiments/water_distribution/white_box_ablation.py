@@ -7,15 +7,15 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import water_distribution_seeded_backbone as seeded_backbone
-from .config import resolve_repo_path
-from .environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from .mitre import verify_optionb_staged_snapshot
-from .orchestrator import ExperimentOrchestrator
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_csv, write_json
-from .utils import utc_now
-from .water_distribution_seeded_backbone import (
+from . import seeded_backbone as seeded_backbone
+from ...config import resolve_repo_path
+from ...environment import OpenPLCEnvironment, _SphereOpenPLCBackend
+from ...mitre import verify_optionb_staged_snapshot
+from ...orchestrator import ExperimentOrchestrator
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
+from ...reporting import write_csv, write_json
+from ...utils import utc_now
+from .seeded_backbone import (
     CONTAINMENT_SEMANTICS_VERSION,
     FamilySpec,
     SeededBackboneRunner,
@@ -106,8 +106,7 @@ ACTION_SPACE_SOURCE_PATHS = [
     / "openplc"
     / "configs"
     / "openplc_map.yaml",
-    REPO_ROOT / "configs" / "agent_profiles.yaml",
-    REPO_ROOT / "configs" / "agent_profiles_overrides.yaml",
+    *seeded_backbone.PROFILE_REGISTRY_PATHS,
     *CONFIG_PATHS,
 ]
 TOP_LEVEL_PHASES = [
@@ -193,13 +192,10 @@ class WhiteBoxAblationRunner(SeededBackboneRunner):
 
     def _prompt_hash_payload(self) -> dict[str, Any]:
         orchestrator = self._orchestrator()
-        agent_profiles_path = REPO_ROOT / "configs" / "agent_profiles.yaml"
-        profiles_overrides_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
         tracked_paths = [
             ABLATED_PROMPT_PATH,
             DEFENDER_PROMPT_PATH,
-            agent_profiles_path,
-            profiles_overrides_path,
+            *seeded_backbone.PROFILE_REGISTRY_PATHS,
             *CONFIG_PATHS,
         ]
         file_hashes = {
@@ -221,10 +217,10 @@ class WhiteBoxAblationRunner(SeededBackboneRunner):
             bundle = {
                 "attacker_prompt": file_hashes[portable_path(ABLATED_PROMPT_PATH)],
                 "defender_prompt": file_hashes[portable_path(DEFENDER_PROMPT_PATH)],
-                "agent_profiles": file_hashes[portable_path(agent_profiles_path)],
-                "agent_profiles_overrides": file_hashes.get(
-                    portable_path(profiles_overrides_path)
-                ),
+                "profile_registries": {
+                    portable_path(path): file_hashes[portable_path(path)]
+                    for path in seeded_backbone.PROFILE_REGISTRY_PATHS
+                },
                 "experiment_config": file_hashes[portable_path(family.config_path)],
                 "knowledge_files": manual_hashes,
             }

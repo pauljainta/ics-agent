@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_treatment_seeded_backbone import (
+from ics_agent.experiments.water_treatment.seeded_backbone import (
     TESTBED_ID,
     _format_mean_std,
     _normalize_csv_rows,

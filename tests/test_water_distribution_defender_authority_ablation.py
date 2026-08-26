@@ -5,7 +5,7 @@ from pathlib import Path
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_distribution_defender_authority_ablation import (
+from ics_agent.experiments.water_distribution.defender_authority_ablation import (
     AUTHORITY_CONFIG_PATHS,
     AUTHORITY_FAMILY_SPECS,
     AUTHORITY_RESULT_ROOT,

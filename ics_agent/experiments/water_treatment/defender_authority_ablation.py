@@ -8,13 +8,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .action_semantics import RUNTIME_ENFORCED_CONTAINMENT_ACTION_TYPES
-from .config import resolve_repo_path
-from .orchestrator import ExperimentOrchestrator
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_json
-from .utils import utc_now
-from . import water_treatment_seeded_backbone as seeded
+from ...action_semantics import RUNTIME_ENFORCED_CONTAINMENT_ACTION_TYPES
+from ...config import resolve_repo_path
+from ...orchestrator import ExperimentOrchestrator
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
+from ...reporting import write_json
+from ...utils import utc_now
+from . import seeded_backbone as seeded
 
 
 AUTHORITY_EXPERIMENT_VERSION = "water_treatment_defender_authority_ablation_seed101_v1"
@@ -497,13 +497,10 @@ class DefenderAuthorityAblationRunner(seeded.SeededBackboneRunner):
 
     def _prompt_hash_payload(self) -> dict[str, Any]:
         orchestrator = self._orchestrator()
-        agent_profiles_path = REPO_ROOT / "configs" / "agent_profiles.yaml"
-        profiles_overrides_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
         hashed_paths = {
             portable_path(path): seeded._sha256_path(path)
             for path in [
-                agent_profiles_path,
-                profiles_overrides_path,
+                *seeded.PROFILE_REGISTRY_PATHS,
                 *AUTHORITY_CONFIG_PATHS,
             ]
             if path.exists()
@@ -564,10 +561,10 @@ class DefenderAuthorityAblationRunner(seeded.SeededBackboneRunner):
                     portable_path(path): hashed_paths[portable_path(path)]
                     for path in knowledge_paths
                 },
-                "agent_profiles": hashed_paths[portable_path(agent_profiles_path)],
-                "agent_profiles_overrides": hashed_paths.get(
-                    portable_path(profiles_overrides_path)
-                ),
+                "profile_registries": {
+                    portable_path(path): hashed_paths[portable_path(path)]
+                    for path in seeded.PROFILE_REGISTRY_PATHS
+                },
                 "experiment_config": hashed_paths[portable_path(family.config_path)],
             }
             family_hashes[family.family_name] = {
@@ -1077,7 +1074,7 @@ class DefenderAuthorityAblationRunner(seeded.SeededBackboneRunner):
             command = [
                 python_exec,
                 "-m",
-                "ics_agent.water_treatment_defender_authority_ablation",
+                "ics_agent.experiments.water_treatment.defender_authority_ablation",
                 "worker",
                 "--family",
                 family.family_name,

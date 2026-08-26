@@ -13,7 +13,7 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
 
 from huggingface_hub import snapshot_download  # noqa: E402
 
-from ics_agent.model_variant_runner import MODEL_VARIANTS, _model_variant  # noqa: E402
+from ics_agent.experiments.model_variant_runner import MODEL_VARIANTS, _model_variant  # noqa: E402
 from ics_agent.paths import portable_path  # noqa: E402
 
 

@@ -12,17 +12,18 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .config import load_config, require_fields
-from .environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from .mitre import verify_optionb_staged_snapshot
-from .orchestrator import ExperimentOrchestrator
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_csv, write_json
-from .utils import dump_yaml, load_yaml, utc_now
-from .water_distribution_seeded_backbone import (
+from ...config import load_config, require_fields
+from ...environment import OpenPLCEnvironment, _SphereOpenPLCBackend
+from ...mitre import verify_optionb_staged_snapshot
+from ...orchestrator import ExperimentOrchestrator
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
+from ...reporting import write_csv, write_json
+from ...utils import dump_yaml, load_yaml, utc_now
+from .seeded_backbone import (
     ACTION_SPACE_SOURCE_PATHS,
     CONTAINMENT_SEMANTICS_VERSION,
     LEGACY_FAMILY_ROOTS,
+    PROFILE_REGISTRY_PATHS,
     REQUIRED_RUN_FILES,
     TESTBED_ID,
     FamilySpec,
@@ -79,7 +80,7 @@ REPO_LOCAL_REPORT_PATH = (
 )
 RESUME_COMPATIBLE_CONFIG_HASH_PATHS = {
     portable_path(
-        REPO_ROOT / "ics_agent" / "water_distribution_scripted_black_box_baseline.py"
+        REPO_ROOT / "ics_agent" / "experiments" / "water_distribution" / "scripted_black_box_baseline.py"
     ),
 }
 TOP_LEVEL_PHASES = [
@@ -370,10 +371,10 @@ class ScriptedBlackBoxBaselineRunner:
 
     def _config_hash_tracked_paths(self) -> list[Path]:
         return [
-            REPO_ROOT / "configs" / "agent_profiles.yaml",
+            *PROFILE_REGISTRY_PATHS,
             self.config_path,
             REPO_ROOT / "ics_agent" / "agents" / "agentic.py",
-            REPO_ROOT / "ics_agent" / "water_distribution_scripted_black_box_baseline.py",
+            REPO_ROOT / "ics_agent" / "experiments" / "water_distribution" / "scripted_black_box_baseline.py",
             REPO_ROOT / "testbeds" / "water_distribution" / "prompts" / "black_box_attacker.md",
             REPO_ROOT / "testbeds" / "water_distribution" / "prompts" / "defender.md",
             REPO_ROOT

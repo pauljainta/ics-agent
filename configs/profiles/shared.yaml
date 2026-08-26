@@ -1,0 +1,237 @@
+profiles:
+  scripted_attacker:
+    role: attacker
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
+  rule_based_attacker:
+    role: attacker
+    family: rule_based
+    mode: online
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - set_sensor
+    - noop
+  silent_attacker:
+    role: attacker
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - noop
+  scripted_defender:
+    role: defender
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - noop
+  rule_based_defender:
+    role: defender
+    family: rule_based
+    mode: online
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - noop
+    rules:
+    - id: rw-low-mitigation
+      once_per_run: true
+      when:
+        any:
+        - field: RW_Tank_Level
+          below: 450
+        - field: Alarm_RW_Tank_LL
+          equals: 1
+      alert: Raw-water level low; stop the plant before unsafe operation persists.
+      action_summary: Stop WT-P1 because raw-water low condition indicates fault or spoofing.
+      diagnosis: raw_water_low_or_spoof
+      action:
+        type: hmi_stop
+        process_id: WT-P1
+    - id: rw-high-high
+      once_per_run: true
+      when:
+        any:
+        - field: Alarm_RW_Tank_HH
+          equals: 1
+        - field: RW_Tank_Level
+          above: 1180
+      alert: Raw-water tank high-high condition observed.
+      action_summary: Emergency stop WT-P1 due to high-high raw-water condition.
+      diagnosis: raw_water_alarm_condition
+      action:
+        type: hmi_estop
+        process_id: WT-P1
+    - id: p2-unauthorized-dosing
+      once_per_run: true
+      when:
+        all:
+        - field: P2_Selected
+          equals: 1
+        - planned_role_action_absent:
+            role: operator
+            action:
+              process_id: WT-P2
+              type: select_process
+              active: true
+        - time_after_sec: 6
+      alert: Process 2 dosing remains active; deselect when not explicitly planned.
+      action_summary: Deselect Process 2 to constrain unauthorized chemical actuation.
+      diagnosis: unauthorized_chemical_dosing
+      action:
+        process_id: WT-P2
+        type: select_process
+        active: false
+  silent_defender:
+    role: defender
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - noop
+  rule_based_active_intervention_defender:
+    role: defender
+    family: rule_based
+    mode: online
+    knowledge_mode: white_box
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_actuator_write
+    - block_process2_manual_path
+    - quarantine_signal_source
+    - noop
+    behavior_model:
+      id: optionb_mitre_staged
+      policy: rule_based_defender
+      response_mode: active_intervention
+      notes: Deterministic active containment policy for MITRE-style staged attack runs.
+  rule_based_advisory_response_defender:
+    role: defender
+    family: rule_based
+    mode: online
+    knowledge_mode: white_box
+    allowed_action_types:
+    - noop
+    behavior_model:
+      id: optionb_mitre_staged
+      policy: rule_based_defender
+      response_mode: advisory_response
+      notes: Deterministic alert-only policy that recommends containment without executing it.
+  rule_based_latency_constrained_intervention_defender:
+    role: defender
+    family: rule_based
+    mode: online
+    knowledge_mode: white_box
+    allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_actuator_write
+    - block_process2_manual_path
+    - quarantine_signal_source
+    - noop
+    behavior_model:
+      id: optionb_mitre_staged
+      policy: rule_based_defender
+      response_mode: latency_constrained_intervention
+      notes: Deterministic containment policy with delayed runtime cutoff activation.
+    runtime_containment_activation_delay_steps: 2
+  scripted_observer:
+    role: observer
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - noop
+  rule_based_observer:
+    role: observer
+    family: rule_based
+    mode: online
+    allowed_action_types:
+    - noop
+    rules:
+    - id: observer-rw-low
+      once_per_run: true
+      when:
+        any:
+        - field: RW_Tank_Level
+          below: 450
+        - field: Alarm_RW_Tank_LL
+          equals: 1
+      alert: Observer flagged a raw-water low condition.
+      diagnosis: raw_water_low_or_spoof
+    - id: observer-rw-hh
+      once_per_run: true
+      when:
+        any:
+        - field: Alarm_RW_Tank_HH
+          equals: 1
+        - field: RW_Tank_Level
+          above: 1180
+      alert: Observer flagged a raw-water high-high condition.
+      diagnosis: raw_water_alarm_condition
+    - id: observer-p2
+      once_per_run: true
+      when:
+        all:
+        - field: P2_Selected
+          equals: 1
+        - planned_role_action_absent:
+            role: operator
+            action:
+              process_id: WT-P2
+              type: select_process
+              active: true
+        - time_after_sec: 6
+      alert: Observer detected sustained Process 2 actuation.
+      diagnosis: unauthorized_chemical_dosing
+  silent_observer:
+    role: observer
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - noop
+  scripted_planner:
+    role: planner
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - noop
+  scripted_operator:
+    role: operator
+    family: scripted
+    mode: online
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_reset
+    - hmi_estop
+    - select_process
+    - set_manual_valve
+    - noop
+  scripted_offline_analyst:
+    role: offline_analysis
+    family: scripted
+    mode: offline
+    allowed_action_types:
+    - noop

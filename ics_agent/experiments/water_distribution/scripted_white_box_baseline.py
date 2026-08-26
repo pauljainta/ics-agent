@@ -3,20 +3,21 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .water_treatment_scripted_black_box_baseline import (
+from ...environment import OpenPLCEnvironment, _SphereOpenPLCBackend
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
+from .scripted_black_box_baseline import (
     ScriptedBlackBoxBaselineRunner,
+    _read_json,
 )
-from .water_treatment_seeded_backbone import FamilySpec
+from .seeded_backbone import FamilySpec, PROFILE_REGISTRY_PATHS
 
 
-EXPERIMENT_VERSION = "water_treatment_scripted_white_box_baseline_v1"
+EXPERIMENT_VERSION = "water_distribution_scripted_white_box_baseline_v1"
 CANONICAL_RESULT_ROOT = (
     WORKSPACE_ROOT
     / "Artifact"
     / "Results"
-    / "Water-treatment"
+    / "water_distribution_openplc"
     / "scripted_baselines"
     / "white_box_attacker_vs_full_containment_defender"
 )
@@ -24,39 +25,39 @@ CONFIG_PATH = (
     REPO_ROOT
     / "configs"
     / "experiments"
-    / "water_treatment_scripted_white_box_attacker_vs_agentic_full_containment_defender.yaml"
+    / "water_distribution_scripted_white_box_vs_agentic_defender.yaml"
 )
 FAMILY_SPEC = FamilySpec(
     family_name="scripted_white_box_attacker__agentic_defender",
-    attacker_profile_id="scripted_white_box_treatment_attacker",
+    attacker_profile_id="scripted_white_box_distribution_attacker",
     knowledge_variant="white_box_scripted",
     config_path=CONFIG_PATH,
 )
 REPO_LOCAL_REPORT_PATH = (
     REPO_ROOT
     / "testbeds"
-    / "water_treatment"
+    / "water_distribution"
     / "docs"
     / "2026-08-20-scripted-white-box-baseline-pass.md"
 )
 RESUME_COMPATIBLE_CONFIG_HASH_PATHS = {
-    portable_path(REPO_ROOT / "ics_agent" / "water_treatment_scripted_white_box_baseline.py"),
+    portable_path(REPO_ROOT / "ics_agent" / "experiments" / "water_distribution" / "scripted_white_box_baseline.py"),
 }
 VALIDATION_TEST_PATHS = [
     "tests/test_agentic.py",
     "tests/test_orchestrator.py",
     "tests/test_metrics.py",
-    "tests/test_seeded_backbone.py",
+    "tests/test_water_distribution.py",
+    "tests/test_water_distribution_seeded_backbone.py",
     "tests/test_phase35_profiles.py",
-    "tests/test_defender_authority_ablation.py",
-    "tests/test_white_box_ablation.py",
-    "tests/test_scripted_white_box_baseline.py",
+    "tests/test_water_distribution_white_box_ablation.py",
+    "tests/test_water_distribution_scripted_white_box_baseline.py",
 ]
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run or resume the water-treatment scripted white-box baseline."
+        description="Run or resume the water-distribution scripted white-box baseline."
     )
     subparsers = parser.add_subparsers(dest="mode")
 
@@ -98,7 +99,7 @@ class ScriptedWhiteBoxBaselineRunner(ScriptedBlackBoxBaselineRunner):
     resume_compatible_config_hash_paths = RESUME_COMPATIBLE_CONFIG_HASH_PATHS
     report_filename = "scripted_white_box_baseline_report.md"
     repo_note_filename = "scripted_white_box_baseline_note.md"
-    repo_local_report_path = REPO_LOCAL_REPORT_PATH
+    default_repo_local_report_path = REPO_LOCAL_REPORT_PATH
 
     def _optionb_environment_cls(self):
         return OpenPLCEnvironment
@@ -108,13 +109,16 @@ class ScriptedWhiteBoxBaselineRunner(ScriptedBlackBoxBaselineRunner):
 
     def _config_hash_tracked_paths(self) -> list[Path]:
         return [
-            REPO_ROOT / "configs" / "agent_profiles.yaml",
+            *PROFILE_REGISTRY_PATHS,
             self.config_path,
             REPO_ROOT / "ics_agent" / "agents" / "agentic.py",
-            REPO_ROOT / "ics_agent" / "water_treatment_scripted_white_box_baseline.py",
-            REPO_ROOT / "configs" / "prompts" / "white_box_attacker_optionb_mitre.md",
-            REPO_ROOT / "configs" / "prompts" / "defender_optionb_mitre.md",
-            REPO_ROOT / "configs" / "prompts" / "observer_optionb_mitre.md",
+            REPO_ROOT / "ics_agent" / "experiments" / "water_distribution" / "scripted_white_box_baseline.py",
+            REPO_ROOT / "testbeds" / "water_distribution" / "prompts" / "white_box_attacker.md",
+            REPO_ROOT / "testbeds" / "water_distribution" / "prompts" / "defender.md",
+            REPO_ROOT
+            / "configs"
+            / "experiments"
+            / "water_distribution_white_box_vs_agentic_defender.yaml",
         ]
 
     def _report_lines(self) -> list[str]:
@@ -129,8 +133,9 @@ class ScriptedWhiteBoxBaselineRunner(ScriptedBlackBoxBaselineRunner):
         )
         return lines
 
-    def _repo_note_lines(self, resume_state: dict[str, object]) -> list[str]:
-        return [
+    def write_repo_note(self) -> None:
+        resume_state = _read_json(self.resume_state_path, {})
+        lines = [
             "# Scripted White-Box Baseline Note",
             "",
             f"- Experiment version: `{self.experiment_version}`",
@@ -143,9 +148,10 @@ class ScriptedWhiteBoxBaselineRunner(ScriptedBlackBoxBaselineRunner):
             f"- Scenarios rerun after interruption: `{'true' if resume_state.get('scenarios_rerun_after_interruption') else 'false'}`",
             f"- All {self.runs_per_seed} runs completed: `{'true' if resume_state.get('completed_runs') == self.runs_per_seed else 'false'}`",
             "- The attacker baseline is deterministic and does not invoke an LLM at runtime.",
-            "- Defender and observer remained the current agentic full-containment stack.",
-            "- Water-distribution execution is handled by the separate distribution scripted white-box runner.",
+            "- Defender remained the current full-containment distribution stack.",
+            "- Existing LLM attacker and defender families were left intact.",
         ]
+        self.repo_note_path.write_text("\n".join(lines) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -136,10 +136,11 @@ def _distribution_black_box_context(profile: dict[str, object]) -> dict[str, obj
 
 
 def test_phase35_profiles_remain_black_box_and_keep_expected_knowledge_files() -> None:
-    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
+    treatment_orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    distribution_orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
 
-    treatment = orchestrator.agent_profiles[TREATMENT_PROFILE_ID]
-    distribution = orchestrator.agent_profiles[DISTRIBUTION_PROFILE_ID]
+    treatment = treatment_orchestrator.agent_profiles[TREATMENT_PROFILE_ID]
+    distribution = distribution_orchestrator.agent_profiles[DISTRIBUTION_PROFILE_ID]
 
     assert treatment["knowledge_mode"] == "black_box"
     assert distribution["knowledge_mode"] == "black_box"

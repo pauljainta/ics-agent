@@ -17,17 +17,18 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Iterable
 
-from .config import ConfigError, load_config, require_fields
-from .environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from .mitre import verify_optionb_staged_snapshot
-from .orchestrator import ExperimentOrchestrator
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_csv, write_json
-from .scenarios import ScenarioCatalog
-from .utils import dump_yaml, load_yaml, utc_now
+from ...config import ConfigError, load_config, require_fields
+from ...environment import OpenPLCEnvironment, _SphereOpenPLCBackend
+from ...mitre import verify_optionb_staged_snapshot
+from ...orchestrator import ExperimentOrchestrator
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path, profile_registry_paths
+from ...reporting import write_csv, write_json
+from ...scenarios import ScenarioCatalog
+from ...utils import dump_yaml, load_yaml, utc_now
 
 
 TESTBED_ID = "water_distribution"
+PROFILE_REGISTRY_PATHS = profile_registry_paths(TESTBED_ID)
 EXPERIMENT_VERSION = "water_distribution_seeded_backbone_qwen35_9b_v1"
 CONTAINMENT_SEMANTICS_VERSION = "current_concrete_containment"
 CANONICAL_RESULT_ROOT = (
@@ -94,8 +95,7 @@ ACTION_SPACE_SOURCE_PATHS = [
     / "openplc"
     / "configs"
     / "openplc_map.yaml",
-    REPO_ROOT / "configs" / "agent_profiles.yaml",
-    REPO_ROOT / "configs" / "agent_profiles_overrides.yaml",
+    *PROFILE_REGISTRY_PATHS,
     *FROZEN_CONFIG_PATHS,
 ]
 REQUIRED_RUN_FILES = (
@@ -526,7 +526,7 @@ class SeededBackboneRunner:
         quoted_stdout = shlex.quote(str(self.controller_stdout_path))
         return (
             f"cd {quoted_repo} && "
-            f"{quoted_python} -u -m ics_agent.water_distribution_seeded_backbone "
+            f"{quoted_python} -u -m ics_agent.experiments.water_distribution.seeded_backbone "
             f"controller --result-root {quoted_result_root} "
             f"2>&1 | tee -a {quoted_stdout}"
         )
@@ -724,14 +724,11 @@ class SeededBackboneRunner:
         }
 
     def _prompt_hash_payload(self) -> dict[str, Any]:
-        agent_profiles_path = REPO_ROOT / "configs" / "agent_profiles.yaml"
-        profiles_overrides_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
         file_hashes = {
             portable_path(path): _sha256_path(path)
             for path in [
                 *FROZEN_PROMPT_PATHS,
-                agent_profiles_path,
-                profiles_overrides_path,
+                *PROFILE_REGISTRY_PATHS,
                 *FROZEN_CONFIG_PATHS,
             ]
             if path.exists()
@@ -747,10 +744,10 @@ class SeededBackboneRunner:
             bundle = {
                 "attacker_prompt": file_hashes[portable_path(prompt_path)],
                 "defender_prompt": file_hashes[portable_path(FROZEN_PROMPT_PATHS[3])],
-                "agent_profiles": file_hashes[portable_path(agent_profiles_path)],
-                "agent_profiles_overrides": file_hashes.get(
-                    portable_path(profiles_overrides_path)
-                ),
+                "profile_registries": {
+                    portable_path(path): file_hashes[portable_path(path)]
+                    for path in PROFILE_REGISTRY_PATHS
+                },
                 "experiment_config": file_hashes[portable_path(family.config_path)],
             }
             family_hashes[family.family_name] = {
@@ -1857,7 +1854,7 @@ class SeededBackboneRunner:
                 command = [
                     python_exec,
                     "-m",
-                    "ics_agent.water_distribution_seeded_backbone",
+                    "ics_agent.experiments.water_distribution.seeded_backbone",
                     "worker",
                     "--family",
                     family.family_name,

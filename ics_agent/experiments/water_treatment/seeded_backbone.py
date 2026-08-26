@@ -16,17 +16,18 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Iterable
 
-from .config import ConfigError, load_config, require_fields
-from .environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from .mitre import verify_optionb_staged_snapshot
-from .orchestrator import ExperimentOrchestrator
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_csv, write_json
-from .scenarios import ScenarioCatalog
-from .utils import dump_yaml, load_yaml, stable_hash, utc_now
+from ...config import ConfigError, load_config, require_fields
+from ...environment import OpenPLCEnvironment, _SphereOpenPLCBackend
+from ...mitre import verify_optionb_staged_snapshot
+from ...orchestrator import ExperimentOrchestrator
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path, profile_registry_paths
+from ...reporting import write_csv, write_json
+from ...scenarios import ScenarioCatalog
+from ...utils import dump_yaml, load_yaml, stable_hash, utc_now
 
 
 TESTBED_ID = "water_treatment"
+PROFILE_REGISTRY_PATHS = profile_registry_paths(TESTBED_ID)
 EXPERIMENT_VERSION = "water_treatment_seeded_backbone_qwen35_9b_v1"
 CONTAINMENT_SEMANTICS_VERSION = "current_concrete_containment"
 MODEL_LABEL = "Qwen3.5-9B-local-bf16"
@@ -59,11 +60,11 @@ LEGACY_RESULT_ROOTS = [
     / "DefendervsWhiteBoxAttackerConcreteContainment",
 ]
 FROZEN_PROMPT_PATHS = [
-    REPO_ROOT / "configs" / "prompts" / "black_box_attacker_optionb_mitre.md",
-    REPO_ROOT / "configs" / "prompts" / "gray_box_attacker_optionb_mitre.md",
-    REPO_ROOT / "configs" / "prompts" / "white_box_attacker_optionb_mitre.md",
-    REPO_ROOT / "configs" / "prompts" / "defender_optionb_mitre.md",
-    REPO_ROOT / "configs" / "prompts" / "observer_optionb_mitre.md",
+    REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "black_box_attacker.md",
+    REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "gray_box_attacker.md",
+    REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "white_box_attacker.md",
+    REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "defender.md",
+    REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "observer.md",
 ]
 FROZEN_CONFIG_PATHS = [
     REPO_ROOT
@@ -83,8 +84,7 @@ ACTION_SPACE_SOURCE_PATHS = [
     REPO_ROOT / "ics_agent" / "action_semantics.py",
     REPO_ROOT / "ics_agent" / "environment.py",
     REPO_ROOT / "ics_agent" / "orchestrator.py",
-    REPO_ROOT / "configs" / "agent_profiles.yaml",
-    REPO_ROOT / "configs" / "agent_profiles_overrides.yaml",
+    *PROFILE_REGISTRY_PATHS,
     *FROZEN_CONFIG_PATHS,
 ]
 REQUIRED_RUN_FILES = (
@@ -584,14 +584,11 @@ class SeededBackboneRunner:
         }
 
     def _prompt_hash_payload(self) -> dict[str, Any]:
-        agent_profiles_path = REPO_ROOT / "configs" / "agent_profiles.yaml"
-        profiles_overrides_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
         file_hashes = {
             portable_path(path): _sha256_path(path)
             for path in [
                 *FROZEN_PROMPT_PATHS,
-                agent_profiles_path,
-                profiles_overrides_path,
+                *PROFILE_REGISTRY_PATHS,
                 *FROZEN_CONFIG_PATHS,
             ]
             if path.exists()
@@ -607,10 +604,10 @@ class SeededBackboneRunner:
                 "attacker_prompt": file_hashes[portable_path(prompt_path)],
                 "defender_prompt": file_hashes[portable_path(FROZEN_PROMPT_PATHS[3])],
                 "observer_prompt": file_hashes[portable_path(FROZEN_PROMPT_PATHS[4])],
-                "agent_profiles": file_hashes[portable_path(agent_profiles_path)],
-                "agent_profiles_overrides": (
-                    file_hashes.get(portable_path(profiles_overrides_path))
-                ),
+                "profile_registries": {
+                    portable_path(path): file_hashes[portable_path(path)]
+                    for path in PROFILE_REGISTRY_PATHS
+                },
                 "experiment_config": file_hashes[portable_path(family.config_path)],
             }
             family_hashes[family.family_name] = {
@@ -1549,7 +1546,7 @@ class SeededBackboneRunner:
                 command = [
                     python_exec,
                     "-m",
-                    "ics_agent.water_treatment_seeded_backbone",
+                    "ics_agent.experiments.water_treatment.seeded_backbone",
                     "worker",
                     "--family",
                     family.family_name,

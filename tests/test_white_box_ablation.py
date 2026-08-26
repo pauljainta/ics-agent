@@ -7,7 +7,7 @@ from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.paths import REPO_ROOT
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_treatment_white_box_ablation import FAMILY_SPECS
+from ics_agent.experiments.water_treatment.white_box_ablation import FAMILY_SPECS
 from ics_agent.utils import load_yaml
 
 

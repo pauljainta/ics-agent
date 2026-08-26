@@ -6,7 +6,7 @@ from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_distribution_domain_ablation import (
+from ics_agent.experiments.water_distribution.domain_ablation import (
     BLACK_BOX_RUNTIME_NOTE,
     DOMAIN_CONFIG_PATH,
     DOMAIN_FAMILY_SPEC,

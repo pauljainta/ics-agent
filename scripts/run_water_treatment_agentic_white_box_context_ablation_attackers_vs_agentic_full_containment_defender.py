@@ -9,7 +9,7 @@ SCRIPT_REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(SCRIPT_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_REPO_ROOT))
 
-from ics_agent.water_treatment_white_box_ablation import main
+from ics_agent.experiments.water_treatment.white_box_ablation import main
 
 
 if __name__ == "__main__":

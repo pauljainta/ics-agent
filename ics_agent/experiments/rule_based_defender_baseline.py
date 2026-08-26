@@ -6,16 +6,16 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_json
-from .water_distribution_scripted_black_box_baseline import (
+from ..paths import REPO_ROOT, WORKSPACE_ROOT, portable_path, profile_registry_paths
+from ..reporting import write_json
+from .water_distribution.scripted_black_box_baseline import (
     ScriptedBlackBoxBaselineRunner as DistributionBaselineRunner,
 )
-from .water_distribution_seeded_backbone import FamilySpec as DistributionFamilySpec
-from .water_treatment_scripted_black_box_baseline import (
+from .water_distribution.seeded_backbone import FamilySpec as DistributionFamilySpec
+from .water_treatment.scripted_black_box_baseline import (
     ScriptedBlackBoxBaselineRunner as TreatmentBaselineRunner,
 )
-from .water_treatment_seeded_backbone import FamilySpec as TreatmentFamilySpec
+from .water_treatment.seeded_backbone import FamilySpec as TreatmentFamilySpec
 
 
 SEED = 101
@@ -131,9 +131,13 @@ def _parse_result_root_tokens(result_root: Path) -> tuple[str, str]:
 
 def _resume_compatible_hash_paths() -> set[str]:
     return {
-        portable_path(REPO_ROOT / "configs" / "agent_profiles.yaml"),
+        *[
+            portable_path(path)
+            for testbed in ("water_treatment", "water_distribution")
+            for path in profile_registry_paths(testbed)
+        ],
         portable_path(REPO_ROOT / "ics_agent" / "agents" / "rule_based.py"),
-        portable_path(REPO_ROOT / "ics_agent" / "rule_based_defender_baseline.py"),
+        portable_path(REPO_ROOT / "ics_agent" / "experiments" / "rule_based_defender_baseline.py"),
     }
 
 
@@ -216,7 +220,7 @@ class RuleBasedDefenderRunnerMixin:
         paths.extend(
             [
                 REPO_ROOT / "ics_agent" / "agents" / "rule_based.py",
-                REPO_ROOT / "ics_agent" / "rule_based_defender_baseline.py",
+                REPO_ROOT / "ics_agent" / "experiments" / "rule_based_defender_baseline.py",
             ]
         )
         return paths

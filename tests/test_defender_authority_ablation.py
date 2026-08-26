@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
-from ics_agent.water_treatment_defender_authority_ablation import (
+from ics_agent.experiments.water_treatment.defender_authority_ablation import (
     AUTHORITY_CONFIG_PATHS,
     AUTHORITY_FAMILY_SPECS,
     AUTHORITY_RESULT_ROOT,
@@ -13,7 +13,7 @@ from ics_agent.water_treatment_defender_authority_ablation import (
     DefenderAuthorityAblationRunner,
     _condition_metric_row,
 )
-from ics_agent import water_treatment_seeded_backbone as seeded
+from ics_agent.experiments.water_treatment import seeded_backbone as seeded
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

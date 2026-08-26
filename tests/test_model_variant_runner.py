@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ics_agent import model_variant_runner as runner
+from ics_agent.experiments import model_variant_runner as runner
 
 
 def _write_summary(path: Path, *, status: str) -> None:

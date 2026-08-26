@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ics_agent.agents.rule_based import RuleBasedRoleAgent
-from ics_agent.rule_based_defender_baseline import (
+from ics_agent.experiments.rule_based_defender_baseline import (
     DEFENDER_MODE_SPECS,
     DistributionRuleBasedDefenderRunner,
     TreatmentRuleBasedDefenderRunner,

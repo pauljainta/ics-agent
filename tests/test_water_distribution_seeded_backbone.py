@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_distribution_seeded_backbone import (
+from ics_agent.experiments.water_distribution.seeded_backbone import (
     DEFAULT_TMUX_SESSION_NAME,
     SeededBackboneRunner,
     TESTBED_ID,
@@ -70,14 +70,14 @@ def test_distribution_launch_controller_uses_detached_tmux(
     runner = SeededBackboneRunner(tmp_path / "seeded_backbone_qwen35_9b")
     calls: list[list[str]] = []
 
-    monkeypatch.setattr("ics_agent.water_distribution_seeded_backbone.shutil.which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
+    monkeypatch.setattr("ics_agent.experiments.water_distribution.seeded_backbone.shutil.which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
     monkeypatch.setattr(runner, "_tmux_session_exists", lambda session_name: False)
 
     def fake_run(command, text=True, capture_output=True):
         calls.append(list(command))
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("ics_agent.water_distribution_seeded_backbone.subprocess.run", fake_run)
+    monkeypatch.setattr("ics_agent.experiments.water_distribution.seeded_backbone.subprocess.run", fake_run)
 
     result = runner.launch_controller("wd_seeded_backbone_test")
 
@@ -86,7 +86,7 @@ def test_distribution_launch_controller_uses_detached_tmux(
     assert calls[0][:4] == ["/usr/bin/tmux", "new-session", "-d", "-s"]
     assert calls[0][4] == "wd_seeded_backbone_test"
     launch_command = calls[0][5]
-    assert "ics_agent.water_distribution_seeded_backbone controller" in launch_command
+    assert "ics_agent.experiments.water_distribution.seeded_backbone controller" in launch_command
     assert str(runner.result_root) in launch_command
     assert str(runner.controller_stdout_path) in launch_command
     assert runner.launcher_state_path.exists()

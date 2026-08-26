@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-import ics_agent.water_treatment_scripted_white_box_baseline as scripted_baseline
+import ics_agent.experiments.water_treatment.scripted_white_box_baseline as scripted_baseline
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_treatment_scripted_white_box_baseline import (
+from ics_agent.experiments.water_treatment.scripted_white_box_baseline import (
     CANONICAL_RESULT_ROOT,
     CONFIG_PATH,
     FAMILY_SPEC,
@@ -321,14 +321,14 @@ def test_resume_compatible_config_hash_update_allows_runner_only_drift() -> None
         "experiment_version": ScriptedWhiteBoxBaselineRunner.experiment_version,
         "file_hashes": {
             runner_path: "old-runner-hash",
-            "configs/agent_profiles.yaml": "shared-hash",
+            "configs/profiles/shared.yaml": "shared-hash",
         },
     }
     expected_payload = {
         "experiment_version": ScriptedWhiteBoxBaselineRunner.experiment_version,
         "file_hashes": {
             runner_path: "new-runner-hash",
-            "configs/agent_profiles.yaml": "shared-hash",
+            "configs/profiles/shared.yaml": "shared-hash",
         },
     }
 

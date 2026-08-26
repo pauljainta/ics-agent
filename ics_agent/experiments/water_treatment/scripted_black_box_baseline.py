@@ -12,17 +12,18 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .config import load_config, require_fields
-from .environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from .mitre import verify_optionb_staged_snapshot
-from .orchestrator import ExperimentOrchestrator
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_csv, write_json
-from .utils import dump_yaml, load_yaml, utc_now
-from .water_treatment_seeded_backbone import (
+from ...config import load_config, require_fields
+from ...environment import OpenPLCEnvironment, _SphereOpenPLCBackend
+from ...mitre import verify_optionb_staged_snapshot
+from ...orchestrator import ExperimentOrchestrator
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
+from ...reporting import write_csv, write_json
+from ...utils import dump_yaml, load_yaml, utc_now
+from .seeded_backbone import (
     ACTION_SPACE_SOURCE_PATHS,
     CONTAINMENT_SEMANTICS_VERSION,
     FamilySpec,
+    PROFILE_REGISTRY_PATHS,
     REQUIRED_RUN_FILES,
     TESTBED_ID,
     _append_log,
@@ -70,7 +71,7 @@ FAMILY_SPEC = FamilySpec(
     config_path=CONFIG_PATH,
 )
 RESUME_COMPATIBLE_CONFIG_HASH_PATHS = {
-    portable_path(REPO_ROOT / "ics_agent" / "water_treatment_scripted_black_box_baseline.py"),
+    portable_path(REPO_ROOT / "ics_agent" / "experiments" / "water_treatment" / "scripted_black_box_baseline.py"),
 }
 TOP_LEVEL_PHASES = [
     "manifest_frozen",
@@ -361,13 +362,13 @@ class ScriptedBlackBoxBaselineRunner:
 
     def _config_hash_tracked_paths(self) -> list[Path]:
         return [
-            REPO_ROOT / "configs" / "agent_profiles.yaml",
+            *PROFILE_REGISTRY_PATHS,
             self.config_path,
             REPO_ROOT / "ics_agent" / "agents" / "agentic.py",
-            REPO_ROOT / "ics_agent" / "water_treatment_scripted_black_box_baseline.py",
-            REPO_ROOT / "configs" / "prompts" / "black_box_attacker_optionb_mitre.md",
-            REPO_ROOT / "configs" / "prompts" / "defender_optionb_mitre.md",
-            REPO_ROOT / "configs" / "prompts" / "observer_optionb_mitre.md",
+            REPO_ROOT / "ics_agent" / "experiments" / "water_treatment" / "scripted_black_box_baseline.py",
+            REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "black_box_attacker.md",
+            REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "defender.md",
+            REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "observer.md",
         ]
 
     def _config_hash_payload(self) -> dict[str, Any]:

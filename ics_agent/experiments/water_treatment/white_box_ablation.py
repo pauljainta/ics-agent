@@ -10,14 +10,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .config import load_config, require_fields, resolve_repo_path
-from .environment import OpenPLCEnvironment, _SphereOpenPLCBackend
-from .mitre import verify_optionb_staged_snapshot
-from .orchestrator import ExperimentOrchestrator
-from .paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
-from .reporting import write_csv, write_json
-from .utils import dump_yaml, load_yaml, utc_now
-from .water_treatment_seeded_backbone import (
+from ...config import load_config, require_fields, resolve_repo_path
+from ...environment import OpenPLCEnvironment, _SphereOpenPLCBackend
+from ...mitre import verify_optionb_staged_snapshot
+from ...orchestrator import ExperimentOrchestrator
+from ...paths import REPO_ROOT, WORKSPACE_ROOT, portable_path
+from ...reporting import write_csv, write_json
+from ...utils import dump_yaml, load_yaml, utc_now
+from .seeded_backbone import (
     ACTION_SPACE_SOURCE_PATHS,
     CONTAINMENT_SEMANTICS_VERSION,
     MODEL_LABEL,
@@ -67,10 +67,10 @@ SEEDS = [101]
 RUNS_PER_SEED = 18
 RUNS_PER_FAMILY = len(SEEDS) * RUNS_PER_SEED
 ABLATED_PROMPT_PATH = (
-    REPO_ROOT / "configs" / "prompts" / "white_box_attacker_optionb_mitre_ablation.md"
+    REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "white_box_attacker_ablation.md"
 )
-DEFENDER_PROMPT_PATH = REPO_ROOT / "configs" / "prompts" / "defender_optionb_mitre.md"
-OBSERVER_PROMPT_PATH = REPO_ROOT / "configs" / "prompts" / "observer_optionb_mitre.md"
+DEFENDER_PROMPT_PATH = REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "defender.md"
+OBSERVER_PROMPT_PATH = REPO_ROOT / "testbeds" / "water_treatment" / "prompts" / "observer.md"
 CONFIG_PATHS = [
     REPO_ROOT
     / "configs"
@@ -319,14 +319,11 @@ class WhiteBoxAblationRunner:
 
     def _prompt_hash_payload(self) -> dict[str, Any]:
         orchestrator = self._orchestrator()
-        agent_profiles_path = REPO_ROOT / "configs" / "agent_profiles.yaml"
-        profiles_overrides_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
         tracked_paths = [
             ABLATED_PROMPT_PATH,
             DEFENDER_PROMPT_PATH,
             OBSERVER_PROMPT_PATH,
-            agent_profiles_path,
-            profiles_overrides_path,
+            *seeded_backbone.PROFILE_REGISTRY_PATHS,
             *CONFIG_PATHS,
         ]
         file_hashes = {
@@ -349,10 +346,10 @@ class WhiteBoxAblationRunner:
                 "attacker_prompt": file_hashes[portable_path(ABLATED_PROMPT_PATH)],
                 "defender_prompt": file_hashes[portable_path(DEFENDER_PROMPT_PATH)],
                 "observer_prompt": file_hashes[portable_path(OBSERVER_PROMPT_PATH)],
-                "agent_profiles": file_hashes[portable_path(agent_profiles_path)],
-                "agent_profiles_overrides": file_hashes.get(
-                    portable_path(profiles_overrides_path)
-                ),
+                "profile_registries": {
+                    portable_path(path): file_hashes[portable_path(path)]
+                    for path in seeded_backbone.PROFILE_REGISTRY_PATHS
+                },
                 "experiment_config": file_hashes[portable_path(family.config_path)],
                 "knowledge_files": manual_hashes,
             }

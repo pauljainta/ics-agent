@@ -641,17 +641,18 @@ def test_distribution_white_box_config_matches_treatment_strength_knobs() -> Non
             / "tests/fixtures/water_distribution_attack_families.yaml"
         ).read_text()
     )
-    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
+    treatment_orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    distribution_orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
 
-    treatment_attacker = orchestrator._effective_condition_profiles(
+    treatment_attacker = treatment_orchestrator._effective_condition_profiles(
         profiles=treatment_config["conditions"][0]["profiles"],
         profile_overrides=treatment_config["conditions"][0]["profile_overrides"],
     )["attacker"]
-    distribution_attacker = orchestrator._effective_condition_profiles(
+    distribution_attacker = distribution_orchestrator._effective_condition_profiles(
         profiles=distribution_config["conditions"][0]["profiles"],
         profile_overrides=distribution_config["conditions"][0]["profile_overrides"],
     )["attacker"]
-    attack_families_attacker = orchestrator._effective_condition_profiles(
+    attack_families_attacker = distribution_orchestrator._effective_condition_profiles(
         profiles=attack_families_config["conditions"][2]["profiles"],
         profile_overrides=attack_families_config["conditions"][2]["profile_overrides"],
     )["attacker"]

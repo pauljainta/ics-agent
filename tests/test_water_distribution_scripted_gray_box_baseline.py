@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import ics_agent.water_distribution_scripted_gray_box_baseline as scripted_baseline
+import ics_agent.experiments.water_distribution.scripted_gray_box_baseline as scripted_baseline
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_distribution_scripted_gray_box_baseline import (
+from ics_agent.experiments.water_distribution.scripted_gray_box_baseline import (
     CANONICAL_RESULT_ROOT,
     CONFIG_PATH,
     FAMILY_SPEC,
