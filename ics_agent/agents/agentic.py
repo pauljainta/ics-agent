@@ -734,6 +734,28 @@ class CachedQwenDecisionEngine:
         return selected
 
     @staticmethod
+    def _coerce_number(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _coerce_confidence(cls, value: Any, *, default: float) -> float:
+        numeric = cls._coerce_number(value)
+        if numeric is None:
+            return float(default)
+        return max(0.0, min(1.0, float(numeric)))
+
+    @staticmethod
+    def _coerce_labels(value: Any, *, default: list[str]) -> list[str]:
+        if value is None:
+            return list(default)
+        if isinstance(value, list):
+            return [str(label) for label in value if label is not None]
+        return [str(value)]
+
+    @staticmethod
     def _normalize_diagnosis(value: Any) -> str | None:
         if value is None:
             return None

@@ -144,3 +144,33 @@ def test_agentic_payload_null_confidence_does_not_abort_decision_bridge() -> Non
     assert len(decisions) == 1
     assert decisions[0].confidence == 0.65
     assert decisions[0].labels == ["agentic", "attacker"]
+
+
+def test_cached_qwen_engine_finalizes_confidence_and_labels_without_backend() -> None:
+    engine = CachedQwenDecisionEngine(
+        {
+            "role": "defender",
+            "knowledge_mode": "white_box",
+            "llm": {
+                "backend": "qwen_langchain",
+                "fatal_on_parse_error": False,
+            },
+        },
+        "defender",
+    )
+
+    payload = engine._finalize_payload(
+        {
+            "summary": "Raise containment.",
+            "candidate_id": None,
+            "confidence": None,
+            "diagnosis": "Sensor or process jump",
+            "labels": None,
+            "decision_type": "alert",
+        },
+        {"candidate_actions": []},
+    )
+
+    assert payload["confidence"] == 0.55
+    assert payload["labels"] == ["agentic", "defender"]
+    assert payload["diagnosis"] == "sensor_or_process_jump"
