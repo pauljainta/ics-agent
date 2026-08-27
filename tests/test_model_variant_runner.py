@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from ics_agent.experiments import model_variant_runner as runner
+from ics_agent.utils import load_yaml
 
 
 def _write_summary(path: Path, *, status: str) -> None:
@@ -197,3 +198,24 @@ def test_phi4_distribution_smoke_selects_black_and_gray_only(
         )
         for item in payload["checks"]
     )
+
+
+def test_phi4_distribution_white_box_generated_config_enables_commit_guardrail() -> None:
+    family = next(
+        item
+        for item in runner.TESTBED_VARIANTS["water_distribution"].family_configs
+        if item.family_name == "white_box_attacker__agentic_defender"
+    )
+    raw_config = load_yaml(family.config_path)
+
+    generated = runner._apply_model_override(
+        raw_config=raw_config,
+        family=family,
+        testbed=runner.TESTBED_VARIANTS["water_distribution"],
+        model=runner.MODEL_VARIANTS["phi4_mini_instruct"],
+    )
+
+    attacker = generated["conditions"][0]["profile_overrides"]["attacker"]
+    assert attacker["white_box_commit_guardrail"] is True
+    assert attacker["behavior_model"]["white_box_commit_guardrail"] is True
+    assert attacker["llm"]["model_id"] == "microsoft/Phi-4-mini-instruct"

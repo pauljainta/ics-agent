@@ -23,9 +23,11 @@ conditions:
       offline_analysis: scripted_offline_analyst
     profile_overrides:
       attacker:
+        white_box_commit_guardrail: true
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
+          white_box_commit_guardrail: true
           notes: MITRE-informed staged stronger white-box attacker for water distribution
         allowed_action_types:
           - inspect_surface

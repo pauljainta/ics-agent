@@ -1029,6 +1029,43 @@ class AgenticRoleAgent(RoleAgent):
             str(behavior.get("policy", "")).strip().lower() == "scripted_white_box"
         )
 
+    def _uses_white_box_commit_guardrail(self) -> bool:
+        if not self._is_white_box_attacker():
+            return False
+        behavior = self.profile.get("behavior_model")
+        return bool(self.profile.get("white_box_commit_guardrail")) or (
+            isinstance(behavior, dict)
+            and bool(behavior.get("white_box_commit_guardrail"))
+        )
+
+    def _white_box_commit_ready(self, context: dict[str, Any]) -> bool:
+        if not self._uses_white_box_commit_guardrail():
+            return False
+        structured_memory = dict(context.get("structured_memory") or {})
+        if not bool(structured_memory.get("white_box_direct_commit")):
+            return False
+        return any(
+            self._candidate_is_commit_action(item)
+            for item in context.get("candidate_actions", [])
+        )
+
+    @staticmethod
+    def _candidate_is_commit_action(candidate: dict[str, Any]) -> bool:
+        action = normalize_action(candidate.get("action"))
+        if action is None:
+            return False
+        action_type = str(action.get("type", "")).strip()
+        if action_type in {"noop", "inspect_surface"}:
+            return False
+        return str(candidate.get("category", "")).strip().lower() in {
+            "support",
+            "probe",
+            "exploit",
+            "sustain",
+            "escalate",
+            "fallback",
+        }
+
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
             return []
@@ -1108,7 +1145,11 @@ class AgenticRoleAgent(RoleAgent):
 
     def _step_attacker_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
-        transition = self._optionb_mitre_transition_decisions(agent_context)
+        transition = (
+            []
+            if self._white_box_commit_ready(agent_context)
+            else self._optionb_mitre_transition_decisions(agent_context)
+        )
         if transition:
             return transition
         if self._uses_scripted_black_box_policy():
@@ -8816,6 +8857,12 @@ class AgenticRoleAgent(RoleAgent):
         mitre_context: dict[str, Any],
     ) -> list[dict[str, Any]]:
         next_phase = str(mitre_context.get("next_phase", ""))
+        if (
+            self._uses_white_box_commit_guardrail()
+            and bool(structured_memory.get("white_box_direct_commit"))
+            and any(self._candidate_is_commit_action(item) for item in candidates)
+        ):
+            return candidates
         if next_phase in {"staged_entry_context", "process_understanding"}:
             noop_candidate = self._noop_candidate(
                 "Advance the current MITRE phase with a concise note instead of plant manipulation."
@@ -11529,7 +11576,7 @@ class AgenticRoleAgent(RoleAgent):
             (
                 item
                 for item in ranked
-                if str(item.get("category")) in {"probe", "support", "exploit", "sustain", "escalate", "fallback"}
+                if self._candidate_is_commit_action(item)
                 and (
                     not must_commit
                     or str(item.get("surface", committed_surface)) == committed_surface
@@ -11542,7 +11589,21 @@ class AgenticRoleAgent(RoleAgent):
 
         selected_category = str((selected_candidate or {}).get("category", ""))
         override = False
-        if must_commit and selected_category not in {
+        force_white_box_commit = (
+            self._uses_white_box_commit_guardrail()
+            and self._is_white_box_attacker()
+            and white_box_direct_commit
+        )
+        if (
+            force_white_box_commit
+            and (
+                selected_action is None
+                or selected_action.get("type") in {"noop", "inspect_surface"}
+                or selected_category in {"recon", "hold"}
+            )
+        ):
+            override = True
+        elif must_commit and selected_category not in {
             "probe",
             "support",
             "exploit",

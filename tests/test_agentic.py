@@ -146,6 +146,98 @@ def test_agentic_payload_null_confidence_does_not_abort_decision_bridge() -> Non
     assert decisions[0].labels == ["agentic", "attacker"]
 
 
+def test_white_box_commit_guardrail_forces_action_after_note_only_model() -> None:
+    class NoteOnlyEngine:
+        last_mode = "unit-test"
+        last_error = None
+        black_box_candidate_map: dict[str, dict] = {}
+
+        def decide(self, context):
+            self.context = context
+            return {
+                "summary": "Continue staged reasoning before manipulating the process.",
+                "candidate_id": None,
+                "confidence": 0.55,
+                "diagnosis": None,
+                "labels": ["agentic", "attacker"],
+                "decision_type": "note",
+            }
+
+    agent = AgenticRoleAgent(
+        "white_box_attacker",
+        {
+            "role": "attacker",
+            "knowledge_mode": "white_box",
+            "white_box_commit_guardrail": True,
+            "allowed_action_types": [
+                "inspect_surface",
+                "hmi_start",
+                "hmi_stop",
+                "hmi_estop",
+                "set_sensor",
+                "set_actuator",
+                "noop",
+            ],
+            "behavior_model": {
+                "id": "optionb_mitre_staged",
+                "policy": "agentic",
+                "white_box_commit_guardrail": True,
+            },
+            "llm": {
+                "backend": "qwen_langchain",
+                "fatal_on_parse_error": False,
+            },
+            "memory": {"attacker_candidate_window": 8},
+            "action_cooldown_sec": 0.5,
+            "reasoning_cooldown_sec": 0.0,
+            "reasoning_refresh_sec": 0.0,
+        },
+    )
+    agent.engine = NoteOnlyEngine()
+    scenario = ScenarioDefinition(
+        catalog_id="attack/wd-grid-low-spoof",
+        suite="attack",
+        scenario_id="wd-grid-low-spoof",
+        execution_path=Path("attack/wd-grid-low-spoof.yaml"),
+        execution={"process_id": "WD-Grid"},
+        metadata={
+            "testbed_id": "water_distribution",
+            "safety_bounds": {
+                "Supply_Tank_Level": {"min": 0, "max": 1500},
+                "Grid_Elev_Tank_Level": {"min": 0, "max": 2000},
+                "RWS_Tank_Level": {"min": 0, "max": 1500},
+            },
+        },
+        testbed_id="water_distribution",
+    )
+    agent.reset(scenario)
+
+    decisions = agent.step(
+        {
+            "scenario": scenario,
+            "time_sec": 0.0,
+            "observation": {
+                "STATE_NAME": "RUNNING",
+                "Supply_Tank_Level": 920,
+                "Grid_Elev_Tank_Level": 940,
+                "RWS_Tank_Level": 700,
+                "Alarm_Supply_Tank_HH": False,
+            },
+            "observations": [],
+            "executed_actions": [],
+            "decisions": [],
+            "alerts": [],
+            "planned_events": {},
+        }
+    )
+
+    assert decisions
+    assert decisions[0].decision_type == "action"
+    assert decisions[0].action is not None
+    assert decisions[0].action["type"] in {"set_sensor", "set_actuator", "hmi_stop", "hmi_estop"}
+    assert "commitment_guardrail" in decisions[0].labels
+
+
 def test_cached_qwen_engine_finalizes_confidence_and_labels_without_backend() -> None:
     engine = CachedQwenDecisionEngine(
         {

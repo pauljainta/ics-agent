@@ -84,6 +84,7 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: white_box
+    white_box_commit_guardrail: true
     allowed_action_types:
     - inspect_surface
     - hmi_start
@@ -126,6 +127,7 @@ profiles:
     behavior_model:
       id: optionb_mitre_staged
       policy: agentic
+      white_box_commit_guardrail: true
       notes: MITRE-informed staged stronger white-box attacker for water distribution
     note_cooldown_sec: 2.0
   scripted_black_box_distribution_attacker:

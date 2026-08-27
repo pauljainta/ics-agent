@@ -30,9 +30,11 @@ conditions:
       offline_analysis: scripted_offline_analyst
     profile_overrides:
       attacker:
+        white_box_commit_guardrail: true
         behavior_model:
           id: optionb_mitre_staged
           policy: agentic
+          white_box_commit_guardrail: true
           notes: MITRE-informed staged Option B stronger white-box attacker
         llm:
           prompt_file: testbeds/water_treatment/prompts/white_box_attacker.md

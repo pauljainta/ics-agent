@@ -78,6 +78,7 @@ profiles:
     family: agentic
     mode: online
     knowledge_mode: white_box
+    white_box_commit_guardrail: true
     allowed_action_types:
     - hmi_start
     - hmi_stop
