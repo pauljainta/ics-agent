@@ -40,6 +40,7 @@ configs/private/
 # Local model weights/artifacts (keep code under models/ tracked)
 models/local_models/*
 !models/local_models/.gitkeep
+!models/local_models/README.md
 *.safetensors
 *.bin
 *.pt
