@@ -68,6 +68,29 @@ class ExperimentOrchestrator:
         if not isinstance(self.agent_profiles, dict):
             raise ConfigError("profile registries must define a `profiles` mapping")
 
+    @staticmethod
+    def _summary_error_text(summary: dict[str, Any]) -> str:
+        errors = summary.get("errors", [])
+        if not isinstance(errors, list):
+            return str(errors)
+        return "\n".join(
+            str(item.get("error", item))
+            if isinstance(item, dict)
+            else str(item)
+            for item in errors
+        )
+
+    @classmethod
+    def _is_run_level_infrastructure_failure(cls, summary: dict[str, Any]) -> bool:
+        error_text = cls._summary_error_text(summary).lower()
+        auth_markers = (
+            "unable to retrieve identity",
+            "no auth session found",
+            "no auth sesssion found",
+            "permissiondenied",
+        )
+        return "mrg" in error_text and any(marker in error_text for marker in auth_markers)
+
     @classmethod
     def _load_profile_registry(cls, testbed_id: str) -> dict[str, Any]:
         profile_paths = profile_registry_paths(testbed_id)
@@ -666,7 +689,10 @@ class ExperimentOrchestrator:
                 "status": "completed",
                 "reproducibility": condition_reproducibility,
             }
+            abort_condition = False
             for scenario in scenarios:
+                if abort_condition:
+                    break
                 for repeat in range(1, int(config.get("repeats", 1)) + 1):
                     run_id = (
                         f"{scenario.suite}-{scenario.scenario_id}-trial-{repeat:03d}"
@@ -701,6 +727,15 @@ class ExperimentOrchestrator:
                     if bundle["summary"]["status"] != "completed":
                         condition_summary["status"] = "failed"
                         suite_summary["status"] = "failed"
+                        if self._is_run_level_infrastructure_failure(bundle["summary"]):
+                            abort_reason = (
+                                "stopped after run-level infrastructure authentication "
+                                "failure; refresh MRG login and rerun with resume"
+                            )
+                            condition_summary["abort_reason"] = abort_reason
+                            suite_summary["abort_reason"] = abort_reason
+                            abort_condition = True
+                            break
             trajectory_baseline_runs = self._load_trajectory_baseline_runs(
                 trajectory_baseline_roots,
                 condition_name=condition_name,

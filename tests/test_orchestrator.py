@@ -78,6 +78,31 @@ def _bundle() -> RunBundle:
     )
 
 
+def test_orchestrator_classifies_mrg_auth_loss_as_run_level_failure() -> None:
+    summary = {
+        "status": "failed",
+        "errors": [
+            {
+                "error": (
+                    "command failed (1): mrg whoami: unable to retrieve identity: "
+                    "rpc error: code = PermissionDenied desc = No auth sesssion found"
+                )
+            }
+        ],
+    }
+
+    assert ExperimentOrchestrator._is_run_level_infrastructure_failure(summary) is True
+
+
+def test_orchestrator_does_not_classify_scenario_error_as_run_level_failure() -> None:
+    summary = {
+        "status": "failed",
+        "errors": [{"error": "invalid attacker action `set_sensor` for this scenario"}],
+    }
+
+    assert ExperimentOrchestrator._is_run_level_infrastructure_failure(summary) is False
+
+
 def test_orchestrator_records_runtime_activation_and_blocked_events() -> None:
     orchestrator = ExperimentOrchestrator()
     env = StubEnvironment()
