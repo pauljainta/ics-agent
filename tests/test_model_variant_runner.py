@@ -125,3 +125,75 @@ def test_model_variant_smoke_respects_single_selected_family(monkeypatch) -> Non
     assert payload["expected_runs"] == 18
     assert payload["selected_families"] == [selected_family]
     assert generated_paths == [selected_family]
+
+
+def test_phi4_distribution_smoke_selects_black_and_gray_only(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(runner, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "_model_dir_status",
+        lambda model: {
+            "model_id": model.model_id,
+            "local_dir": runner.portable_path(model.local_dir),
+            "exists": True,
+            "has_config": True,
+            "has_tokenizer": True,
+            "has_weight_index": True,
+            "has_safetensors": True,
+            "sample_files": [],
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_dependency_status",
+        lambda model: {
+            "python": "python",
+            "requires_bitsandbytes": model.requires_bitsandbytes,
+            "bitsandbytes_available": False,
+            "hf_cli_available": True,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_validate_model_backend_imports",
+        lambda model: {
+            "model_type": "phi3",
+            "architectures": ["Phi3ForCausalLM"],
+            "tokenizer_class": "GPT2TokenizerFast",
+            "model_class": "Phi3ForCausalLM",
+            "trust_remote_code": model.trust_remote_code,
+        },
+    )
+
+    selected = {
+        "black_box_attacker__agentic_defender",
+        "gray_box_attacker__agentic_defender",
+    }
+    payload = runner.smoke(
+        model=runner.MODEL_VARIANTS["phi4_mini_instruct"],
+        testbed=runner.TESTBED_VARIANTS["water_distribution"],
+        require_model=False,
+        family_names=selected,
+    )
+
+    assert payload["status"] == "passed"
+    assert payload["testbed"] == "water_distribution"
+    assert payload["family_count"] == 2
+    assert payload["expected_runs"] == 22
+    assert set(payload["selected_families"]) == selected
+    assert "white_box_attacker__agentic_defender" not in payload["selected_families"]
+    assert (
+        "black_box_high_cyber_high_domain__agentic_defender"
+        not in payload["selected_families"]
+    )
+    assert {item["family"] for item in payload["checks"]} == selected
+    assert all(item["scenario_count"] == 11 for item in payload["checks"])
+    assert all(
+        item["result_root"].endswith(
+            "Artifact/Results/Phi-4-mini-instruct/water_distribution_openplc"
+        )
+        for item in payload["checks"]
+    )
