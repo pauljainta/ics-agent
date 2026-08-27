@@ -598,8 +598,16 @@ def smoke(
     model: ModelVariant,
     testbed: TestbedVariant,
     require_model: bool,
+    family_names: set[str] | None = None,
 ) -> dict[str, Any]:
     generated = _prepare_configs(model=model, testbed=testbed)
+    selected = [
+        (family, path)
+        for family, path in generated
+        if family_names is None or family.family_name in family_names
+    ]
+    if not selected:
+        raise ConfigError("no family configs selected")
     checks = [
         _validate_generated_config(
             model=model,
@@ -608,7 +616,7 @@ def smoke(
             config_path=config_path,
             require_model=require_model,
         )
-        for family, config_path in generated
+        for family, config_path in selected
     ]
     payload = {
         "status": "passed",
@@ -620,6 +628,7 @@ def smoke(
         "seed": SEED,
         "family_count": len(checks),
         "expected_runs": len(checks) * testbed.expected_scenarios,
+        "selected_families": [family.family_name for family, _ in selected],
         "checks": checks,
     }
     smoke_path = (
@@ -775,6 +784,7 @@ def main(argv: list[str] | None = None) -> int:
                 model=model,
                 testbed=testbed,
                 require_model=not bool(args.allow_missing_model),
+                family_names=set(args.family) if args.family else None,
             )
         else:
             payload = run_experiments(

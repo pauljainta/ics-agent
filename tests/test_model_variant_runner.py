@@ -75,3 +75,53 @@ def test_model_variant_resume_cleanup_removes_failed_gray_box_trial_only(
     assert [item["family"] for item in removed] == [
         "gray_box_attacker__agentic_defender"
     ]
+
+
+def test_model_variant_smoke_respects_single_selected_family(monkeypatch) -> None:
+    model = runner.MODEL_VARIANTS["phi4_mini_instruct"]
+    testbed = runner.TESTBED_VARIANTS["water_treatment"]
+    selected_family = "black_box_high_cyber_high_domain__agentic_defender"
+
+    generated_paths: list[str] = []
+
+    def fake_prepare_configs(*, model, testbed):
+        return [
+            (
+                family,
+                runner.REPO_ROOT
+                / "generated"
+                / f"{family.family_name}.yaml",
+            )
+            for family in testbed.family_configs
+        ]
+
+    def fake_validate_generated_config(*, model, testbed, family, config_path, require_model):
+        generated_paths.append(family.family_name)
+        return {
+            "family": family.family_name,
+            "config_path": runner.portable_path(config_path),
+            "scenario_count": testbed.expected_scenarios,
+            "result_root": runner.portable_path(
+                runner._result_model_root(model) / testbed.result_experiment_name
+            ),
+        }
+
+    monkeypatch.setattr(runner, "_prepare_configs", fake_prepare_configs)
+    monkeypatch.setattr(
+        runner,
+        "_validate_generated_config",
+        fake_validate_generated_config,
+    )
+
+    payload = runner.smoke(
+        model=model,
+        testbed=testbed,
+        require_model=True,
+        family_names={selected_family},
+    )
+
+    assert payload["status"] == "passed"
+    assert payload["family_count"] == 1
+    assert payload["expected_runs"] == 18
+    assert payload["selected_families"] == [selected_family]
+    assert generated_paths == [selected_family]
