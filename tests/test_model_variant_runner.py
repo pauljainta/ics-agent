@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from ics_agent.experiments import model_variant_runner as runner
@@ -219,3 +220,58 @@ def test_phi4_distribution_white_box_generated_config_enables_commit_guardrail()
     assert attacker["white_box_commit_guardrail"] is True
     assert attacker["behavior_model"]["white_box_commit_guardrail"] is True
     assert attacker["llm"]["model_id"] == "microsoft/Phi-4-mini-instruct"
+
+
+def test_qwen35_and_phi_white_box_configs_differ_only_by_model_fields() -> None:
+    def normalized_profile_overrides(config):
+        overrides = deepcopy(config["conditions"][0]["profile_overrides"])
+        for role_override in overrides.values():
+            llm = role_override.get("llm")
+            if not isinstance(llm, dict):
+                continue
+            for key in (
+                "model_id",
+                "local_files_only",
+                "quantization",
+                "trust_remote_code",
+            ):
+                llm.pop(key, None)
+        return overrides
+
+    for testbed_key in ("water_treatment", "water_distribution"):
+        testbed = runner.TESTBED_VARIANTS[testbed_key]
+        family = next(
+            item
+            for item in testbed.family_configs
+            if item.family_name == "white_box_attacker__agentic_defender"
+        )
+        raw_config = load_yaml(family.config_path)
+
+        qwen35_config = runner._apply_model_override(
+            raw_config=raw_config,
+            family=family,
+            testbed=testbed,
+            model=runner.MODEL_VARIANTS["qwen35_9b"],
+        )
+        phi_config = runner._apply_model_override(
+            raw_config=raw_config,
+            family=family,
+            testbed=testbed,
+            model=runner.MODEL_VARIANTS["phi4_mini_instruct"],
+        )
+
+        assert normalized_profile_overrides(qwen35_config) == normalized_profile_overrides(
+            phi_config
+        )
+        assert (
+            qwen35_config["conditions"][0]["profile_overrides"]["attacker"][
+                "llm"
+            ]["model_id"]
+            == "Qwen/Qwen3.5-9B"
+        )
+        assert (
+            phi_config["conditions"][0]["profile_overrides"]["attacker"][
+                "llm"
+            ]["model_id"]
+            == "microsoft/Phi-4-mini-instruct"
+        )

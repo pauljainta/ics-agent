@@ -50,6 +50,13 @@ class TestbedVariant:
 
 
 MODEL_VARIANTS: dict[str, ModelVariant] = {
+    "qwen35_9b": ModelVariant(
+        key="qwen35_9b",
+        label="Qwen3.5-9B",
+        model_id="Qwen/Qwen3.5-9B",
+        local_dir=REPO_ROOT / "models" / "local_models" / "qwen3.5-9b",
+        quantization="bf16",
+    ),
     "qwen3_14b": ModelVariant(
         key="qwen3_14b",
         label="Qwen3-14B",
@@ -68,6 +75,11 @@ MODEL_VARIANTS: dict[str, ModelVariant] = {
 }
 
 MODEL_ALIASES = {
+    "qwen3.5-9b": "qwen35_9b",
+    "qwen35": "qwen35_9b",
+    "qwen35-9b": "qwen35_9b",
+    "qwen3_5_9b": "qwen35_9b",
+    "qwen3.5": "qwen35_9b",
     "qwen3-14b": "qwen3_14b",
     "qwen_3_14b": "qwen3_14b",
     "qwen": "qwen3_14b",
