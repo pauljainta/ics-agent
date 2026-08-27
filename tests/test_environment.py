@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import py_compile
+import subprocess
 import sys
 from pathlib import Path
 from types import MethodType
@@ -340,7 +341,7 @@ def test_sphere_backend_ssh_checked_falls_back_to_mrg_xdc_transport() -> None:
         raw_calls.append(f"{target}:{remote_command}")
         raise EnvironmentError("ssh raw path failed: no route to host")
 
-    def _mrg_ssh_checked(self, target, remote_command, *, timeout_sec=None):
+    def _mrg_ssh_checked(self, target, remote_command, *, timeout_sec=None, retries=None):
         mrg_calls.append(f"{target}:{remote_command}")
         return "ready\n"
 
@@ -355,6 +356,49 @@ def test_sphere_backend_ssh_checked_falls_back_to_mrg_xdc_transport() -> None:
     assert raw_calls == ["controller:echo ready"]
     assert mrg_calls == ["controller:echo ready", "controller:echo ready again"]
     assert backend._prefer_mrg_xdc_transport is True
+
+
+def test_sphere_backend_mrg_ssh_checked_retries_transient_transport_failure(
+    monkeypatch,
+) -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        _sphere_backend_config("water_distribution")
+    )
+    backend._xdc_ref = TEST_XDC_REF
+    backend._node_mrg_targets = {"controller": "controller"}
+    backend.ssh_retry_backoff_sec = 0
+    calls: list[str] = []
+
+    def _marker(script: str, prefix: str) -> str:
+        for token in script.replace('"', "").replace("'", "").split():
+            if token.startswith(prefix):
+                return token
+        raise AssertionError(f"missing marker with prefix {prefix}")
+
+    def _fake_run(command, *, input, capture_output, check, text, timeout):
+        calls.append(input)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="FATA unable to connect to jump host: ssh: handshake failed: EOF\n",
+            )
+        begin_marker = _marker(input, "__CODEX_MRG_BEGIN_")
+        rc_marker_prefix = _marker(input, "__CODEX_MRG_RC_")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{begin_marker}\nready\n{rc_marker_prefix}0\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(environment_module.subprocess, "run", _fake_run)
+
+    output = backend._mrg_ssh_checked("controller", "echo ready", retries=2)
+
+    assert output == "ready\n"
+    assert len(calls) == 2
 
 
 def test_vendor_openplc_payload_imports_without_workspace_repos(monkeypatch, tmp_path) -> None:

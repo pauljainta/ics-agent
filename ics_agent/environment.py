@@ -1386,68 +1386,79 @@ class _SphereOpenPLCBackend:
         remote_command: str,
         *,
         timeout_sec: float | None = None,
+        retries: int | None = None,
     ) -> str:
         command = self._mrg_xdc_ssh_command(target)
         self._record_command(f"{shlex.join(command)} <remote command>")
-        marker_suffix = f"{os.getpid()}_{time.time_ns()}"
-        begin_marker = f"__CODEX_MRG_BEGIN_{marker_suffix}__"
-        rc_marker_prefix = f"__CODEX_MRG_RC_{marker_suffix}__:"
-        script_input = "\n".join(
-            [
-                "unset PROMPT_COMMAND || true",
-                "export PS1=''",
-                "export PS2=''",
-                "stty -echo >/dev/null 2>&1 || true",
-                f"printf '%s\\n' {shlex.quote(begin_marker)}",
-                "(",
-                remote_command,
-                ")",
-                "__codex_mrg_rc__=$?",
-                f"printf '%s%s\\n' {shlex.quote(rc_marker_prefix)} \"$__codex_mrg_rc__\"",
-                'exit "$__codex_mrg_rc__"',
-            ]
-        ) + "\n"
         timeout_value = timeout_sec or self.ssh_timeout_sec
-        try:
-            completed = subprocess.run(
-                self._script_command(command),
-                input=script_input,
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=timeout_value,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise EnvironmentError(
-                f"command timed out after {timeout_value}s: {shlex.join(command)}"
-            ) from exc
-
-        transcript = (completed.stdout or "") + (completed.stderr or "")
-        detail = self._strip_terminal_control(transcript).strip()
-        try:
-            output, exit_code = self._parse_mrg_xdc_ssh_output(
-                transcript,
-                begin_marker=begin_marker,
-                rc_marker_prefix=rc_marker_prefix,
-            )
-        except EnvironmentError as exc:
-            raise EnvironmentError(
-                f"command failed via `mrg xdc ssh`: {shlex.join(command)}"
-                + (f": {detail}" if detail else "")
-            ) from exc
-        if exit_code != 0:
-            command_preview = remote_command.strip().splitlines()[0][:160]
-            raise EnvironmentError(
-                f"remote command failed on `{target}` via `mrg xdc ssh`"
-                + (f" (`{command_preview}`)" if command_preview else "")
-                + (f": {output.strip()}" if output.strip() else "")
-            )
-        if completed.returncode != 0:
-            raise EnvironmentError(
-                f"command failed via `mrg xdc ssh` ({completed.returncode}): {shlex.join(command)}"
-                + (f": {detail}" if detail else "")
-            )
-        return output
+        attempt_count = max(1, retries or self.ssh_attempts)
+        last_error: EnvironmentError | None = None
+        for attempt in range(1, attempt_count + 1):
+            marker_suffix = f"{os.getpid()}_{time.time_ns()}"
+            begin_marker = f"__CODEX_MRG_BEGIN_{marker_suffix}__"
+            rc_marker_prefix = f"__CODEX_MRG_RC_{marker_suffix}__:"
+            script_input = "\n".join(
+                [
+                    "unset PROMPT_COMMAND || true",
+                    "export PS1=''",
+                    "export PS2=''",
+                    "stty -echo >/dev/null 2>&1 || true",
+                    f"printf '%s\\n' {shlex.quote(begin_marker)}",
+                    "(",
+                    remote_command,
+                    ")",
+                    "__codex_mrg_rc__=$?",
+                    f"printf '%s%s\\n' {shlex.quote(rc_marker_prefix)} \"$__codex_mrg_rc__\"",
+                    'exit "$__codex_mrg_rc__"',
+                ]
+            ) + "\n"
+            try:
+                completed = subprocess.run(
+                    self._script_command(command),
+                    input=script_input,
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                    timeout=timeout_value,
+                )
+            except subprocess.TimeoutExpired as exc:
+                last_error = EnvironmentError(
+                    f"command timed out after {timeout_value}s: {shlex.join(command)}"
+                )
+            else:
+                transcript = (completed.stdout or "") + (completed.stderr or "")
+                detail = self._strip_terminal_control(transcript).strip()
+                try:
+                    output, exit_code = self._parse_mrg_xdc_ssh_output(
+                        transcript,
+                        begin_marker=begin_marker,
+                        rc_marker_prefix=rc_marker_prefix,
+                    )
+                except EnvironmentError:
+                    last_error = EnvironmentError(
+                        f"command failed via `mrg xdc ssh`: {shlex.join(command)}"
+                        + (f": {detail}" if detail else "")
+                    )
+                else:
+                    if exit_code == 0 and completed.returncode == 0:
+                        return output
+                    if exit_code != 0:
+                        command_preview = remote_command.strip().splitlines()[0][:160]
+                        last_error = EnvironmentError(
+                            f"remote command failed on `{target}` via `mrg xdc ssh`"
+                            + (f" (`{command_preview}`)" if command_preview else "")
+                            + (f": {output.strip()}" if output.strip() else "")
+                        )
+                    else:
+                        last_error = EnvironmentError(
+                            f"command failed via `mrg xdc ssh` ({completed.returncode}): {shlex.join(command)}"
+                            + (f": {detail}" if detail else "")
+                        )
+            if attempt >= attempt_count:
+                break
+            time.sleep(self.ssh_retry_backoff_sec * attempt)
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _qualify_realization_ref(
@@ -2426,6 +2437,7 @@ class _SphereOpenPLCBackend:
                 target,
                 remote_command,
                 timeout_sec=timeout_sec,
+                retries=retries,
             )
 
         raw_retries = retries
@@ -2445,6 +2457,7 @@ class _SphereOpenPLCBackend:
                 target,
                 remote_command,
                 timeout_sec=timeout_sec,
+                retries=retries,
             )
             self._enable_mrg_xdc_transport(target=target, reason=str(exc))
             return output
