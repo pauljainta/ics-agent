@@ -4,6 +4,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import json
+import marshal
 import os
 import re
 import shlex
@@ -35,35 +36,54 @@ class EnvironmentError(RuntimeError):
     """Raised when an environment backend cannot satisfy a request."""
 
 
-def _import_openplc_module(module_name: str):
+def _is_sourceless_openplc_payload(candidate_path: Path) -> bool:
+    return candidate_path.suffix == ".pyc" or candidate_path.name.endswith(
+        ".pyc_payload"
+    )
+
+
+def _is_compiled_openplc_wrapper(candidate_path: Path) -> bool:
+    """Detect support payloads accidentally overwritten by loader wrappers."""
+    if not _is_sourceless_openplc_payload(candidate_path):
+        return False
     try:
-        return importlib.import_module(module_name)
-    except ModuleNotFoundError:
-        candidate_paths = [
-            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.cpython-310.pyc",
-            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.py",
-            OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.cpython-310.pyc",
-            OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.py",
-        ]
-        for candidate_path in candidate_paths:
-            if not candidate_path.exists():
-                continue
-            if candidate_path.suffix == ".pyc":
-                loader = importlib.machinery.SourcelessFileLoader(
-                    module_name, str(candidate_path)
-                )
-            else:
-                loader = importlib.machinery.SourceFileLoader(
-                    module_name, str(candidate_path)
-                )
-            spec = importlib.util.spec_from_loader(module_name, loader)
-            if spec is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            loader.exec_module(module)
-            return module
-        raise
+        code = marshal.loads(candidate_path.read_bytes()[16:])
+    except Exception:
+        return False
+    return "_load_sourceless" in getattr(code, "co_names", ())
+
+
+def _import_openplc_module(module_name: str):
+    candidate_paths = [
+        OPENPLC_SUPPORT_SCRIPTS
+        / "payloads"
+        / f"{module_name}.cpython-310.pyc_payload",
+        OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.cpython-310.pyc",
+        OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.py",
+        OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.cpython-310.pyc",
+        OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.py",
+    ]
+    for candidate_path in candidate_paths:
+        if not candidate_path.exists():
+            continue
+        if _is_compiled_openplc_wrapper(candidate_path):
+            continue
+        if _is_sourceless_openplc_payload(candidate_path):
+            loader = importlib.machinery.SourcelessFileLoader(
+                module_name, str(candidate_path)
+            )
+        else:
+            loader = importlib.machinery.SourceFileLoader(
+                module_name, str(candidate_path)
+            )
+        spec = importlib.util.spec_from_loader(module_name, loader)
+        if spec is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        loader.exec_module(module)
+        return module
+    return importlib.import_module(module_name)
 
 
 def _normalized_backend_name(value: Any) -> str:
@@ -1663,7 +1683,7 @@ class _SphereOpenPLCBackend:
     def _resolve_support_payload(self, *relative_paths: str) -> Path:
         candidate_paths = [OPENPLC_SUPPORT_SCRIPTS / relative_path for relative_path in relative_paths]
         for candidate in candidate_paths:
-            if candidate.exists():
+            if candidate.exists() and not _is_compiled_openplc_wrapper(candidate):
                 return candidate
         raise EnvironmentError(
             "required native runtime payload is missing: "
@@ -1678,21 +1698,22 @@ class _SphereOpenPLCBackend:
             ),
             (
                 self._resolve_support_payload(
+                    "payloads/native_plc_runtime.cpython-310.pyc_payload",
+                    "native_plc_runtime.cpython-310.pyc",
                     "__pycache__/native_plc_runtime.cpython-310.pyc"
                 ),
-                "__pycache__/native_plc_runtime.cpython-310.pyc",
+                "payloads/native_plc_runtime.cpython-310.pyc_payload",
             ),
             (
-                self._resolve_support_payload("__pycache__/modbus_raw.cpython-310.pyc"),
-                "__pycache__/modbus_raw.cpython-310.pyc",
+                self._resolve_support_payload(
+                    "payloads/modbus_raw.cpython-310.pyc_payload",
+                    "__pycache__/modbus_raw.cpython-310.pyc",
+                ),
+                "payloads/modbus_raw.cpython-310.pyc_payload",
             ),
             (
                 self._resolve_support_payload("modbus_bridge.py"),
                 "modbus_bridge.py",
-            ),
-            (
-                self._resolve_support_payload("__pycache__/modbus_bridge.cpython-310.pyc"),
-                "__pycache__/modbus_bridge.cpython-310.pyc",
             ),
         ]
         for target in targets or ("controller", "simulator"):
@@ -1705,6 +1726,10 @@ class _SphereOpenPLCBackend:
                 + " "
                 + self._remote_shell_path(
                     self._remote_file_path(self.remote_runtime_dir, "__pycache__")
+                )
+                + " "
+                + self._remote_shell_path(
+                    self._remote_file_path(self.remote_runtime_dir, "payloads")
                 ),
                 timeout_sec=self.payload_stage_timeout_sec,
             )

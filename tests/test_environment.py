@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import py_compile
 import sys
 from pathlib import Path
 from types import MethodType
@@ -371,6 +372,55 @@ def test_vendor_openplc_payload_imports_without_workspace_repos(monkeypatch, tmp
     for module in imported.values():
         module_path = Path(module.__file__).resolve()
         assert vendor_scripts in module_path.parents
+
+
+def test_vendor_openplc_payload_imports_ignore_compiled_loader_wrappers() -> None:
+    vendor_scripts = environment_module.OPENPLC_SUPPORT_SCRIPTS.resolve()
+    for wrapper_name in ("modbus_bridge.py", "native_plc_runtime.py"):
+        py_compile.compile(str(vendor_scripts / wrapper_name), doraise=True)
+
+    for module_name in ("modbus_raw", "native_plc_runtime", "openplc_testbed"):
+        sys.modules.pop(module_name, None)
+
+    imported = {
+        module_name: environment_module._import_openplc_module(module_name)
+        for module_name in ("modbus_raw", "native_plc_runtime", "openplc_testbed")
+    }
+
+    for module in imported.values():
+        module_path = Path(module.__file__).resolve()
+        assert vendor_scripts / "payloads" in module_path.parents
+
+
+def test_sphere_backend_stages_openplc_payloads_without_bridge_bytecode(tmp_path: Path) -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        _sphere_backend_config(
+            "water_treatment",
+            helper_root=tmp_path / "helper",
+            remote_runtime_dir="~/runtime_payload_test",
+            remote_state_dir="~/runtime_state_test",
+        )
+    )
+    mkdir_commands: list[str] = []
+    staged_destinations: list[str] = []
+
+    def _fake_ssh_checked(self, target, remote_command, *, timeout_sec=None):
+        mkdir_commands.append(remote_command)
+        return ""
+
+    def _fake_scp_file_checked(self, source, destination, *, timeout_sec=None):
+        staged_destinations.append(destination)
+
+    backend._ssh_checked = MethodType(_fake_ssh_checked, backend)
+    backend._scp_file_checked = MethodType(_fake_scp_file_checked, backend)
+
+    backend._stage_remote_runtime(targets=("controller",))
+
+    assert any("payloads" in command for command in mkdir_commands)
+    assert any("payloads/native_plc_runtime.cpython-310.pyc_payload" in item for item in staged_destinations)
+    assert any("payloads/modbus_raw.cpython-310.pyc_payload" in item for item in staged_destinations)
+    assert any(item.endswith("runtime_payload_test/modbus_bridge.py") for item in staged_destinations)
+    assert not any("modbus_bridge.cpython-310.pyc" in item for item in staged_destinations)
 
 
 class _FakeDistributionTestbed:
