@@ -7,7 +7,7 @@ from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.paths import REPO_ROOT
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_treatment_white_box_ablation import FAMILY_SPECS
+from ics_agent.experiments.water_treatment.white_box_ablation import FAMILY_SPECS
 from ics_agent.utils import load_yaml
 
 
@@ -73,16 +73,16 @@ def test_white_box_ablation_configs_preserve_attacker_action_space() -> None:
     orchestrator = ExperimentOrchestrator()
     baseline_config = load_yaml(
         REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml"
+        / "configs/experiments/water_treatment_agentic_white_box_attacker_vs_agentic_full_containment_defender.yaml"
     )
     baseline_condition = orchestrator._enumerate_conditions(baseline_config)[0]
     baseline_attacker = baseline_condition["effective_profiles"]["attacker"]
     baseline_allowed = list(baseline_attacker["allowed_action_types"])
 
     expected_manuals = {
-        "white_box_no_safety_bounds__agentic_defender": "configs/knowledge/white_box_no_safety_bounds_attacker_manual.md",
-        "white_box_no_surface_priors__agentic_defender": "configs/knowledge/white_box_no_surface_priors_attacker_manual.md",
-        "white_box_no_control_semantics__agentic_defender": "configs/knowledge/white_box_no_control_semantics_attacker_manual.md",
+        "white_box_no_safety_bounds__agentic_defender": "testbeds/water_treatment/knowledge/white_box_no_safety_bounds_attacker_manual.md",
+        "white_box_no_surface_priors__agentic_defender": "testbeds/water_treatment/knowledge/white_box_no_surface_priors_attacker_manual.md",
+        "white_box_no_control_semantics__agentic_defender": "testbeds/water_treatment/knowledge/white_box_no_control_semantics_attacker_manual.md",
     }
     expected_ablations = {
         "white_box_no_safety_bounds__agentic_defender": "no_safety_bounds",
@@ -101,7 +101,7 @@ def test_white_box_ablation_configs_preserve_attacker_action_space() -> None:
             family.family_name
         ]
         assert attacker["llm"]["prompt_file"] == (
-            "configs/prompts/white_box_attacker_optionb_mitre_ablation.md"
+            "testbeds/water_treatment/prompts/white_box_attacker_ablation.md"
         )
         assert attacker["knowledge_files"] == [expected_manuals[family.family_name]]
 

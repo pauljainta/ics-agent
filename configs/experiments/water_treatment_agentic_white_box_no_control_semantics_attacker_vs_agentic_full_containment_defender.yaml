@@ -1,0 +1,73 @@
+experiment_name: DefendervsWhiteBoxNoControlSemanticsAttackerConcreteContainment
+experiment_id: DefendervsWhiteBoxNoControlSemanticsAttackerConcreteContainment
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results
+study_metadata:
+  family: defender_vs_white_box_no_control_semantics_attacker_concrete_containment_optionb_mitre18
+  timing_primary_origin: wargame_t0
+  notes:
+    - White-box attacker ablation with control semantics removed versus the current LLM defender
+    - Concrete-containment semantics remain unchanged from the seeded treatment backbone
+environment:
+  backend: sphere_openplc
+  testbed: water_treatment
+  infrastructure_profile: water_treatment
+conditions:
+  - name: white_box_no_control_semantics__agentic_defender
+    profiles:
+      attacker: white_box_attacker
+      defender: agentic_defender
+      observer: agentic_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged white-box attacker with control semantics removed
+        white_box_knowledge_ablation: no_control_semantics
+        knowledge_files:
+          - testbeds/water_treatment/knowledge/white_box_no_control_semantics_attacker_manual.md
+        llm:
+          prompt_file: testbeds/water_treatment/prompts/white_box_attacker_ablation.md
+        action_cooldown_sec: 0.5
+        note_cooldown_sec: 2.0
+        reasoning_cooldown_sec: 1.0
+        reasoning_refresh_sec: 2.0
+        memory:
+          attacker_candidate_window: 8
+      defender:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B agentic defender with concrete runtime containment
+        allowed_action_types:
+          - hmi_stop
+          - hmi_estop
+          - select_process
+          - disable_hmi_session
+          - isolate_engineering_host
+          - block_sensor_write
+          - block_process2_manual_path
+          - quarantine_signal_source
+          - noop
+        llm:
+          prompt_file: testbeds/water_treatment/prompts/defender.md
+        note_cooldown_sec: 4.0
+        reasoning_cooldown_sec: 2.0
+        reasoning_refresh_sec: 4.0
+      observer:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B agentic observer
+        llm:
+          prompt_file: testbeds/water_treatment/prompts/observer.md

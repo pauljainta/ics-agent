@@ -21,7 +21,7 @@ from ..mitre import (
     phase_metadata,
 )
 from ..paths import REPO_ROOT
-from ..testbeds import observation_focus_fields, trend_fields
+from testbeds.runtime import observation_focus_fields, trend_fields
 
 
 WHITE_BOX_KNOWLEDGE_ABLATIONS: dict[str, dict[str, Any]] = {
@@ -76,6 +76,8 @@ class CachedQwenDecisionEngine:
             llm_cfg.get("allow_langchain_fallback", True)
         )
         self.local_files_only = bool(llm_cfg.get("local_files_only", True))
+        self.trust_remote_code = bool(llm_cfg.get("trust_remote_code", True))
+        self.fatal_on_parse_error = bool(llm_cfg.get("fatal_on_parse_error", True))
         self.max_new_tokens = int(llm_cfg.get("max_new_tokens", 192))
         self.temperature = float(llm_cfg.get("temperature", 0.0))
         self.quantization = str(llm_cfg.get("quantization", "bf16")).strip().lower()
@@ -141,42 +143,56 @@ class CachedQwenDecisionEngine:
     def _llm(self):
         import torch  # type: ignore
         from langchain_huggingface import HuggingFacePipeline  # type: ignore
-        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline  # type: ignore
+        from transformers import (  # type: ignore
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            pipeline,
+        )
 
         if self.require_cuda and not torch.cuda.is_available():
             raise RuntimeError("CUDA GPU is required for agentic execution")
         if not torch.cuda.is_available():
             raise RuntimeError("No CUDA GPU detected for agentic execution")
 
-        model_ref = os.environ.get("QWEN_MODEL_PATH", "").strip() or self.model_id
+        model_ref = (
+            os.environ.get("ICS_AGENT_MODEL_PATH", "").strip()
+            or os.environ.get("QWEN_MODEL_PATH", "").strip()
+            or self.model_id
+        )
         model_cache_key = (
             model_ref,
             self.local_files_only,
+            self.trust_remote_code,
             self.quantization,
         )
         if model_cache_key not in self._model_cache:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_ref,
-                trust_remote_code=True,
+                trust_remote_code=self.trust_remote_code,
                 local_files_only=self.local_files_only,
             )
             load_kwargs: dict[str, Any] = {
-                "trust_remote_code": True,
+                "trust_remote_code": self.trust_remote_code,
                 "local_files_only": self.local_files_only,
                 "device_map": "auto",
             }
             if self.quantization == "4bit":
-                load_kwargs["load_in_4bit"] = True
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True
+                )
             elif self.quantization == "8bit":
-                load_kwargs["load_in_8bit"] = True
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_8bit=True
+                )
             else:
                 if (
                     self.quantization == "bf16"
                     and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
                 ):
-                    load_kwargs["torch_dtype"] = torch.bfloat16
+                    load_kwargs["dtype"] = torch.bfloat16
                 else:
-                    load_kwargs["torch_dtype"] = torch.float16
+                    load_kwargs["dtype"] = torch.float16
             model = AutoModelForCausalLM.from_pretrained(model_ref, **load_kwargs)
             self._model_cache[model_cache_key] = (tokenizer, model)
 
@@ -197,12 +213,37 @@ class CachedQwenDecisionEngine:
         if self.temperature > 0:
             generator_kwargs["temperature"] = self.temperature
 
+        if (
+            not generator_kwargs["do_sample"]
+            and getattr(model, "generation_config", None) is not None
+        ):
+            model.generation_config.max_length = None
+            model.generation_config.temperature = None
+            model.generation_config.top_p = None
+            model.generation_config.top_k = None
+
         generator = pipeline(
             "text-generation",
             model=model,
             tokenizer=tokenizer,
             **generator_kwargs,
         )
+        # The HF text-generation pipeline can retain a task-level default
+        # `max_length=20` even when we control decoding through
+        # `max_new_tokens`. Clearing that inherited default avoids noisy
+        # warnings while preserving the repo-configured token budget.
+        if getattr(generator, "generation_config", None) is not None:
+            generator.generation_config.max_length = None
+            if not generator_kwargs["do_sample"]:
+                generator.generation_config.temperature = None
+                generator.generation_config.top_p = None
+                generator.generation_config.top_k = None
+        if getattr(model, "generation_config", None) is not None:
+            model.generation_config.max_length = None
+            if not generator_kwargs["do_sample"]:
+                model.generation_config.temperature = None
+                model.generation_config.top_p = None
+                model.generation_config.top_k = None
         llm = HuggingFacePipeline(pipeline=generator)
         self._llm_cache[llm_cache_key] = llm
         return llm
@@ -287,6 +328,8 @@ class CachedQwenDecisionEngine:
         self.last_raw_output = self._raw_excerpt(raw)
         payload = self._parse_output(raw)
         if payload is None:
+            if not self.fatal_on_parse_error:
+                return self._parse_failure_payload(context)
             raise RuntimeError(
                 f"model output did not contain valid JSON: {self.last_raw_output}"
             )
@@ -316,10 +359,38 @@ class CachedQwenDecisionEngine:
         self.last_raw_output = self._raw_excerpt(raw)
         payload = self._parse_output(raw)
         if payload is None:
+            if not self.fatal_on_parse_error:
+                return self._parse_failure_payload(context)
             raise RuntimeError(
                 f"model output did not contain valid JSON: {self.last_raw_output}"
             )
         return self._finalize_payload(payload, context)
+
+    def _parse_failure_payload(self, context: dict[str, Any]) -> dict[str, Any]:
+        self.last_error = (
+            "model output did not contain valid JSON; using schema-fallback"
+        )
+        candidate_id = None
+        for item in context.get("candidate_actions", []):
+            action = normalize_action(item.get("action"))
+            if action == {"type": "noop"}:
+                candidate_id = item.get("id")
+                break
+        return self._finalize_payload(
+            {
+                "summary": "Hold because model output was not parseable.",
+                "candidate_id": candidate_id,
+                "confidence": 0.0,
+                "diagnosis": None,
+                "labels": ["agentic", self.role, "schema-fallback"],
+                "decision_type": "note",
+                "metadata": {
+                    "parse_failure_fallback": True,
+                    "raw_excerpt": self.last_raw_output,
+                },
+            },
+            context,
+        )
 
     @staticmethod
     def _parse_output(raw: Any) -> dict[str, Any] | None:
@@ -357,6 +428,8 @@ class CachedQwenDecisionEngine:
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:].strip()
         add_candidate(cleaned)
+        for variant in CachedQwenDecisionEngine._field_fragment_variants(cleaned):
+            add_candidate(variant)
 
         for block in re.findall(
             r"```(?:json)?\s*(.*?)```",
@@ -365,6 +438,16 @@ class CachedQwenDecisionEngine:
         ):
             add_candidate(block)
 
+        parsed_payloads: list[dict[str, Any]] = []
+
+        def collect_payload(payload: Any) -> None:
+            if isinstance(payload, dict):
+                parsed_payloads.append(payload)
+            elif isinstance(payload, list):
+                parsed_payloads.extend(
+                    item for item in payload if isinstance(item, dict)
+                )
+
         decoder = json.JSONDecoder()
         for candidate in candidates:
             for variant in CachedQwenDecisionEngine._candidate_variants(candidate):
@@ -372,28 +455,19 @@ class CachedQwenDecisionEngine:
                     payload = json.loads(variant)
                 except json.JSONDecodeError:
                     payload = None
-                if isinstance(payload, dict):
-                    return payload
-                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                    return payload[0]
+                collect_payload(payload)
 
                 try:
                     payload = yaml.safe_load(variant)
                 except yaml.YAMLError:
                     payload = None
-                if isinstance(payload, dict):
-                    return payload
-                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                    return payload[0]
+                collect_payload(payload)
 
                 try:
                     payload = ast.literal_eval(variant)
                 except (SyntaxError, ValueError):
                     payload = None
-                if isinstance(payload, dict):
-                    return payload
-                if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-                    return payload[0]
+                collect_payload(payload)
 
             for index, char in enumerate(candidate):
                 if char != "{":
@@ -402,9 +476,74 @@ class CachedQwenDecisionEngine:
                     payload, _ = decoder.raw_decode(candidate[index:])
                 except json.JSONDecodeError:
                     continue
-                if isinstance(payload, dict):
-                    return payload
+                collect_payload(payload)
+        scored_payloads = [
+            (CachedQwenDecisionEngine._decision_payload_score(payload), payload)
+            for payload in parsed_payloads
+        ]
+        scored_payloads = [item for item in scored_payloads if item[0] > 0]
+        if scored_payloads:
+            scored_payloads.sort(key=lambda item: item[0], reverse=True)
+            return scored_payloads[0][1]
         return None
+
+    @staticmethod
+    def _decision_payload_score(payload: dict[str, Any]) -> int:
+        decision_fields = {
+            "summary",
+            "candidate_id",
+            "confidence",
+            "diagnosis",
+            "labels",
+            "decision_type",
+            "action",
+            "metadata",
+        }
+        context_fields = {
+            "role",
+            "scenario_id",
+            "suite",
+            "intent",
+            "observation",
+            "candidate_actions",
+            "recent_actions",
+            "structured_memory",
+        }
+        score = sum(2 for field in decision_fields if field in payload)
+        if "summary" in payload:
+            score += 2
+        if "decision_type" in payload:
+            score += 2
+        if "candidate_id" in payload or "action" in payload:
+            score += 1
+        if score == 0:
+            return 0
+        score -= sum(1 for field in context_fields if field in payload)
+        return max(0, score)
+
+    @staticmethod
+    def _field_fragment_variants(candidate: str) -> list[str]:
+        variants: list[str] = []
+        field_names = (
+            "summary",
+            "candidate_id",
+            "confidence",
+            "diagnosis",
+            "labels",
+            "decision_type",
+            "action",
+            "metadata",
+        )
+        for field_name in field_names:
+            match = re.search(rf'"{re.escape(field_name)}"\s*:', candidate)
+            if not match:
+                continue
+            fragment = candidate[match.start() :].lstrip(" ,;")
+            if fragment.startswith("{"):
+                variants.append(fragment)
+            else:
+                variants.append("{" + fragment)
+        return variants
 
     @staticmethod
     def _candidate_variants(candidate: str) -> list[str]:
@@ -569,12 +708,15 @@ class CachedQwenDecisionEngine:
 
         selected["action"] = action
         selected.setdefault("summary", f"Agentic {self.role} assessment")
-        selected.setdefault("confidence", 0.55)
+        selected["confidence"] = self._coerce_confidence(
+            selected.get("confidence"),
+            default=0.55,
+        )
         selected["diagnosis"] = self._normalize_diagnosis(selected.get("diagnosis"))
-        labels = selected.get("labels", ["agentic", self.role])
-        if not isinstance(labels, list):
-            labels = [str(labels)]
-        selected["labels"] = [str(label) for label in labels]
+        selected["labels"] = self._coerce_labels(
+            selected.get("labels"),
+            default=["agentic", self.role],
+        )
         selected.setdefault(
             "decision_type",
             "analysis" if self.role == "offline_analysis" else "note",
@@ -590,6 +732,28 @@ class CachedQwenDecisionEngine:
                 selected["decision_type"] = "note"
 
         return selected
+
+    @staticmethod
+    def _coerce_number(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _coerce_confidence(cls, value: Any, *, default: float) -> float:
+        numeric = cls._coerce_number(value)
+        if numeric is None:
+            return float(default)
+        return max(0.0, min(1.0, float(numeric)))
+
+    @staticmethod
+    def _coerce_labels(value: Any, *, default: list[str]) -> list[str]:
+        if value is None:
+            return list(default)
+        if isinstance(value, list):
+            return [str(label) for label in value if label is not None]
+        return [str(value)]
 
     @staticmethod
     def _normalize_diagnosis(value: Any) -> str | None:
@@ -835,12 +999,35 @@ class AgenticRoleAgent(RoleAgent):
     def _uses_scripted_black_box_policy(self) -> bool:
         if not self._is_black_box_attacker():
             return False
-        if str(self._state.get("testbed_id", "")).strip().lower() != "water_treatment":
+        behavior = self.profile.get("behavior_model")
+        if not isinstance(behavior, dict):
+            return False
+        if str(behavior.get("policy", "")).strip().lower() != "scripted_black_box":
+            return False
+        testbed_id = str(self._state.get("testbed_id", "")).strip().lower()
+        if testbed_id == "water_treatment":
+            return True
+        return testbed_id == "water_distribution" and (
+            self._uses_distribution_scripted_black_box_profile()
+        )
+
+    def _uses_scripted_gray_box_policy(self) -> bool:
+        if not self._is_gray_box_attacker():
             return False
         behavior = self.profile.get("behavior_model")
         if not isinstance(behavior, dict):
             return False
-        return str(behavior.get("policy", "")).strip().lower() == "scripted_black_box"
+        return str(behavior.get("policy", "")).strip().lower() == "scripted_gray_box"
+
+    def _uses_scripted_white_box_policy(self) -> bool:
+        if not self._is_white_box_attacker():
+            return False
+        behavior = self.profile.get("behavior_model")
+        if not isinstance(behavior, dict):
+            return False
+        return (
+            str(behavior.get("policy", "")).strip().lower() == "scripted_white_box"
+        )
 
     def step(self, context: dict[str, Any]) -> list[Any]:
         if self.mode == "offline":
@@ -882,9 +1069,15 @@ class AgenticRoleAgent(RoleAgent):
                 decision_type="analysis",
                 summary=str(payload.get("summary", "Agentic offline analysis")),
                 time_sec=float(context.get("duration_sec", 0.0)),
-                confidence=float(payload.get("confidence", 0.7)),
+                confidence=self._coerce_confidence(
+                    payload.get("confidence"),
+                    default=0.7,
+                ),
                 diagnosis=payload.get("diagnosis"),
-                labels=list(payload.get("labels", ["offline", "agentic"])),
+                labels=self._coerce_labels(
+                    payload.get("labels"),
+                    default=["offline", "agentic"],
+                ),
                 metadata={
                     "backend": self.engine.last_mode,
                     "error": self.engine.last_error,
@@ -920,6 +1113,10 @@ class AgenticRoleAgent(RoleAgent):
             return transition
         if self._uses_scripted_black_box_policy():
             return self._step_scripted_black_box_attacker(agent_context)
+        if self._uses_scripted_gray_box_policy():
+            return self._step_scripted_gray_box_attacker(agent_context)
+        if self._uses_scripted_white_box_policy():
+            return self._step_scripted_white_box_attacker(agent_context)
         if self._only_noop_candidates(agent_context):
             return []
         if not self._should_reason(agent_context, channel="action"):
@@ -1232,12 +1429,23 @@ class AgenticRoleAgent(RoleAgent):
             mitre_context = self._black_box_visible_mitre_context(
                 internal_mitre_context
             )
-            candidate_actions = self._black_box_candidate_actions(
-                context=history_context,
-                telemetry_summary=telemetry_summary,
-                structured_memory=internal_structured_memory,
-                mitre_context=internal_mitre_context,
-            )
+            if (
+                self._uses_distribution_scripted_black_box_profile()
+                and self._is_water_distribution_scenario(scenario)
+            ):
+                candidate_actions = (
+                    self._scripted_black_box_distribution_candidate_actions(
+                        context=history_context,
+                        telemetry_summary=telemetry_summary,
+                    )
+                )
+            else:
+                candidate_actions = self._black_box_candidate_actions(
+                    context=history_context,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=internal_structured_memory,
+                    mitre_context=internal_mitre_context,
+                )
             compact_observation = self._black_box_visible_observation(observation)
             recent_observations = [
                 self._black_box_visible_observation(item)
@@ -1919,6 +2127,43 @@ class AgenticRoleAgent(RoleAgent):
                 "type": "inspect_surface",
                 "target": self._black_box_surface_alias(normalized.get("surface")),
             }
+        if (
+            action_type == "set_actuator"
+            and self._uses_distribution_scripted_black_box_profile()
+        ):
+            actuator_name = str(normalized.get("name", "")).strip() or "actuator"
+            target_alias = self._black_box_alias(
+                "control",
+                f"set_actuator:{actuator_name}",
+                "ctrl",
+            )
+            raw_value = normalized.get("value")
+            setting = "toggle"
+            if isinstance(raw_value, bool):
+                setting = "open" if raw_value else "close"
+            else:
+                numeric_value = self._coerce_number(raw_value)
+                current_value = None
+                if observation is not None:
+                    current_value = self._coerce_number(
+                        observation.get(f"{actuator_name}_Cmd")
+                    )
+                    if current_value is None:
+                        current_value = self._coerce_number(
+                            observation.get(f"{actuator_name}_Sts")
+                        )
+                if numeric_value is not None:
+                    if numeric_value <= 0.0:
+                        setting = "disable"
+                    elif current_value is not None and numeric_value < current_value:
+                        setting = "disable"
+                    else:
+                        setting = "enable"
+            return {
+                "type": "toggle_control",
+                "target": target_alias,
+                "setting": setting,
+            }
         if action_type == "set_sensor":
             field_name = str(normalized.get("name", "")).strip()
             target_alias = self._black_box_signal_alias(field_name)
@@ -2326,6 +2571,243 @@ class AgenticRoleAgent(RoleAgent):
             reverse=True,
         )
 
+    def _uses_distribution_scripted_black_box_profile(self) -> bool:
+        return self.profile_name == "scripted_black_box_distribution_attacker"
+
+    @staticmethod
+    def _scripted_black_box_distribution_recon_surfaces() -> list[str]:
+        return [
+            "tags",
+            "registers",
+            "io_image",
+            "alarm_bits",
+            "actuator_state_bits",
+            "sensor_write_path",
+            "actuator_write_path",
+        ]
+
+    @staticmethod
+    def _scripted_black_box_distribution_sensor_fields() -> tuple[str, ...]:
+        return (
+            "Supply_Tank_Level",
+            "Supply_Pump_Flow",
+            "Supply_NaOCl_Level",
+            "Supply_NH4Cl_Level",
+            "Grid_Elev_Tank_Level",
+            "Grid_Consum_Tank_Level",
+            "RWS_Tank_Level",
+        )
+
+    @staticmethod
+    def _scripted_black_box_distribution_actuator_actions() -> list[dict[str, Any]]:
+        return [
+            {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 100},
+            {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 0},
+            {"type": "set_actuator", "name": "Supply_Tank_Valve", "value": True},
+            {"type": "set_actuator", "name": "Supply_Tank_Valve", "value": False},
+            {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": True},
+            {"type": "set_actuator", "name": "Grid_Elev_Valve", "value": False},
+            {"type": "set_actuator", "name": "RWS_Pump_Speed", "value": 100},
+            {"type": "set_actuator", "name": "RWS_Pump_Speed", "value": 0},
+            {"type": "set_actuator", "name": "RWS_Tank_Valve", "value": True},
+            {"type": "set_actuator", "name": "RWS_Tank_Valve", "value": False},
+        ]
+
+    def _scripted_black_box_distribution_sensor_actions(
+        self,
+        observation: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for field_name in self._scripted_black_box_distribution_sensor_fields():
+            current_value = self._coerce_number(observation.get(field_name))
+            if current_value is None:
+                continue
+            delta = max(abs(current_value) * 0.45, 25.0)
+            low_value = max(0, int(round(current_value - delta)))
+            high_value = min(65535, int(round(current_value + delta)))
+            if low_value == int(round(current_value)):
+                low_value = max(0, low_value - 20)
+            if high_value == int(round(current_value)):
+                high_value = min(65535, high_value + 20)
+            if low_value != int(round(current_value)):
+                actions.append(
+                    {
+                        "type": "set_sensor",
+                        "name": field_name,
+                        "value": low_value,
+                    }
+                )
+            if high_value != int(round(current_value)):
+                actions.append(
+                    {
+                        "type": "set_sensor",
+                        "name": field_name,
+                        "value": high_value,
+                    }
+                )
+        return actions
+
+    def _scripted_black_box_distribution_candidate_actions(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        observation = dict(context.get("observation") or {})
+        allowed = set(self.profile.get("allowed_action_types", []))
+        plant_running = str(observation.get("STATE_NAME", "")).strip().upper() in {
+            "RUNNING",
+            "START",
+            "STARTING",
+        }
+        visible_risk_flags = set(self._black_box_visible_risk_flags(telemetry_summary))
+        sensor_surface = self._black_box_surface_alias("sensor_write_path")
+        actuator_surface = self._black_box_surface_alias("actuator_write_path")
+        availability_surface = self._black_box_surface_alias("io_image")
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+        candidate_map: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            action: dict[str, Any] | str | None,
+            *,
+            category: str,
+            surface: str,
+            priority: int,
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", "")).strip()
+            if action_type not in allowed:
+                return
+            if action_type != "set_sensor" and self._action_satisfied(
+                normalized,
+                observation=observation,
+            ):
+                return
+            visible_action = self._black_box_visible_action(
+                normalized,
+                observation=observation,
+            )
+            if visible_action is None:
+                return
+            candidate_id = self._black_box_candidate_id(visible_action)
+            payload = {
+                "id": candidate_id,
+                "summary": self._black_box_candidate_summary(
+                    visible_action=visible_action,
+                    category=category,
+                ),
+                "action": visible_action,
+                "source": "scripted_black_box_distribution",
+                "priority": int(priority),
+                "surface": surface,
+                "category": category,
+            }
+            existing = candidates_by_id.get(candidate_id)
+            if existing is not None and int(existing.get("priority", 0)) >= int(
+                payload["priority"]
+            ):
+                return
+            candidates_by_id[candidate_id] = payload
+            candidate_map[candidate_id] = {
+                "action": normalized,
+                "summary": payload["summary"],
+                "visible_action": visible_action,
+            }
+
+        if "inspect_surface" in allowed:
+            for index, surface in enumerate(
+                self._scripted_black_box_distribution_recon_surfaces()
+            ):
+                add_candidate(
+                    {"type": "inspect_surface", "surface": surface},
+                    category="recon",
+                    surface=self._black_box_surface_alias(surface),
+                    priority=160 - (index * 6),
+                )
+
+        if "hmi_start" in allowed and not plant_running:
+            add_candidate(
+                {"type": "hmi_start", "process_id": "WD-UC0"},
+                category="probe",
+                surface=availability_surface,
+                priority=118,
+            )
+        if "hmi_stop" in allowed and plant_running:
+            add_candidate(
+                {"type": "hmi_stop", "process_id": "WD-UC0"},
+                category="exploit",
+                surface=availability_surface,
+                priority=92,
+            )
+        if "hmi_estop" in allowed and plant_running:
+            add_candidate(
+                {"type": "hmi_estop", "process_id": "WD-UC0"},
+                category="escalate",
+                surface=availability_surface,
+                priority=90,
+            )
+
+        if "set_sensor" in allowed:
+            sensor_priority = 124
+            if visible_risk_flags.intersection(
+                {"telemetry_shift", "single_alarm_pressure", "multi_alarm_pressure"}
+            ):
+                sensor_priority += 8
+            for action in self._scripted_black_box_distribution_sensor_actions(
+                observation
+            ):
+                add_candidate(
+                    action,
+                    category="exploit",
+                    surface=sensor_surface,
+                    priority=sensor_priority,
+                )
+                sensor_priority -= 1
+
+        if "set_actuator" in allowed:
+            actuator_priority = 120
+            if visible_risk_flags.intersection(
+                {"control_divergence", "state_disruption"}
+            ):
+                actuator_priority += 8
+            for action in self._scripted_black_box_distribution_actuator_actions():
+                raw_value = action.get("value")
+                category = (
+                    "exploit"
+                    if raw_value in {True, 100}
+                    else "fallback"
+                )
+                add_candidate(
+                    action,
+                    category=category,
+                    surface=actuator_surface,
+                    priority=actuator_priority,
+                )
+                actuator_priority -= 1
+
+        if "noop" in allowed:
+            add_candidate(
+                {"type": "noop"},
+                category="hold",
+                surface=availability_surface,
+                priority=8,
+            )
+
+        visible_candidates = sorted(
+            candidates_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                str(item.get("id", "")),
+            ),
+            reverse=True,
+        )
+        self._state["black_box_candidate_map"] = candidate_map
+        self.engine.black_box_candidate_map = dict(candidate_map)
+        return visible_candidates
+
     def _scripted_black_box_policy_state(self) -> dict[str, Any]:
         return self._state.setdefault(
             "scripted_black_box_policy",
@@ -2537,6 +3019,512 @@ class AgenticRoleAgent(RoleAgent):
             state["last_candidate_id"] = str(candidate.get("id", "")).strip() or None
             state["last_surface"] = (
                 self._scripted_black_box_candidate_surface(candidate) or None
+            )
+            selection_log = state.setdefault("selection_log", [])
+            selection_log.append(
+                {
+                    "time_sec": round(float(context.get("time_sec", 0.0)), 3),
+                    "candidate_id": candidate.get("id"),
+                    "surface": state["last_surface"],
+                    "category": candidate.get("category"),
+                }
+            )
+            del selection_log[:-12]
+            return decisions
+        return []
+
+    def _scripted_gray_box_policy_state(self) -> dict[str, Any]:
+        return self._state.setdefault(
+            "scripted_gray_box_policy",
+            {
+                "processed_action_signatures": set(),
+                "candidate_attempts": {},
+                "inspected_surfaces": set(),
+                "surface_scores": {},
+                "failed_surfaces": set(),
+                "committed_surface": None,
+                "last_candidate_id": None,
+                "last_surface": None,
+                "selection_log": [],
+            },
+        )
+
+    @staticmethod
+    def _scripted_gray_box_candidate_surface(candidate: dict[str, Any]) -> str:
+        surface = str(candidate.get("surface", "")).strip()
+        if surface:
+            return surface
+        action = dict(candidate.get("action") or {})
+        if str(action.get("type", "")).strip() == "inspect_surface":
+            return (
+                str(action.get("surface", "")).strip()
+                or str(action.get("target", "")).strip()
+            )
+        return ""
+
+    def _sync_scripted_gray_box_policy_state(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = self._scripted_gray_box_policy_state()
+        processed = state.setdefault("processed_action_signatures", set())
+        attempts = state.setdefault("candidate_attempts", {})
+        inspected = state.setdefault("inspected_surfaces", set())
+        surface_scores = state.setdefault("surface_scores", {})
+        failed_surfaces = state.setdefault("failed_surfaces", set())
+
+        for item in context.get("recent_actions", []):
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            candidate_id = action_key(action)
+            time_sec = self._coerce_number(item.get("time_sec"))
+            signature = f"{candidate_id}@{time_sec if time_sec is not None else 'na'}"
+            if signature in processed:
+                continue
+            processed.add(signature)
+            attempts[candidate_id] = int(attempts.get(candidate_id, 0) or 0) + 1
+            if str(action.get("type", "")).strip() == "inspect_surface":
+                target = (
+                    str(action.get("surface", "")).strip()
+                    or str(action.get("target", "")).strip()
+                )
+                if target:
+                    inspected.add(target)
+            result = item.get("result")
+            if isinstance(result, dict):
+                surface = str(result.get("surface", "")).strip()
+                if surface:
+                    inspected.add(surface)
+                recon = dict(result.get("reconnaissance") or {})
+                recon_surface = str(recon.get("surface", "")).strip()
+                if recon_surface:
+                    inspected.add(recon_surface)
+
+        structured_memory = dict(context.get("structured_memory") or {})
+        commitment = dict(structured_memory.get("exploit_commitment") or {})
+        committed_surface = str(
+            commitment.get("surface")
+            or structured_memory.get("best_known_attack_surface")
+            or ""
+        ).strip()
+        state["committed_surface"] = committed_surface or None
+        for payload in structured_memory.get("observed_effect_patterns", []):
+            if not isinstance(payload, dict):
+                continue
+            surface = str(payload.get("surface", "")).strip()
+            if not surface:
+                continue
+            score = float(payload.get("score", 0.0) or 0.0)
+            surface_scores[surface] = max(
+                float(surface_scores.get(surface, 0.0) or 0.0),
+                score,
+            )
+        for payload in structured_memory.get("observed_effect_map", []):
+            if not isinstance(payload, dict):
+                continue
+            surface = str(payload.get("surface", "")).strip()
+            if not surface:
+                continue
+            score = float(payload.get("score", 0.0) or 0.0)
+            surface_scores[surface] = max(
+                float(surface_scores.get(surface, 0.0) or 0.0),
+                score,
+            )
+        for surface in structured_memory.get("stalled_surfaces", []):
+            failed_surface = str(surface).strip()
+            if failed_surface:
+                failed_surfaces.add(failed_surface)
+        return state
+
+    def _scripted_gray_box_candidate_score(
+        self,
+        *,
+        candidate: dict[str, Any],
+        context: dict[str, Any],
+        state: dict[str, Any],
+    ) -> tuple[int, int, int, str, str]:
+        action = dict(candidate.get("action") or {})
+        action_type = str(action.get("type", "")).strip()
+        candidate_id = str(candidate.get("id", "")).strip()
+        surface = self._scripted_gray_box_candidate_surface(candidate)
+        category = str(candidate.get("category", "")).strip().lower()
+        priority = int(candidate.get("priority", 0) or 0)
+        structured_memory = dict(context.get("structured_memory") or {})
+        mitigation_pressure = str(
+            structured_memory.get("detection_pressure", "")
+        ).strip().lower()
+        best_surface = str(
+            structured_memory.get("best_known_attack_surface")
+            or state.get("committed_surface")
+            or ""
+        ).strip()
+        attempts = int(state.get("candidate_attempts", {}).get(candidate_id, 0) or 0)
+        inspected_surfaces = {
+            str(item).strip()
+            for item in state.get("inspected_surfaces", set())
+            if str(item).strip()
+        }
+        failed_surfaces = {
+            str(item).strip()
+            for item in state.get("failed_surfaces", set())
+            if str(item).strip()
+        }
+        surface_scores = dict(state.get("surface_scores", {}))
+        next_phase = str((context.get("mitre_context") or {}).get("next_phase", "")).strip()
+
+        if action_type == "noop" or candidate_id == action_key({"type": "noop"}):
+            return (-10_000, priority, -attempts, surface or "~", candidate_id)
+
+        score = priority * 10
+        score += {
+            "support": 16,
+            "probe": 10,
+            "exploit": 20,
+            "sustain": 20,
+            "escalate": 14,
+            "recon": 10,
+            "fallback": 2,
+            "hold": -4,
+        }.get(category, 0)
+        if surface and surface == best_surface:
+            score += 24
+        score += min(int(float(surface_scores.get(surface, 0.0) or 0.0) * 14.0), 28)
+        if surface and surface in failed_surfaces:
+            score -= 32
+        if action_type == "inspect_surface":
+            target = (
+                str(action.get("surface", "")).strip()
+                or str(action.get("target", "")).strip()
+            )
+            if next_phase in {"discovery", "control_path_qualification"}:
+                ordered_surfaces = list(
+                    (context.get("mitre_context") or {}).get(
+                        "qualification_surfaces"
+                        if next_phase == "control_path_qualification"
+                        else "discovery_surfaces",
+                        [],
+                    )
+                )
+                phase_order = {
+                    str(item).strip(): index
+                    for index, item in enumerate(ordered_surfaces)
+                }
+                score += 140
+                if target not in inspected_surfaces:
+                    score += 24
+                score += max(0, 24 - (phase_order.get(target, 99) * 8))
+            elif target and target not in inspected_surfaces:
+                score += 14
+            else:
+                score -= 8
+        elif next_phase in {"discovery", "control_path_qualification"} and not best_surface:
+            score -= 120
+
+        if mitigation_pressure == "high" and category == "recon":
+            score -= 8
+        if attempts == 0:
+            score += 10
+        score -= attempts * 16
+        return (score, priority, -attempts, surface or "~", candidate_id)
+
+    def _step_scripted_gray_box_attacker(
+        self,
+        context: dict[str, Any],
+    ) -> list[Any]:
+        self.engine.last_mode = "scripted_gray_box"
+        self.engine.last_error = None
+        candidates = list(context.get("candidate_actions", []))
+        if not candidates:
+            return []
+        state = self._sync_scripted_gray_box_policy_state(context)
+        ranked = sorted(
+            candidates,
+            key=lambda item: self._scripted_gray_box_candidate_score(
+                candidate=item,
+                context=context,
+                state=state,
+            ),
+            reverse=True,
+        )
+        for index, candidate in enumerate(ranked):
+            payload = {
+                "decision_type": "action",
+                "candidate_id": candidate.get("id"),
+                "summary": str(candidate.get("summary", "")).strip(),
+                "confidence": 1.0,
+                "labels": ["scripted", "attacker", "gray_box", "deterministic"],
+                "metadata": {
+                    "selection_rank": index + 1,
+                    "selection_category": candidate.get("category"),
+                    "selection_surface": self._scripted_gray_box_candidate_surface(
+                        candidate
+                    ),
+                    "selection_policy": "scripted_gray_box",
+                },
+            }
+            decisions = self._payload_to_decisions(payload, context)
+            if not decisions:
+                continue
+            state["last_candidate_id"] = str(candidate.get("id", "")).strip() or None
+            state["last_surface"] = (
+                self._scripted_gray_box_candidate_surface(candidate) or None
+            )
+            selection_log = state.setdefault("selection_log", [])
+            selection_log.append(
+                {
+                    "time_sec": round(float(context.get("time_sec", 0.0)), 3),
+                    "candidate_id": candidate.get("id"),
+                    "surface": state["last_surface"],
+                    "category": candidate.get("category"),
+                }
+            )
+            del selection_log[:-12]
+            return decisions
+        return []
+
+    def _scripted_white_box_policy_state(self) -> dict[str, Any]:
+        return self._state.setdefault(
+            "scripted_white_box_policy",
+            {
+                "processed_action_signatures": set(),
+                "candidate_attempts": {},
+                "inspected_surfaces": set(),
+                "surface_scores": {},
+                "failed_surfaces": set(),
+                "committed_surface": None,
+                "last_candidate_id": None,
+                "last_surface": None,
+                "selection_log": [],
+            },
+        )
+
+    @staticmethod
+    def _scripted_white_box_candidate_surface(candidate: dict[str, Any]) -> str:
+        surface = str(candidate.get("surface", "")).strip()
+        if surface:
+            return surface
+        action = dict(candidate.get("action") or {})
+        if str(action.get("type", "")).strip() == "inspect_surface":
+            return (
+                str(action.get("surface", "")).strip()
+                or str(action.get("target", "")).strip()
+            )
+        return ""
+
+    def _sync_scripted_white_box_policy_state(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = self._scripted_white_box_policy_state()
+        processed = state.setdefault("processed_action_signatures", set())
+        attempts = state.setdefault("candidate_attempts", {})
+        inspected = state.setdefault("inspected_surfaces", set())
+        surface_scores = state.setdefault("surface_scores", {})
+        failed_surfaces = state.setdefault("failed_surfaces", set())
+
+        for item in context.get("recent_actions", []):
+            if item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            candidate_id = action_key(action)
+            time_sec = self._coerce_number(item.get("time_sec"))
+            signature = f"{candidate_id}@{time_sec if time_sec is not None else 'na'}"
+            if signature in processed:
+                continue
+            processed.add(signature)
+            attempts[candidate_id] = int(attempts.get(candidate_id, 0) or 0) + 1
+            if str(action.get("type", "")).strip() == "inspect_surface":
+                target = (
+                    str(action.get("surface", "")).strip()
+                    or str(action.get("target", "")).strip()
+                )
+                if target:
+                    inspected.add(target)
+            result = item.get("result")
+            if isinstance(result, dict):
+                surface = str(result.get("surface", "")).strip()
+                if surface:
+                    inspected.add(surface)
+                recon = dict(result.get("reconnaissance") or {})
+                recon_surface = str(recon.get("surface", "")).strip()
+                if recon_surface:
+                    inspected.add(recon_surface)
+
+        structured_memory = dict(context.get("structured_memory") or {})
+        commitment = dict(structured_memory.get("exploit_commitment") or {})
+        committed_surface = str(
+            commitment.get("surface")
+            or structured_memory.get("best_known_attack_surface")
+            or ""
+        ).strip()
+        state["committed_surface"] = committed_surface or None
+        for payload in structured_memory.get("observed_effect_patterns", []):
+            if not isinstance(payload, dict):
+                continue
+            surface = str(payload.get("surface", "")).strip()
+            if not surface:
+                continue
+            score = float(payload.get("score", 0.0) or 0.0)
+            surface_scores[surface] = max(
+                float(surface_scores.get(surface, 0.0) or 0.0),
+                score,
+            )
+        for payload in structured_memory.get("observed_effect_map", []):
+            if not isinstance(payload, dict):
+                continue
+            surface = str(payload.get("surface", "")).strip()
+            if not surface:
+                continue
+            score = float(payload.get("score", 0.0) or 0.0)
+            surface_scores[surface] = max(
+                float(surface_scores.get(surface, 0.0) or 0.0),
+                score,
+            )
+        for surface in structured_memory.get("stalled_surfaces", []):
+            failed_surface = str(surface).strip()
+            if failed_surface:
+                failed_surfaces.add(failed_surface)
+        return state
+
+    def _scripted_white_box_candidate_score(
+        self,
+        *,
+        candidate: dict[str, Any],
+        context: dict[str, Any],
+        state: dict[str, Any],
+    ) -> tuple[int, int, int, str, str]:
+        action = dict(candidate.get("action") or {})
+        action_type = str(action.get("type", "")).strip()
+        candidate_id = str(candidate.get("id", "")).strip()
+        surface = self._scripted_white_box_candidate_surface(candidate)
+        category = str(candidate.get("category", "")).strip().lower()
+        priority = int(candidate.get("priority", 0) or 0)
+        structured_memory = dict(context.get("structured_memory") or {})
+        mitigation_pressure = str(
+            structured_memory.get("detection_pressure", "")
+        ).strip().lower()
+        direct_commit = bool(structured_memory.get("white_box_direct_commit"))
+        best_surface = str(
+            structured_memory.get("best_known_attack_surface")
+            or state.get("committed_surface")
+            or ""
+        ).strip()
+        attempts = int(state.get("candidate_attempts", {}).get(candidate_id, 0) or 0)
+        inspected_surfaces = {
+            str(item).strip()
+            for item in state.get("inspected_surfaces", set())
+            if str(item).strip()
+        }
+        failed_surfaces = {
+            str(item).strip()
+            for item in state.get("failed_surfaces", set())
+            if str(item).strip()
+        }
+        surface_scores = dict(state.get("surface_scores", {}))
+        next_phase = str((context.get("mitre_context") or {}).get("next_phase", "")).strip()
+
+        if action_type == "noop" or candidate_id == action_key({"type": "noop"}):
+            return (-10_000, priority, -attempts, surface or "~", candidate_id)
+
+        score = priority * 10
+        score += {
+            "support": 18,
+            "exploit": 22,
+            "sustain": 24,
+            "escalate": 16,
+            "recon": 8,
+            "fallback": 2,
+            "hold": -4,
+        }.get(category, 0)
+        if surface and surface == best_surface:
+            score += 42
+        if direct_commit and surface and surface == best_surface and action_type != "inspect_surface":
+            score += 36
+        score += min(int(float(surface_scores.get(surface, 0.0) or 0.0) * 18.0), 36)
+        if surface and surface in failed_surfaces:
+            score -= 48
+        if action_type == "inspect_surface":
+            target = (
+                str(action.get("surface", "")).strip()
+                or str(action.get("target", "")).strip()
+            )
+            if next_phase in {"discovery", "control_path_qualification"}:
+                ordered_surfaces = list(
+                    (context.get("mitre_context") or {}).get(
+                        "qualification_surfaces"
+                        if next_phase == "control_path_qualification"
+                        else "discovery_surfaces",
+                        [],
+                    )
+                )
+                phase_order = {
+                    str(item).strip(): index
+                    for index, item in enumerate(ordered_surfaces)
+                }
+                score += 180
+                if target not in inspected_surfaces:
+                    score += 40
+                score += max(0, 36 - (phase_order.get(target, 99) * 10))
+            elif target and target not in inspected_surfaces:
+                score += 18
+            else:
+                score -= 12
+        elif next_phase in {"discovery", "control_path_qualification"} and not direct_commit:
+            score -= 160
+
+        if mitigation_pressure == "high" and category == "recon":
+            score -= 10
+        if attempts == 0:
+            score += 12
+        score -= attempts * 18
+        return (score, priority, -attempts, surface or "~", candidate_id)
+
+    def _step_scripted_white_box_attacker(
+        self,
+        context: dict[str, Any],
+    ) -> list[Any]:
+        self.engine.last_mode = "scripted_white_box"
+        self.engine.last_error = None
+        candidates = list(context.get("candidate_actions", []))
+        if not candidates:
+            return []
+        state = self._sync_scripted_white_box_policy_state(context)
+        ranked = sorted(
+            candidates,
+            key=lambda item: self._scripted_white_box_candidate_score(
+                candidate=item,
+                context=context,
+                state=state,
+            ),
+            reverse=True,
+        )
+        for index, candidate in enumerate(ranked):
+            payload = {
+                "decision_type": "action",
+                "candidate_id": candidate.get("id"),
+                "summary": str(candidate.get("summary", "")).strip(),
+                "confidence": 1.0,
+                "labels": ["scripted", "attacker", "white_box", "deterministic"],
+                "metadata": {
+                    "selection_rank": index + 1,
+                    "selection_category": candidate.get("category"),
+                    "selection_surface": self._scripted_white_box_candidate_surface(
+                        candidate
+                    ),
+                    "selection_policy": "scripted_white_box",
+                },
+            }
+            decisions = self._payload_to_decisions(payload, context)
+            if not decisions:
+                continue
+            state["last_candidate_id"] = str(candidate.get("id", "")).strip() or None
+            state["last_surface"] = (
+                self._scripted_white_box_candidate_surface(candidate) or None
             )
             selection_log = state.setdefault("selection_log", [])
             selection_log.append(
@@ -8234,7 +9222,6 @@ class AgenticRoleAgent(RoleAgent):
         allowed = set(self.profile.get("allowed_action_types", []))
         observation = context.get("observation", {})
         state_name = str(observation.get("STATE_NAME", "")).upper()
-        now = float(context.get("time_sec", 0.0))
         memory_state = self._state.setdefault("role_memory", {})
         surface_state = memory_state.get("_surface_state", {})
         commitment = dict(memory_state.get("_exploit_commitment") or {})
@@ -8258,13 +9245,6 @@ class AgenticRoleAgent(RoleAgent):
             preconditions.get("defender_attention")
             or structured_memory.get("detection_pressure", "low")
         ).lower()
-        prior_actions = {
-            action_key(action)
-            for item in context.get("executed_actions", [])
-            if item.get("role") == "attacker"
-            for action in [normalize_action(item.get("action"))]
-            if action is not None
-        }
         direct_commit = bool(structured_memory.get("white_box_direct_commit"))
         current_phase = str(structured_memory.get("current_phase", "probing"))
         committed_surface = str(
@@ -11018,9 +11998,15 @@ class AgenticRoleAgent(RoleAgent):
             summary=summary or f"{self.role} decision",
             time_sec=now,
             action=action,
-            confidence=float(payload.get("confidence", 0.65)),
+            confidence=self._coerce_confidence(
+                payload.get("confidence"),
+                default=0.65,
+            ),
             diagnosis=payload.get("diagnosis"),
-            labels=list(payload.get("labels", ["agentic", self.role])),
+            labels=self._coerce_labels(
+                payload.get("labels"),
+                default=["agentic", self.role],
+            ),
             metadata={
                 "backend": self.engine.last_mode,
                 "error": self.engine.last_error,
@@ -11509,6 +12495,21 @@ class AgenticRoleAgent(RoleAgent):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _coerce_confidence(cls, value: Any, *, default: float) -> float:
+        numeric = cls._coerce_number(value)
+        if numeric is None:
+            return float(default)
+        return max(0.0, min(1.0, float(numeric)))
+
+    @staticmethod
+    def _coerce_labels(value: Any, *, default: list[str]) -> list[str]:
+        if value is None:
+            return list(default)
+        if isinstance(value, list):
+            return [str(label) for label in value if label is not None]
+        return [str(value)]
 
     def _compact_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
         fields = ["timestamp_utc", "elapsed_sec", "sample_phase"]

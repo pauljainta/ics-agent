@@ -4,6 +4,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import json
+import marshal
 import os
 import re
 import shlex
@@ -27,7 +28,7 @@ from .action_semantics import (
 )
 from .paths import OPENPLC_SUPPORT_DIR, OPENPLC_SUPPORT_SCRIPTS, REPO_ROOT, WORKSPACE_ROOT
 from .remote_roles import RemoteRoleAgentProxy
-from .testbeds import get_testbed_spec, normalize_testbed_id
+from testbeds.runtime import get_testbed_spec, normalize_testbed_id
 from .utils import stable_hash, utc_now
 
 
@@ -35,35 +36,54 @@ class EnvironmentError(RuntimeError):
     """Raised when an environment backend cannot satisfy a request."""
 
 
-def _import_openplc_module(module_name: str):
+def _is_sourceless_openplc_payload(candidate_path: Path) -> bool:
+    return candidate_path.suffix == ".pyc" or candidate_path.name.endswith(
+        ".pyc_payload"
+    )
+
+
+def _is_compiled_openplc_wrapper(candidate_path: Path) -> bool:
+    """Detect support payloads accidentally overwritten by loader wrappers."""
+    if not _is_sourceless_openplc_payload(candidate_path):
+        return False
     try:
-        return importlib.import_module(module_name)
-    except ModuleNotFoundError:
-        candidate_paths = [
-            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.cpython-310.pyc",
-            OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.py",
-            OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.cpython-310.pyc",
-            OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.py",
-        ]
-        for candidate_path in candidate_paths:
-            if not candidate_path.exists():
-                continue
-            if candidate_path.suffix == ".pyc":
-                loader = importlib.machinery.SourcelessFileLoader(
-                    module_name, str(candidate_path)
-                )
-            else:
-                loader = importlib.machinery.SourceFileLoader(
-                    module_name, str(candidate_path)
-                )
-            spec = importlib.util.spec_from_loader(module_name, loader)
-            if spec is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            loader.exec_module(module)
-            return module
-        raise
+        code = marshal.loads(candidate_path.read_bytes()[16:])
+    except Exception:
+        return False
+    return "_load_sourceless" in getattr(code, "co_names", ())
+
+
+def _import_openplc_module(module_name: str):
+    candidate_paths = [
+        OPENPLC_SUPPORT_SCRIPTS
+        / "payloads"
+        / f"{module_name}.cpython-310.pyc_payload",
+        OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.cpython-310.pyc",
+        OPENPLC_SUPPORT_SCRIPTS / f"{module_name}.py",
+        OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.cpython-310.pyc",
+        OPENPLC_SUPPORT_SCRIPTS / "__pycache__" / f"{module_name}.py",
+    ]
+    for candidate_path in candidate_paths:
+        if not candidate_path.exists():
+            continue
+        if _is_compiled_openplc_wrapper(candidate_path):
+            continue
+        if _is_sourceless_openplc_payload(candidate_path):
+            loader = importlib.machinery.SourcelessFileLoader(
+                module_name, str(candidate_path)
+            )
+        else:
+            loader = importlib.machinery.SourceFileLoader(
+                module_name, str(candidate_path)
+            )
+        spec = importlib.util.spec_from_loader(module_name, loader)
+        if spec is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        loader.exec_module(module)
+        return module
+    return importlib.import_module(module_name)
 
 
 def _normalized_backend_name(value: Any) -> str:
@@ -364,6 +384,17 @@ class RuntimeContainmentState:
 class _SphereOpenPLCBackend:
     """Manage the SPHERE-hosted OpenPLC runtime and expose local testbed semantics."""
 
+    @staticmethod
+    def _required_config_str(config: dict[str, Any], key: str) -> str:
+        value = str(config.get(key, "")).strip()
+        if not value:
+            raise EnvironmentError(
+                "sphere_openplc backend is missing required infrastructure field "
+                f"`{key}`. Use `environment.infrastructure_profile` with an ignored "
+                "local SPHERE profile config."
+            )
+        return value
+
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
         self.keep_running = bool(config.get("keep_running", False))
@@ -371,41 +402,30 @@ class _SphereOpenPLCBackend:
         self.testbed_id = normalize_testbed_id(config.get("testbed"))
         self.testbed_spec = get_testbed_spec(self.testbed_id)
 
-        self.experiment_ref = str(
-            config.get("experiment", "openplcwater.lgarcia")
-        ).strip()
-        self.merge_server = str(
-            config.get(
-                "merge_server",
-                os.environ.get(
-                    "MRG_SERVER",
-                    os.environ.get("MERGE_SERVER", "merge.example.invalid"),
-                ),
-            )
-        ).strip() or None
-        self.realization_name = str(config.get("realization", "wargamestable")).strip()
-        self.revision = str(config.get("revision", "")).strip() or None
-        self.configured_xdc_name = str(config.get("xdc", "")).strip() or "x0"
-        self.xdc_name = (
-            str(os.environ.get("ICS_AGENT_SPHERE_XDC_OVERRIDE", "")).strip()
-            or self.configured_xdc_name
-        )
-        self.access_host = str(config.get("access_host", "access")).strip() or None
+        self.experiment_ref = self._required_config_str(config, "experiment")
+        self.merge_server = self._required_config_str(config, "merge_server")
+        self.realization_name = self._required_config_str(config, "realization")
+        self.revision = self._required_config_str(config, "revision")
+        self.configured_xdc_name = self._required_config_str(config, "xdc")
+        self.xdc_name = self.configured_xdc_name
+        self.access_host = self._required_config_str(config, "access_host")
         self.engineering_host = (
-            str(config.get("engineering_host", "engineering")).strip() or None
+            self._required_config_str(config, "engineering_host")
         )
+        self.jump_host = self._required_config_str(config, "jump_host")
+        self.jump_port = int(config.get("jump_port", 2022))
 
         self.controller_forward_port = int(config.get("controller_port", 2502))
         self.simulator_forward_port = int(config.get("simulator_port", 2503))
         self.remote_controller_port = int(config.get("remote_controller_port", 1502))
         self.remote_simulator_port = int(config.get("remote_simulator_port", 1503))
-        self.remote_bind_host = str(config.get("remote_bind_host", "0.0.0.0")).strip()
-        self.controller_process_ip = str(
-            config.get("controller_process_ip", "198.18.4.10")
-        ).strip()
-        self.simulator_process_ip = str(
-            config.get("simulator_process_ip", "198.18.4.20")
-        ).strip()
+        self.remote_bind_host = self._required_config_str(config, "remote_bind_host")
+        self.controller_process_ip = self._required_config_str(
+            config, "controller_process_ip"
+        )
+        self.simulator_process_ip = self._required_config_str(
+            config, "simulator_process_ip"
+        )
         self.bridge_host = str(config.get("bridge_host", "controller")).strip()
         self.bridge_cycle_ms = int(config.get("bridge_cycle_ms", 100))
         self.bridge_package_targets = tuple(
@@ -537,6 +557,7 @@ class _SphereOpenPLCBackend:
         self._start_result: dict[str, Any] = {}
         self._runtime_containment_delay_steps = 0
         self._node_ssh_hostnames: dict[str, str] = {}
+        self._node_mrg_targets: dict[str, str] = {}
         self._prefer_mrg_xdc_transport = bool(
             config.get("prefer_mrg_xdc_transport", False)
         )
@@ -1294,7 +1315,7 @@ class _SphereOpenPLCBackend:
         local_forward: str | None = None,
     ) -> list[str]:
         assert self._xdc_ref is not None
-        resolved_target = self._ssh_hostname_for(target)
+        resolved_target = self._mrg_target_for(target)
         command = self._mrg_command("xdc", "ssh", "-x", self._xdc_ref)
         if local_forward:
             command.extend(["-L", local_forward])
@@ -1473,6 +1494,7 @@ class _SphereOpenPLCBackend:
             raise EnvironmentError(f"unable to inspect realization `{self._realization_ref}`")
         realization = payload.get("result", {}).get("realization", {})
         self._node_ssh_hostnames = self._realization_node_hostnames(payload)
+        self._node_mrg_targets = self._realization_node_targets(payload)
         realized_revision = str(realization.get("xhash", "")).strip() or None
         if self.revision is None:
             self.revision = realized_revision
@@ -1504,8 +1526,30 @@ class _SphereOpenPLCBackend:
             )
         return hostnames
 
+    @staticmethod
+    def _realization_node_targets(payload: dict[str, Any]) -> dict[str, str]:
+        targets: dict[str, str] = {}
+        nodes = payload.get("result", {}).get("realization", {}).get("nodes", {})
+        if not isinstance(nodes, dict):
+            return targets
+        for node_entry in nodes.values():
+            if not isinstance(node_entry, dict):
+                continue
+            node = node_entry.get("node") or {}
+            node_id = str(node.get("id") or "").strip()
+            if not node_id:
+                continue
+            targets[node_id] = node_id
+            infranet_addr = str(node_entry.get("infranetAddr") or "").strip()
+            if infranet_addr:
+                targets[infranet_addr] = node_id
+        return targets
+
     def _ssh_hostname_for(self, host: str) -> str:
         return self._node_ssh_hostnames.get(host, host)
+
+    def _mrg_target_for(self, host: str) -> str:
+        return self._node_mrg_targets.get(host, host)
 
     def _ensure_materialization(self) -> None:
         assert self._realization_ref is not None
@@ -1580,8 +1624,8 @@ class _SphereOpenPLCBackend:
             f"    User {self._merge_user}",
             "",
             "Host jump",
-            "    HostName gateway.example.invalid",
-            "    Port 2022",
+            f"    HostName {self.jump_host}",
+            f"    Port {self.jump_port}",
             f"    User {self._merge_user}",
         ]
         if self.identity_file.exists():
@@ -1639,7 +1683,7 @@ class _SphereOpenPLCBackend:
     def _resolve_support_payload(self, *relative_paths: str) -> Path:
         candidate_paths = [OPENPLC_SUPPORT_SCRIPTS / relative_path for relative_path in relative_paths]
         for candidate in candidate_paths:
-            if candidate.exists():
+            if candidate.exists() and not _is_compiled_openplc_wrapper(candidate):
                 return candidate
         raise EnvironmentError(
             "required native runtime payload is missing: "
@@ -1654,21 +1698,22 @@ class _SphereOpenPLCBackend:
             ),
             (
                 self._resolve_support_payload(
+                    "payloads/native_plc_runtime.cpython-310.pyc_payload",
+                    "native_plc_runtime.cpython-310.pyc",
                     "__pycache__/native_plc_runtime.cpython-310.pyc"
                 ),
-                "__pycache__/native_plc_runtime.cpython-310.pyc",
+                "payloads/native_plc_runtime.cpython-310.pyc_payload",
             ),
             (
-                self._resolve_support_payload("__pycache__/modbus_raw.cpython-310.pyc"),
-                "__pycache__/modbus_raw.cpython-310.pyc",
+                self._resolve_support_payload(
+                    "payloads/modbus_raw.cpython-310.pyc_payload",
+                    "__pycache__/modbus_raw.cpython-310.pyc",
+                ),
+                "payloads/modbus_raw.cpython-310.pyc_payload",
             ),
             (
                 self._resolve_support_payload("modbus_bridge.py"),
                 "modbus_bridge.py",
-            ),
-            (
-                self._resolve_support_payload("__pycache__/modbus_bridge.cpython-310.pyc"),
-                "__pycache__/modbus_bridge.cpython-310.pyc",
             ),
         ]
         for target in targets or ("controller", "simulator"):
@@ -1681,6 +1726,10 @@ class _SphereOpenPLCBackend:
                 + " "
                 + self._remote_shell_path(
                     self._remote_file_path(self.remote_runtime_dir, "__pycache__")
+                )
+                + " "
+                + self._remote_shell_path(
+                    self._remote_file_path(self.remote_runtime_dir, "payloads")
                 ),
                 timeout_sec=self.payload_stage_timeout_sec,
             )
@@ -2529,7 +2578,7 @@ class _SphereOpenPLCBackend:
                 f"invalid remote destination `{destination}` for `mrg xdc scp upload`"
             )
         target, remote_path = destination.split(":", 1)
-        resolved_target = self._ssh_hostname_for(target)
+        resolved_target = self._mrg_target_for(target)
         command = self._mrg_command("xdc", "scp", "upload", "-x", str(self._xdc_ref))
         if source.is_dir():
             command.append("-r")
@@ -2632,7 +2681,7 @@ class _SphereOpenPLCBackend:
         remote_path: str,
         destination: Path,
     ) -> None:
-        resolved_target = self._ssh_hostname_for(target)
+        resolved_target = self._mrg_target_for(target)
         command = self._mrg_command(
             "xdc",
             "scp",
@@ -2851,7 +2900,7 @@ class OpenPLCEnvironment:
             return
 
         if self.testbed_id == "water_distribution":
-            from .testbeds import water_distribution as water_distribution_testbed
+            from testbeds.runtime import water_distribution_runtime as water_distribution_testbed
 
             self._testbed_module = water_distribution_testbed
             self._testbed_cls = water_distribution_testbed.OpenPLCWaterDistributionTestbed

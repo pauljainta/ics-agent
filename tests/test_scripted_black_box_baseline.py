@@ -3,17 +3,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import ics_agent.experiments.water_treatment.scripted_black_box_baseline as scripted_baseline
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_treatment_scripted_black_box_baseline import (
+from ics_agent.experiments.water_treatment.scripted_black_box_baseline import (
     CANONICAL_RESULT_ROOT,
     CONFIG_PATH,
     FAMILY_SPEC,
+    RESUME_COMPATIBLE_CONFIG_HASH_PATHS,
     RUNS_PER_SEED,
     SEED,
     ScriptedBlackBoxBaselineRunner,
+)
+from test_config import (
+    TEST_MERGE_SERVER,
+    TEST_REVISION,
+    TEST_TREATMENT_EXPERIMENT,
+    TEST_TREATMENT_REALIZATION,
 )
 
 
@@ -114,7 +122,7 @@ def test_scripted_black_box_config_keeps_full_defender_resolution_unchanged() ->
     baseline = _condition_by_name(
         orchestrator,
         REPO_ROOT
-        / "configs/experiments/sphere_optionb_mitre_black_box_vs_agentic_defender_fast_containment.yaml",
+        / "configs/experiments/water_treatment_agentic_black_box_attacker_vs_agentic_full_containment_defender.yaml",
         "black_box_attacker__agentic_defender",
     )
     scripted = _condition_by_name(orchestrator, CONFIG_PATH, FAMILY_SPEC.family_name)
@@ -143,11 +151,8 @@ def test_scripted_black_box_runner_derives_required_live_preflight_refs() -> Non
     runner = ScriptedBlackBoxBaselineRunner(CANONICAL_RESULT_ROOT)
     refs = runner._required_preflight_refs(runner._runtime_config())
 
-    assert refs == {
-        "merge_server": "merge.example.invalid",
-        "realization": "example-realization-03.openplcwater.lgarcia",
-        "materialization": "example-realization-03.openplcwater.lgarcia",
-    }
+    assert set(refs) == {"merge_server", "realization", "materialization"}
+    assert all(refs.values())
 
 
 def test_scripted_black_box_policy_is_deterministic_across_fresh_agents() -> None:
@@ -176,3 +181,244 @@ def test_scripted_black_box_policy_is_deterministic_across_fresh_agents() -> Non
     assert first[0].action == second[0].action
     assert first[0].summary == second[0].summary
     assert "deterministic" in first[0].labels
+
+
+def test_set_phase_completed_clears_stale_error_message(tmp_path: Path) -> None:
+    runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
+    runner.ensure_root_layout()
+
+    runner._set_phase("validated_optionb_environment", "failed", error_message="stale")
+    runner._set_phase("validated_optionb_environment", "completed")
+
+    payload = json.loads(runner.global_phase_status_path.read_text())
+    phase = payload["phases"]["validated_optionb_environment"]
+    assert phase["status"] == "completed"
+    assert "error_message" not in phase
+
+
+def test_validate_optionb_environment_reruns_live_preflight_with_cached_pass(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
+    runner.ensure_root_layout()
+    runner.optionb_validation_path.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "preflight": {
+                    "merge_user": "cached-user",
+                    "realization": {"id": "cached-realization"},
+                    "materialization": {"id": "cached-materialization"},
+                },
+            }
+        )
+    )
+
+    calls = {"whoami": 0, "show": 0}
+
+    class FakeBackend:
+        experiment_ref = TEST_TREATMENT_EXPERIMENT
+        _realization_ref = TEST_TREATMENT_REALIZATION
+        revision = TEST_REVISION
+        _xdc_ref = "treatment-xdc-b"
+
+    class FakeEnvironment:
+        def __init__(self, _config):
+            self._backend_impl = FakeBackend()
+
+        def start(self) -> dict[str, str]:
+            return {"status": "started"}
+
+        def reset(self, _initial_conditions) -> dict[str, object]:
+            return {
+                "STATE_NAME": "IDLE",
+                "post_reset_observation": _treatment_observation(
+                    STATE_NAME="IDLE",
+                    RW_Tank_Level=600.0,
+                    UF_UFFT_Tank_Level=400.0,
+                    ChemTreat_NaCl_Level=800.0,
+                    ChemTreat_NaOCl_Level=800.0,
+                    ChemTreat_HCl_Level=800.0,
+                ),
+            }
+
+        def observe_flat(self) -> dict[str, float | str]:
+            return _treatment_observation(
+                STATE_NAME="IDLE",
+                RW_Tank_Level=600.0,
+                UF_UFFT_Tank_Level=400.0,
+                ChemTreat_NaCl_Level=800.0,
+                ChemTreat_NaOCl_Level=800.0,
+                ChemTreat_HCl_Level=800.0,
+            )
+
+        def inspect_surface(self, _action) -> dict[str, object]:
+            return {"reconnaissance": {"surface": "tags"}}
+
+        def stop(self) -> None:
+            return None
+
+    def fake_transport(*, merge_server: str | None = None, timeout_sec: float = 20.0) -> str:
+        calls["whoami"] += 1
+        assert merge_server
+        assert timeout_sec == 20.0
+        return "live-user"
+
+    def fake_show(kind: str, ref: str, *, merge_server: str, timeout_sec: float = 20.0):
+        calls["show"] += 1
+        assert merge_server
+        assert timeout_sec == 20.0
+        return {"kind": kind, "ref": ref}
+
+    monkeypatch.setattr(scripted_baseline, "OpenPLCEnvironment", FakeEnvironment)
+    monkeypatch.setattr(scripted_baseline, "_SphereOpenPLCBackend", FakeBackend)
+    monkeypatch.setattr(runner, "_check_mrg_transport", fake_transport)
+    monkeypatch.setattr(runner, "_check_mrg_show_json", fake_show)
+
+    runner._validate_optionb_environment()
+
+    payload = json.loads(runner.optionb_validation_path.read_text())
+    assert payload["status"] == "passed"
+    assert payload["preflight"]["mrg_whoami_ok"] is True
+    assert payload["preflight"]["realization_check_ok"] is True
+    assert payload["validated_target"]["xdc_configured"] is True
+    assert calls == {"whoami": 1, "show": 2}
+
+
+def test_validate_optionb_environment_with_xdc_discovery_prefers_attached_wt1(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = ScriptedBlackBoxBaselineRunner(tmp_path / "scripted-black-box")
+    runner.ensure_root_layout()
+    runner.preferred_xdc_short_names = ("treatment-xdc-a", "treatment-xdc-b")
+
+    monkeypatch.setenv("ICS_AGENT_ALLOW_XDC_DISCOVERY", "1")
+    monkeypatch.setattr(
+        runner,
+        "_check_mrg_transport",
+        lambda merge_server=None, timeout_sec=20.0: "live-user",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_listed_xdc_refs",
+        lambda merge_server: (
+            "XDC: treatment-xdc-b.live-user\nXDC: treatment-xdc-a.live-user\n",
+            ["treatment-xdc-b.live-user", "treatment-xdc-a.live-user"],
+        ),
+    )
+
+    def fake_inspect(
+        *,
+        candidate_short_names: list[str],
+        merge_server: str,
+        merge_user: str,
+        realization_ref: str,
+    ) -> list[dict[str, object]]:
+        assert candidate_short_names[:2] == ["treatment-xdc-a", "treatment-xdc-b"]
+        assert merge_server
+        assert merge_user == "live-user"
+        assert realization_ref
+        return [
+            {
+                "short_name": "treatment-xdc-a",
+                "ref": "treatment-xdc-a.live-user",
+                "available": True,
+                "healthy": True,
+                "attached": True,
+                "materialization": realization_ref,
+                "status": "Ready",
+            },
+            {
+                "short_name": "treatment-xdc-b",
+                "ref": "treatment-xdc-b.live-user",
+                "available": True,
+                "healthy": False,
+                "attached": False,
+                "status": "Error",
+            },
+        ]
+
+    def fake_attempt(
+        *,
+        xdc_short_name: str,
+        validation_path: Path,
+        timeout_sec: float,
+    ) -> dict[str, object]:
+        assert xdc_short_name == "treatment-xdc-a"
+        assert timeout_sec == runner.validation_attempt_timeout_sec
+        validation_path.write_text(
+            json.dumps(
+                {
+                    "status": "passed",
+                    "validated_target": {
+                        "xdc": "treatment-xdc-a.live-user",
+                    },
+                }
+            )
+        )
+        return {
+            "status": "passed",
+            "short_name": xdc_short_name,
+            "validation_path": str(validation_path),
+        }
+
+    monkeypatch.setattr(runner, "_inspect_xdc_candidates", fake_inspect)
+    monkeypatch.setattr(runner, "_run_optionb_validation_attempt", fake_attempt)
+
+    runner._validate_optionb_environment_with_xdc_discovery()
+
+    payload = json.loads(runner.optionb_validation_path.read_text())
+    phase = json.loads(runner.global_phase_status_path.read_text())["phases"][
+        "validated_optionb_environment"
+    ]
+    assert payload["selected_xdc"]["short_name"] == "treatment-xdc-a"
+    assert phase["status"] == "completed"
+    assert phase["chosen_xdc"] == "treatment-xdc-a"
+
+
+def test_resume_compatible_config_hash_update_allows_runner_only_drift() -> None:
+    runner_path = next(iter(RESUME_COMPATIBLE_CONFIG_HASH_PATHS))
+    actual_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "old-runner-hash",
+            "configs/profiles/shared.yaml": "shared-hash",
+        },
+    }
+    expected_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "new-runner-hash",
+            "configs/profiles/shared.yaml": "shared-hash",
+        },
+    }
+
+    assert ScriptedBlackBoxBaselineRunner._is_resume_compatible_config_hash_update(
+        actual_payload,
+        expected_payload,
+    )
+
+
+def test_resume_compatible_config_hash_update_rejects_behavioral_drift() -> None:
+    runner_path = next(iter(RESUME_COMPATIBLE_CONFIG_HASH_PATHS))
+    actual_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "old-runner-hash",
+            "ics_agent/agents/agentic.py": "old-agentic-hash",
+        },
+    }
+    expected_payload = {
+        "experiment_version": "water_treatment_scripted_black_box_baseline_v1",
+        "file_hashes": {
+            runner_path: "new-runner-hash",
+            "ics_agent/agents/agentic.py": "new-agentic-hash",
+        },
+    }
+
+    assert not ScriptedBlackBoxBaselineRunner._is_resume_compatible_config_hash_update(
+        actual_payload,
+        expected_payload,
+    )

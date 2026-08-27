@@ -11,7 +11,8 @@ OPENPLC_SUPPORT_DIR = REPO_ROOT / "vendor" / "openplc"
 OPENPLC_SUPPORT_SCRIPTS = OPENPLC_SUPPORT_DIR / "scripts"
 RUNTIME_CONFIG_ROOT = REPO_ROOT / "configs"
 RUNTIME_EXPERIMENT_ROOT = RUNTIME_CONFIG_ROOT / "experiments"
-RUNTIME_SCENARIO_ROOT = REPO_ROOT / "scenarios"
+RUNTIME_SCENARIO_ROOT = REPO_ROOT / "testbeds" / "water_treatment" / "scenarios"
+SHARED_PROFILE_REGISTRY = RUNTIME_CONFIG_ROOT / "profiles" / "shared.yaml"
 
 
 def artifact_root() -> Path:
@@ -47,6 +48,13 @@ def experiment_roots() -> tuple[Path, ...]:
 
 def scenario_roots() -> tuple[Path, ...]:
     return (RUNTIME_SCENARIO_ROOT,)
+
+
+def profile_registry_paths(testbed_id: str = "water_treatment") -> tuple[Path, ...]:
+    return (
+        SHARED_PROFILE_REGISTRY,
+        REPO_ROOT / "testbeds" / testbed_id / "profiles.yaml",
+    )
 
 
 def active_scenario_config_root() -> Path:

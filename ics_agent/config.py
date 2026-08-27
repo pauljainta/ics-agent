@@ -12,6 +12,7 @@ from .paths import (
     experiment_roots,
     scenario_roots,
 )
+from .infrastructure import InfrastructureConfigError, resolve_infrastructure
 from .utils import load_yaml
 
 
@@ -86,6 +87,10 @@ def load_config(path: str | Path) -> dict[str, Any]:
     payload = load_yaml(resolved)
     if not isinstance(payload, dict):
         raise ConfigError(f"expected mapping at {resolved}")
+    try:
+        payload = resolve_infrastructure(payload, source_path=resolved)
+    except InfrastructureConfigError as exc:
+        raise ConfigError(str(exc)) from exc
     payload["_path"] = resolved
     return payload
 

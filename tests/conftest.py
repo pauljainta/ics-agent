@@ -1,10 +1,96 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 import pytest
 
 from ics_agent import environment as environment_module
+
+
+@pytest.fixture(autouse=True)
+def synthetic_sphere_infrastructure(monkeypatch, tmp_path: Path) -> None:
+    """Resolve tracked SPHERE experiment configs through synthetic test profiles."""
+
+    monkeypatch.delenv("ICS_AGENT_SPHERE_XDC_OVERRIDE", raising=False)
+    monkeypatch.delenv("ICS_AGENT_MERGE_SERVER_OVERRIDE", raising=False)
+    monkeypatch.delenv("MRG_SERVER", raising=False)
+    monkeypatch.delenv("MERGE_SERVER", raising=False)
+    monkeypatch.delenv("ICS_AGENT_ALLOW_XDC_DISCOVERY", raising=False)
+
+    config_path = tmp_path / "sphere.local.yaml"
+    config_path.write_text(
+        """
+profiles:
+  water_treatment:
+    merge_server: merge-test-host
+    experiment: treatment-experiment.test-project
+    realization: treatment-realization
+    revision: treatment-revision
+    xdc: treatment-xdc
+    keep_running: true
+    start_bridge: true
+    remote_bind_host: 0.0.0.0
+    controller_port: 2502
+    simulator_port: 2503
+    remote_controller_port: 1502
+    remote_simulator_port: 1503
+    controller_process_ip: controller-test-host
+    simulator_process_ip: simulator-test-host
+    jump_host: jump-test-host
+    jump_port: 2022
+    access_host: access
+    engineering_host: engineering
+    remote_roles: {}
+    remote_role_port: 18600
+    remote_role_local_ports:
+      attacker: 28601
+      defender: 28602
+    reset_wait_sec: 1.5
+    loop_sleep_sec: 0.05
+    bridge_host: controller
+    bridge_cycle_ms: 100
+    bridge_package_targets:
+      - controller
+    bridge_start_timeout_sec: 20.0
+    tunnel_start_timeout_sec: 20.0
+    allow_xdc_discovery: false
+  water_distribution:
+    merge_server: merge-test-host
+    experiment: distribution-experiment.test-project
+    realization: distribution-realization
+    revision: distribution-revision
+    xdc: distribution-xdc
+    keep_running: true
+    start_bridge: true
+    remote_bind_host: 0.0.0.0
+    controller_port: 2502
+    simulator_port: 2503
+    remote_controller_port: 1502
+    remote_simulator_port: 1503
+    controller_process_ip: controller-test-host
+    simulator_process_ip: simulator-test-host
+    jump_host: jump-test-host
+    jump_port: 2022
+    access_host: access
+    engineering_host: engineering
+    remote_roles: {}
+    remote_role_port: 18600
+    remote_role_local_ports:
+      attacker: 28601
+      defender: 28602
+    reset_wait_sec: 1.5
+    loop_sleep_sec: 0.05
+    bridge_host: controller
+    bridge_cycle_ms: 100
+    bridge_package_targets:
+      - controller
+    bridge_start_timeout_sec: 20.0
+    tunnel_start_timeout_sec: 20.0
+    allow_xdc_discovery: false
+""".lstrip()
+    )
+    monkeypatch.setenv("ICS_AGENT_SPHERE_CONFIG", str(config_path))
 
 
 class FakeTestbedError(RuntimeError):

@@ -9,9 +9,10 @@ from ics_agent.mitre import (
     OPTIONB_STAGE_PATH,
     optionb_mitre_context,
 )
-from ics_agent.agents.agentic import CachedQwenDecisionEngine
+from ics_agent.agents.agentic import AgenticRoleAgent, CachedQwenDecisionEngine
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.paths import REPO_ROOT
+from ics_agent.types import ScenarioDefinition
 
 
 def test_optionb_mitre_context_preserves_staged_runtime_model() -> None:
@@ -42,7 +43,7 @@ def test_configure_reproducibility_keeps_seeded_run_metadata(monkeypatch) -> Non
     payload = orchestrator._configure_reproducibility(
         config={
             "reproducibility": {"seed": 20260623},
-            "_path": Path("/tmp/concrete-containment.yaml"),
+            "_path": Path("concrete-containment.yaml"),
         },
         conditions=[
             {
@@ -61,7 +62,7 @@ def test_configure_reproducibility_keeps_seeded_run_metadata(monkeypatch) -> Non
     assert payload["seed"] == 20260623
     assert payload["pythonhashseed"] == "20260623"
     assert payload["suite_decoding"]
-    assert payload["experiment_config_path"] == "/tmp/concrete-containment.yaml"
+    assert payload["experiment_config_path"] == "concrete-containment.yaml"
     attacker_decoding = payload["suite_decoding"]["attacker-gray_box_attacker__defender-agentic_defender__observer-agentic_observer__offline_analysis-scripted_offline_analyst__operator-scripted_operator__planner-scripted_planner"]["attacker"]
     assert attacker_decoding["context_limit"] == 262144
     assert attacker_decoding["top_p"] is None
@@ -92,4 +93,84 @@ def test_parse_output_recovers_after_truncated_trailing_field() -> None:
     assert payload is not None
     assert payload["summary"] == "Observe jump"
     assert payload["candidate_id"] is None
+    assert payload["diagnosis"] == "sensor_or_process_jump"
+
+
+def test_agentic_payload_null_confidence_does_not_abort_decision_bridge() -> None:
+    agent = AgenticRoleAgent(
+        "gray_box_attacker",
+        {
+            "role": "attacker",
+            "knowledge_mode": "gray_box",
+            "allowed_action_types": ["inspect_surface", "noop"],
+            "llm": {
+                "backend": "qwen_langchain",
+                "fatal_on_parse_error": False,
+            },
+        },
+    )
+    agent.reset(
+        ScenarioDefinition(
+            catalog_id="attack/example",
+            suite="attack",
+            scenario_id="example",
+            execution_path=Path("attack/example.yaml"),
+            execution={},
+            metadata={"testbed_id": "water_distribution"},
+            testbed_id="water_distribution",
+        )
+    )
+
+    decisions = agent._payload_to_decisions(
+        {
+            "summary": "Hold while preserving the current probe state.",
+            "candidate_id": None,
+            "confidence": None,
+            "diagnosis": None,
+            "labels": None,
+            "decision_type": "note",
+        },
+        {
+            "time_sec": 5.5,
+            "candidate_actions": [{"id": "noop", "action": {"type": "noop"}}],
+            "observation": {"STATE_NAME": "RUNNING"},
+            "executed_actions": [],
+            "recent_actions": [],
+            "decisions": [],
+            "alerts": [],
+        },
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].confidence == 0.65
+    assert decisions[0].labels == ["agentic", "attacker"]
+
+
+def test_cached_qwen_engine_finalizes_confidence_and_labels_without_backend() -> None:
+    engine = CachedQwenDecisionEngine(
+        {
+            "role": "defender",
+            "knowledge_mode": "white_box",
+            "llm": {
+                "backend": "qwen_langchain",
+                "fatal_on_parse_error": False,
+            },
+        },
+        "defender",
+    )
+
+    payload = engine._finalize_payload(
+        {
+            "summary": "Raise containment.",
+            "candidate_id": None,
+            "confidence": None,
+            "diagnosis": "Sensor or process jump",
+            "labels": None,
+            "decision_type": "alert",
+        },
+        {"candidate_actions": []},
+    )
+
+    assert payload["confidence"] == 0.55
+    assert payload["labels"] == ["agentic", "defender"]
     assert payload["diagnosis"] == "sensor_or_process_jump"

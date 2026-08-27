@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..action_semantics import attacker_surface
 from .base import RoleAgent
 from ..mitre import (
     attacker_manipulation_started,
@@ -54,6 +55,33 @@ def _action_matches(actual: Any, expected: Any) -> bool:
     if not actual_payload or not expected_payload:
         return False
     return all(actual_payload.get(key) == value for key, value in expected_payload.items())
+
+
+def _rule_based_defender_response_mode(profile: dict[str, Any]) -> str:
+    behavior = profile.get("behavior_model")
+    if not isinstance(behavior, dict):
+        return ""
+    return str(behavior.get("response_mode", "")).strip()
+
+
+def _is_rule_based_defender_policy(profile: dict[str, Any]) -> bool:
+    behavior = profile.get("behavior_model")
+    if not isinstance(behavior, dict):
+        return False
+    return str(behavior.get("policy", "")).strip() == "rule_based_defender"
+
+
+def _containment_action_for_attacker_action(action: dict[str, Any] | None) -> dict[str, Any]:
+    surface = attacker_surface(action)
+    if surface == "sensor_write_path":
+        return {"type": "block_sensor_write"}
+    if surface == "actuator_write_path":
+        return {"type": "block_actuator_write"}
+    if surface == "process2_manual_path":
+        return {"type": "block_process2_manual_path"}
+    if surface == "hmi_session":
+        return {"type": "disable_hmi_session"}
+    return {"type": "isolate_engineering_host"}
 
 
 def _has_planned_role_action(spec: Any, context: dict[str, Any]) -> bool:
@@ -284,6 +312,58 @@ class RuleBasedRoleAgent(RoleAgent):
         for item in context.get("executed_actions", []) or []:
             if item.get("role") == "attacker":
                 latest_attacker_action = normalize_action(item.get("action"))
+
+        if (
+            self.role == "defender"
+            and _is_rule_based_defender_policy(self.profile)
+            and manipulation_started
+            and latest_attacker_action
+            and "containment_mitigation" not in emitted
+        ):
+            emitted.add("containment_mitigation")
+            action = _containment_action_for_attacker_action(latest_attacker_action)
+            surface = attacker_surface(latest_attacker_action)
+            metadata = phase_metadata(
+                phase_family="defender",
+                phase="containment_mitigation",
+                policy_mode="rule_based",
+                attack_profile=attack_profile,
+                evidence="observed_attacker_manipulation",
+                attacker_action_type=latest_attacker_action.get("type"),
+                attacker_surface=surface,
+                response_mode=_rule_based_defender_response_mode(self.profile),
+            )
+            labels = ["rule-based", "optionb-mitre", "defender"]
+            if _rule_based_defender_response_mode(self.profile) == "advisory_response":
+                return [
+                    self.decision(
+                        decision_type="alert",
+                        summary=(
+                            "Rule-based defender issued an advisory response after "
+                            f"observing manipulation on `{surface}`; recommended `{action['type']}`."
+                        ),
+                        time_sec=now,
+                        confidence=1.0,
+                        diagnosis=str(attack_profile["family"]),
+                        labels=[*labels, "advisory-response"],
+                        metadata=metadata,
+                    )
+                ]
+            return [
+                self.decision(
+                    decision_type="action",
+                    summary=(
+                        "Rule-based defender applied deterministic containment "
+                        f"`{action['type']}` after observing manipulation on `{surface}`."
+                    ),
+                    time_sec=now,
+                    action=action,
+                    confidence=1.0,
+                    diagnosis=str(attack_profile["family"]),
+                    labels=labels,
+                    metadata=metadata,
+                )
+            ]
 
         if (
             self.role == "observer"

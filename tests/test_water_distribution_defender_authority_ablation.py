@@ -5,7 +5,7 @@ from pathlib import Path
 from ics_agent.config import load_config
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.water_distribution_defender_authority_ablation import (
+from ics_agent.experiments.water_distribution.defender_authority_ablation import (
     AUTHORITY_CONFIG_PATHS,
     AUTHORITY_FAMILY_SPECS,
     AUTHORITY_RESULT_ROOT,
@@ -180,5 +180,5 @@ def test_distribution_authority_freeze_metadata_is_stable_under_local_model_defa
     monkeypatch.delenv("QWEN_MODEL_ID", raising=False)
     runner.freeze_metadata()
 
-    monkeypatch.setenv("QWEN_MODEL_PATH", "/tmp/alternate-qwen-path")
+    monkeypatch.setenv("QWEN_MODEL_PATH", "alternate-qwen-path")
     runner.freeze_metadata()

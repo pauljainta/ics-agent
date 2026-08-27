@@ -17,10 +17,10 @@ from .environment import EnvironmentError, OpenPLCEnvironment
 from .knowledge import validate_manual_paths
 from .mitre import ATTACKER_PHASES
 from .metrics import compute_metrics
-from .paths import REPO_ROOT, portable_path, results_root
+from .paths import REPO_ROOT, profile_registry_paths, portable_path, results_root
 from .reporting import write_json, write_run_bundle
 from .scenarios import ScenarioCatalog
-from .testbeds import normalize_testbed_id
+from testbeds.runtime import normalize_testbed_id
 from .types import RunBundle, ScenarioDefinition
 from .utils import load_yaml, stable_hash, utc_now
 
@@ -60,34 +60,36 @@ class ExperimentOrchestrator:
         self.default_testbed_id = normalize_testbed_id(testbed_id)
         self.catalog = catalog or ScenarioCatalog(testbed_id=self.default_testbed_id)
         self._current_reproducibility: dict[str, Any] = {}
-        raw_profiles = load_config("agent_profiles.yaml").get("profiles", {})
-        overlay_path = REPO_ROOT / "configs" / "agent_profiles_overrides.yaml"
-        if overlay_path.exists():
-            overlay_payload = load_yaml(overlay_path)
-            if not isinstance(overlay_payload, dict):
-                raise ConfigError(
-                    f"expected mapping at repo profile overlay {overlay_path}"
-                )
-            overlay_profiles = overlay_payload.get("profiles", {})
-            if not isinstance(overlay_profiles, dict):
-                raise ConfigError(
-                    f"repo profile overlay {overlay_path} must define a `profiles` mapping"
-                )
-            for profile_id, profile in overlay_profiles.items():
-                base_profile = raw_profiles.get(profile_id)
-                if isinstance(base_profile, dict) and isinstance(profile, dict):
-                    raw_profiles[profile_id] = self._deep_merge_mapping(
-                        base_profile,
-                        profile,
-                    )
-                else:
-                    raw_profiles[profile_id] = deepcopy(profile)
+        raw_profiles = self._load_profile_registry(self.default_testbed_id)
         self.agent_profiles = {
             profile_id: self._normalized_profile(profile)
             for profile_id, profile in raw_profiles.items()
         }
         if not isinstance(self.agent_profiles, dict):
-            raise ConfigError("agent_profiles.yaml must define a `profiles` mapping")
+            raise ConfigError("profile registries must define a `profiles` mapping")
+
+    @classmethod
+    def _load_profile_registry(cls, testbed_id: str) -> dict[str, Any]:
+        profile_paths = profile_registry_paths(testbed_id)
+        profiles: dict[str, Any] = {}
+        for profile_path in profile_paths:
+            if not profile_path.exists():
+                raise ConfigError(f"missing profile registry: {profile_path}")
+            payload = load_yaml(profile_path)
+            if not isinstance(payload, dict):
+                raise ConfigError(f"expected mapping at profile registry {profile_path}")
+            registry = payload.get("profiles", {})
+            if not isinstance(registry, dict):
+                raise ConfigError(
+                    f"profile registry {profile_path} must define a `profiles` mapping"
+                )
+            for profile_id, profile in registry.items():
+                base_profile = profiles.get(profile_id)
+                if isinstance(base_profile, dict) and isinstance(profile, dict):
+                    profiles[profile_id] = cls._deep_merge_mapping(base_profile, profile)
+                else:
+                    profiles[str(profile_id)] = deepcopy(profile)
+        return profiles
 
     @staticmethod
     def _normalized_profile(profile: Any) -> Any:
@@ -425,14 +427,21 @@ class ExperimentOrchestrator:
             llm = profile.get("llm", {})
             if not isinstance(llm, dict):
                 continue
-            model_path = os.environ.get("QWEN_MODEL_PATH", "").strip() or llm.get(
-                "model_id"
+            model_id = (
+                os.environ.get("ICS_AGENT_MODEL_ID", "").strip()
+                or os.environ.get("QWEN_MODEL_ID", "").strip()
+                or llm.get("model_id")
+            )
+            model_path = (
+                os.environ.get("ICS_AGENT_MODEL_PATH", "").strip()
+                or os.environ.get("QWEN_MODEL_PATH", "").strip()
+                or model_id
             )
             settings[str(role)] = {
                 "profile_id": str(profile_id),
                 "backend": llm.get("backend"),
                 "framework": llm.get("framework"),
-                "model_id": llm.get("model_id"),
+                "model_id": model_id,
                 "model_path": model_path,
                 "temperature": float(llm.get("temperature", 0.0) or 0.0),
                 "top_p": llm.get("top_p"),

@@ -1,0 +1,79 @@
+# Copy this file to `configs/private/sphere.local.yaml` and replace every
+# placeholder with values from your active SPHERE reservation.
+#
+# `configs/private/` is git-ignored. Do not commit the filled-in local file.
+
+profiles:
+  water_treatment:
+    merge_server: replace-with-merge-server
+    experiment: replace-with-experiment.project
+    realization: replace-with-treatment-realization
+    revision: replace-with-revision-id
+    xdc: replace-with-treatment-xdc
+    keep_running: true
+    start_bridge: true
+    remote_bind_host: 0.0.0.0
+    controller_port: 2502
+    simulator_port: 2503
+    remote_controller_port: 1502
+    remote_simulator_port: 1503
+    controller_process_ip: replace-with-controller-process-host
+    simulator_process_ip: replace-with-simulator-process-host
+    jump_host: replace-with-jump-host
+    jump_port: 2022
+    access_host: access
+    engineering_host: engineering
+    remote_roles: {}
+    remote_role_port: 18600
+    remote_role_local_ports:
+      attacker: 28601
+      defender: 28602
+    reset_wait_sec: 1.5
+    loop_sleep_sec: 0.05
+    bridge_host: controller
+    bridge_cycle_ms: 100
+    bridge_package_targets:
+      - controller
+    bridge_start_timeout_sec: 20.0
+    tunnel_start_timeout_sec: 20.0
+    # Optional. Leave disabled unless you intentionally want runners to inspect
+    # available XDCs and try alternatives for this same realization.
+    allow_xdc_discovery: false
+    preferred_xdcs: []
+    xdc_candidate_prefix: ""
+
+  water_distribution:
+    merge_server: replace-with-merge-server
+    experiment: replace-with-experiment.project
+    realization: replace-with-distribution-realization
+    revision: replace-with-revision-id
+    xdc: replace-with-distribution-xdc
+    keep_running: true
+    start_bridge: true
+    remote_bind_host: 0.0.0.0
+    controller_port: 2502
+    simulator_port: 2503
+    remote_controller_port: 1502
+    remote_simulator_port: 1503
+    controller_process_ip: replace-with-controller-process-host
+    simulator_process_ip: replace-with-simulator-process-host
+    jump_host: replace-with-jump-host
+    jump_port: 2022
+    access_host: access
+    engineering_host: engineering
+    remote_roles: {}
+    remote_role_port: 18600
+    remote_role_local_ports:
+      attacker: 28601
+      defender: 28602
+    reset_wait_sec: 1.5
+    loop_sleep_sec: 0.05
+    bridge_host: controller
+    bridge_cycle_ms: 100
+    bridge_package_targets:
+      - controller
+    bridge_start_timeout_sec: 20.0
+    tunnel_start_timeout_sec: 20.0
+    allow_xdc_discovery: false
+    preferred_xdcs: []
+    xdc_candidate_prefix: ""

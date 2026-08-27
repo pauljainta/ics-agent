@@ -9,7 +9,7 @@ from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.environment import OpenPLCEnvironment
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.testbeds.water_distribution import (
+from testbeds.runtime.water_distribution_runtime import (
     ACTUATOR_OVERRIDE_ENABLE_REGISTER_MAP,
     ACTUATOR_OVERRIDE_VALUE_REGISTER_MAP,
     OpenPLCWaterDistributionTestbed,
@@ -626,7 +626,7 @@ def test_distribution_white_box_config_matches_treatment_strength_knobs() -> Non
     treatment_config = yaml.safe_load(
         (
             repo_root
-            / "configs/experiments/sphere_optionb_mitre_white_box_vs_agentic_defender_fast_containment_stronger.yaml"
+            / "configs/experiments/water_treatment_agentic_white_box_attacker_vs_agentic_full_containment_defender.yaml"
         ).read_text()
     )
     distribution_config = yaml.safe_load(
@@ -638,20 +638,21 @@ def test_distribution_white_box_config_matches_treatment_strength_knobs() -> Non
     attack_families_config = yaml.safe_load(
         (
             repo_root
-            / "configs/experiments/water_distribution_attack_families.yaml"
+            / "tests/fixtures/water_distribution_attack_families.yaml"
         ).read_text()
     )
-    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
+    treatment_orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    distribution_orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
 
-    treatment_attacker = orchestrator._effective_condition_profiles(
+    treatment_attacker = treatment_orchestrator._effective_condition_profiles(
         profiles=treatment_config["conditions"][0]["profiles"],
         profile_overrides=treatment_config["conditions"][0]["profile_overrides"],
     )["attacker"]
-    distribution_attacker = orchestrator._effective_condition_profiles(
+    distribution_attacker = distribution_orchestrator._effective_condition_profiles(
         profiles=distribution_config["conditions"][0]["profiles"],
         profile_overrides=distribution_config["conditions"][0]["profile_overrides"],
     )["attacker"]
-    attack_families_attacker = orchestrator._effective_condition_profiles(
+    attack_families_attacker = distribution_orchestrator._effective_condition_profiles(
         profiles=attack_families_config["conditions"][2]["profiles"],
         profile_overrides=attack_families_config["conditions"][2]["profile_overrides"],
     )["attacker"]

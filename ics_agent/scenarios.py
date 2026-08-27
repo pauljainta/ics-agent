@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ConfigError, load_config
-from .testbeds import get_testbed_spec, normalize_testbed_id
+from testbeds.runtime import get_testbed_spec, normalize_testbed_id
 from .types import ScenarioDefinition
 from .utils import load_yaml
 

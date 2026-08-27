@@ -1,0 +1,56 @@
+experiment_name: water_distribution_openplc_scripted_white_box_baseline
+experiment_id: water_distribution_scripted_white_box_vs_agentic_defender
+testbed: water_distribution
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/water_distribution_openplc/scripted_baselines/white_box_attacker_vs_full_containment_defender
+study_metadata:
+  family: scripted_white_box_attacker_vs_full_containment_defender_water_distribution
+  timing_primary_origin: attack_start
+  notes:
+    - Deterministic scripted white-box attacker baseline on the water-distribution OpenPLC testbed
+    - Reuses the current full agentic defender with concrete runtime containment unchanged
+    - This pass is a scripted attacker-baseline comparison and does not replace the LLM attacker results
+environment:
+  backend: sphere_openplc
+  testbed: water_distribution
+  infrastructure_profile: water_distribution
+conditions:
+  - name: scripted_white_box_attacker__agentic_defender
+    profiles:
+      attacker: scripted_white_box_distribution_attacker
+      defender: agentic_defender
+      observer: scripted_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      defender:
+        allowed_action_types:
+          - hmi_stop
+          - hmi_estop
+          - disable_hmi_session
+          - isolate_engineering_host
+          - block_sensor_write
+          - block_actuator_write
+          - quarantine_signal_source
+          - noop
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/defender_manual.md
+        abort_on_backend_error: false
+        action_cooldown_sec: 2.0
+        note_cooldown_sec: 12.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0
+        llm:
+          backend: qwen_langchain
+          prompt_file: testbeds/water_distribution/prompts/defender.md
+          use_langgraph: false
+          allow_langchain_fallback: false
+          max_new_tokens: 48

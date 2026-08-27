@@ -1,0 +1,58 @@
+experiment_name: WaterTreatmentScriptedGrayBoxVsFullContainmentDefender
+experiment_id: WaterTreatmentScriptedGrayBoxVsFullContainmentDefender
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/Water-treatment/scripted_baselines/gray_box_attacker_vs_full_containment_defender
+study_metadata:
+  family: scripted_gray_box_attacker_vs_full_containment_defender_optionb_mitre18
+  timing_primary_origin: wargame_t0
+  notes:
+    - Deterministic scripted gray-box attacker baseline on the water-treatment Option B testbed
+    - Reuses the current full agentic defender with concrete runtime containment unchanged
+    - This pass is a scripted attacker-baseline comparison and does not replace the LLM attacker results
+environment:
+  backend: sphere_openplc
+  testbed: water_treatment
+  infrastructure_profile: water_treatment
+conditions:
+  - name: scripted_gray_box_attacker__agentic_defender
+    profiles:
+      attacker: scripted_gray_box_treatment_attacker
+      defender: agentic_defender
+      observer: agentic_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      defender:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B agentic defender with concrete runtime containment
+        allowed_action_types:
+          - hmi_stop
+          - hmi_estop
+          - select_process
+          - disable_hmi_session
+          - isolate_engineering_host
+          - block_sensor_write
+          - block_process2_manual_path
+          - quarantine_signal_source
+          - noop
+        llm:
+          prompt_file: testbeds/water_treatment/prompts/defender.md
+        note_cooldown_sec: 4.0
+        reasoning_cooldown_sec: 2.0
+        reasoning_refresh_sec: 4.0
+      observer:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged Option B agentic observer
+        llm:
+          prompt_file: testbeds/water_treatment/prompts/observer.md

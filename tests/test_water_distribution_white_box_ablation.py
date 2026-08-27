@@ -7,7 +7,7 @@ from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.paths import REPO_ROOT
 from ics_agent.scenarios import ScenarioCatalog
 from ics_agent.utils import load_yaml
-from ics_agent.water_distribution_white_box_ablation import FAMILY_SPECS
+from ics_agent.experiments.water_distribution.white_box_ablation import FAMILY_SPECS
 
 
 def _distribution_observation() -> dict[str, float | str]:

@@ -8,7 +8,7 @@ import yaml
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
-from ics_agent.testbeds.registry import observation_focus_fields, trend_fields
+from testbeds.runtime.registry import observation_focus_fields, trend_fields
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -136,10 +136,11 @@ def _distribution_black_box_context(profile: dict[str, object]) -> dict[str, obj
 
 
 def test_phase35_profiles_remain_black_box_and_keep_expected_knowledge_files() -> None:
-    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
+    treatment_orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    distribution_orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
 
-    treatment = orchestrator.agent_profiles[TREATMENT_PROFILE_ID]
-    distribution = orchestrator.agent_profiles[DISTRIBUTION_PROFILE_ID]
+    treatment = treatment_orchestrator.agent_profiles[TREATMENT_PROFILE_ID]
+    distribution = distribution_orchestrator.agent_profiles[DISTRIBUTION_PROFILE_ID]
 
     assert treatment["knowledge_mode"] == "black_box"
     assert distribution["knowledge_mode"] == "black_box"
@@ -149,13 +150,13 @@ def test_phase35_profiles_remain_black_box_and_keep_expected_knowledge_files() -
     assert distribution["family"] == "agentic"
 
     assert treatment["knowledge_files"] == [
-        "configs/knowledge/phase35/black_box_constraints_manual.md",
-        "configs/knowledge/phase35/high_cyber_ics_methodology_manual.md",
+        "configs/knowledge/shared/black_box_constraints_manual.md",
+        "configs/knowledge/shared/high_cyber_ics_methodology_manual.md",
         "testbeds/water_treatment/knowledge/phase35/water_treatment_domain_primer.md",
     ]
     assert distribution["knowledge_files"] == [
-        "configs/knowledge/phase35/black_box_constraints_manual.md",
-        "configs/knowledge/phase35/high_cyber_ics_methodology_manual.md",
+        "configs/knowledge/shared/black_box_constraints_manual.md",
+        "configs/knowledge/shared/high_cyber_ics_methodology_manual.md",
         "testbeds/water_distribution/knowledge/phase35/water_distribution_domain_primer.md",
     ]
 

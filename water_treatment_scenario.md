@@ -1,42 +1,5 @@
 # Water Treatment Testbed and Attack Scenario Catalog
 
-## Purpose
-
-This note describes the OpenPLC water-treatment testbed used by `ics-agent`,
-the main plant processes exposed through the shared environment interface, and
-the current `18` attack scenarios used in the live wargaming suite.
-
-The intent is to give a compact, implementation-grounded description of:
-
-- what the plant model is
-- which process signals matter operationally
-- what actions the attacker and defender can take
-- how each attack scenario is meant to perturb the plant
-
-## Testbed Overview
-
-The `ics-agent` experiments use an OpenPLC-based water-treatment runtime with a
-shared action and observation surface. The same scenario and agent interfaces
-can run against:
-
-- a host-side OpenPLC backend, or
-- the SPHERE-backed `sphere_openplc` backend
-
-In the SPHERE setting, the durable runtime is pinned to:
-
-- experiment: `openplcwater.lgarcia`
-- realization: `wargamestable.openplcwater.lgarcia`
-- revision: `7054831a885ac69f8cc5ffb2cccc432e892dadb6`
-
-Operationally, the plant side is split into:
-
-- `controller`: runs the OpenPLC controller logic
-- `simulator`: runs the process simulator and accepts plant-side manipulations
-
-The agents themselves are external to the plant. They observe telemetry through
-the environment adapter and choose bounded actions such as `hmi_start`,
-`hmi_stop`, `hmi_estop`, `select_process`, `set_manual_valve`, and
-`set_sensor`.
 
 ## Process Structure
 
