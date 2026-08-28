@@ -211,32 +211,113 @@ def _llm_override(model: ModelVariant) -> dict[str, Any]:
     return payload
 
 
-def _apply_historical_qwen35_distribution_profile_compatibility(
+TREATMENT_HISTORICAL_ATTACKER_ACTIONS = [
+    "hmi_start",
+    "hmi_stop",
+    "hmi_estop",
+    "inspect_surface",
+    "select_process",
+    "set_manual_valve",
+    "set_sensor",
+    "noop",
+]
+
+DISTRIBUTION_HISTORICAL_ATTACKER_ACTIONS = [
+    "inspect_surface",
+    "hmi_start",
+    "hmi_stop",
+    "hmi_estop",
+    "set_sensor",
+    "set_actuator",
+    "noop",
+]
+
+TREATMENT_HISTORICAL_DEFENDER_ACTIONS = [
+    "hmi_stop",
+    "hmi_estop",
+    "select_process",
+    "disable_hmi_session",
+    "isolate_engineering_host",
+    "block_sensor_write",
+    "block_process2_manual_path",
+    "quarantine_signal_source",
+    "noop",
+]
+
+DISTRIBUTION_HISTORICAL_DEFENDER_ACTIONS = [
+    "hmi_stop",
+    "hmi_estop",
+    "disable_hmi_session",
+    "isolate_engineering_host",
+    "block_sensor_write",
+    "block_actuator_write",
+    "quarantine_signal_source",
+    "noop",
+]
+
+TARGET_BLIND_PHASE35_SHARED_KNOWLEDGE = [
+    "configs/knowledge/phase35/black_box_constraints_manual.md",
+    "configs/knowledge/phase35/high_cyber_ics_methodology_manual.md",
+]
+
+
+def _disable_white_box_commit_guardrail(attacker: dict[str, Any]) -> dict[str, Any]:
+    compatible = dict(attacker)
+    behavior_model = dict(compatible.get("behavior_model") or {})
+    compatible["white_box_commit_guardrail"] = False
+    behavior_model["white_box_commit_guardrail"] = False
+    compatible["behavior_model"] = behavior_model
+    return compatible
+
+
+def _target_blind_knowledge_files(testbed: TestbedVariant) -> list[str]:
+    if testbed.key == "water_treatment":
+        return [
+            *TARGET_BLIND_PHASE35_SHARED_KNOWLEDGE,
+            "testbeds/water_treatment/knowledge/phase35/water_treatment_domain_primer.md",
+        ]
+    if testbed.key == "water_distribution":
+        return [
+            *TARGET_BLIND_PHASE35_SHARED_KNOWLEDGE,
+            "testbeds/water_distribution/knowledge/phase35/water_distribution_domain_primer.md",
+        ]
+    return list(TARGET_BLIND_PHASE35_SHARED_KNOWLEDGE)
+
+
+def _apply_historical_qwen35_profile_compatibility(
     *,
     config: dict[str, Any],
     family: FamilyConfig,
     testbed: TestbedVariant,
 ) -> dict[str, Any]:
-    """Keep water-distribution model swaps capability-equivalent to the seeded anchor."""
-    if (
-        testbed.key != "water_distribution"
-        or family.family_name != "white_box_attacker__agentic_defender"
-    ):
+    """Keep model-swap profiles capability-equivalent to the Qwen3.5 anchor."""
+    if testbed.key not in {"water_treatment", "water_distribution"}:
         return config
 
     compatible = deepcopy(config)
     condition = compatible["conditions"][0]
     profile_overrides = dict(condition.get("profile_overrides") or {})
     attacker = dict(profile_overrides.get("attacker") or {})
-    behavior_model = dict(attacker.get("behavior_model") or {})
+    defender = dict(profile_overrides.get("defender") or {})
 
-    # The historical Qwen3.5 seeded backbone did not use this strengthened
-    # direct-commit wrapper. Disable it in generated Qwen3/Phi distribution
-    # configs so model-only runs keep the same attacker capability boundary.
-    attacker["white_box_commit_guardrail"] = False
-    behavior_model["white_box_commit_guardrail"] = False
-    attacker["behavior_model"] = behavior_model
+    if testbed.key == "water_treatment":
+        attacker["allowed_action_types"] = list(TREATMENT_HISTORICAL_ATTACKER_ACTIONS)
+        defender["allowed_action_types"] = list(TREATMENT_HISTORICAL_DEFENDER_ACTIONS)
+    elif testbed.key == "water_distribution":
+        attacker["allowed_action_types"] = list(DISTRIBUTION_HISTORICAL_ATTACKER_ACTIONS)
+        defender["allowed_action_types"] = list(DISTRIBUTION_HISTORICAL_DEFENDER_ACTIONS)
+
+    if family.family_name == "white_box_attacker__agentic_defender":
+        # The historical Qwen3.5 seeded backbone did not use this strengthened
+        # direct-commit wrapper. Disable it so Qwen3/Phi swaps keep the same
+        # attacker capability boundary as the seeded anchor.
+        attacker = _disable_white_box_commit_guardrail(attacker)
+
+    if family.family_name == "black_box_high_cyber_high_domain__agentic_defender":
+        attacker["knowledge_files"] = _target_blind_knowledge_files(testbed)
+
     profile_overrides["attacker"] = attacker
+    profile_overrides["defender"] = defender
     condition["profile_overrides"] = profile_overrides
     compatible["conditions"] = [condition]
     return compatible
@@ -294,7 +375,7 @@ def _apply_model_override(
         profile_overrides[role] = role_override
     condition["profile_overrides"] = profile_overrides
     config["conditions"] = [condition]
-    return _apply_historical_qwen35_distribution_profile_compatibility(
+    return _apply_historical_qwen35_profile_compatibility(
         config=config,
         family=family,
         testbed=testbed,

@@ -222,6 +222,64 @@ def test_distribution_white_box_model_variant_matches_seeded_backbone_guardrail(
     assert attacker["llm"]["model_id"] == "microsoft/Phi-4-mini-instruct"
 
 
+def test_water_treatment_model_variants_match_seeded_backbone_actions() -> None:
+    testbed = runner.TESTBED_VARIANTS["water_treatment"]
+    for family in testbed.family_configs:
+        raw_config = load_yaml(family.config_path)
+        generated = runner._apply_model_override(
+            raw_config=raw_config,
+            family=family,
+            testbed=testbed,
+            model=runner.MODEL_VARIANTS["qwen3_14b"],
+        )
+        overrides = generated["conditions"][0]["profile_overrides"]
+        attacker = overrides["attacker"]
+        defender = overrides["defender"]
+
+        assert (
+            attacker["allowed_action_types"]
+            == runner.TREATMENT_HISTORICAL_ATTACKER_ACTIONS
+        )
+        assert (
+            defender["allowed_action_types"]
+            == runner.TREATMENT_HISTORICAL_DEFENDER_ACTIONS
+        )
+        if family.family_name == "white_box_attacker__agentic_defender":
+            assert attacker["white_box_commit_guardrail"] is False
+            assert attacker["behavior_model"]["white_box_commit_guardrail"] is False
+        if family.family_name == "black_box_high_cyber_high_domain__agentic_defender":
+            assert attacker["knowledge_files"] == [
+                "configs/knowledge/phase35/black_box_constraints_manual.md",
+                "configs/knowledge/phase35/high_cyber_ics_methodology_manual.md",
+                "testbeds/water_treatment/knowledge/phase35/water_treatment_domain_primer.md",
+            ]
+
+
+def test_water_distribution_target_blind_matches_seeded_knowledge_files() -> None:
+    testbed = runner.TESTBED_VARIANTS["water_distribution"]
+    family = next(
+        item
+        for item in testbed.family_configs
+        if item.family_name == "black_box_high_cyber_high_domain__agentic_defender"
+    )
+    raw_config = load_yaml(family.config_path)
+
+    generated = runner._apply_model_override(
+        raw_config=raw_config,
+        family=family,
+        testbed=testbed,
+        model=runner.MODEL_VARIANTS["phi4_mini_instruct"],
+    )
+
+    attacker = generated["conditions"][0]["profile_overrides"]["attacker"]
+    assert attacker["knowledge_files"] == [
+        "configs/knowledge/phase35/black_box_constraints_manual.md",
+        "configs/knowledge/phase35/high_cyber_ics_methodology_manual.md",
+        "testbeds/water_distribution/knowledge/phase35/water_distribution_domain_primer.md",
+    ]
+    assert attacker["allowed_action_types"] == runner.DISTRIBUTION_HISTORICAL_ATTACKER_ACTIONS
+
+
 def test_qwen3_14b_and_phi_configs_differ_only_by_model_fields() -> None:
     def normalized_profile_overrides(config):
         overrides = deepcopy(config["conditions"][0]["profile_overrides"])
@@ -240,41 +298,37 @@ def test_qwen3_14b_and_phi_configs_differ_only_by_model_fields() -> None:
 
     for testbed_key in ("water_treatment", "water_distribution"):
         testbed = runner.TESTBED_VARIANTS[testbed_key]
-        family = next(
-            item
-            for item in testbed.family_configs
-            if item.family_name == "white_box_attacker__agentic_defender"
-        )
-        raw_config = load_yaml(family.config_path)
+        for family in testbed.family_configs:
+            raw_config = load_yaml(family.config_path)
 
-        qwen3_config = runner._apply_model_override(
-            raw_config=raw_config,
-            family=family,
-            testbed=testbed,
-            model=runner.MODEL_VARIANTS["qwen3_14b"],
-        )
-        phi_config = runner._apply_model_override(
-            raw_config=raw_config,
-            family=family,
-            testbed=testbed,
-            model=runner.MODEL_VARIANTS["phi4_mini_instruct"],
-        )
+            qwen3_config = runner._apply_model_override(
+                raw_config=raw_config,
+                family=family,
+                testbed=testbed,
+                model=runner.MODEL_VARIANTS["qwen3_14b"],
+            )
+            phi_config = runner._apply_model_override(
+                raw_config=raw_config,
+                family=family,
+                testbed=testbed,
+                model=runner.MODEL_VARIANTS["phi4_mini_instruct"],
+            )
 
-        assert normalized_profile_overrides(qwen3_config) == normalized_profile_overrides(
-            phi_config
-        )
-        assert (
-            qwen3_config["conditions"][0]["profile_overrides"]["attacker"][
-                "llm"
-            ]["model_id"]
-            == "Qwen/Qwen3-14B"
-        )
-        assert (
-            phi_config["conditions"][0]["profile_overrides"]["attacker"][
-                "llm"
-            ]["model_id"]
-            == "microsoft/Phi-4-mini-instruct"
-        )
+            assert normalized_profile_overrides(
+                qwen3_config
+            ) == normalized_profile_overrides(phi_config)
+            assert (
+                qwen3_config["conditions"][0]["profile_overrides"]["attacker"][
+                    "llm"
+                ]["model_id"]
+                == "Qwen/Qwen3-14B"
+            )
+            assert (
+                phi_config["conditions"][0]["profile_overrides"]["attacker"][
+                    "llm"
+                ]["model_id"]
+                == "microsoft/Phi-4-mini-instruct"
+            )
 
 
 def test_model_variant_runner_rejects_historical_qwen35_anchor() -> None:
