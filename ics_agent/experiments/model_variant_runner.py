@@ -50,13 +50,6 @@ class TestbedVariant:
 
 
 MODEL_VARIANTS: dict[str, ModelVariant] = {
-    "qwen35_9b": ModelVariant(
-        key="qwen35_9b",
-        label="Qwen3.5-9B",
-        model_id="Qwen/Qwen3.5-9B",
-        local_dir=REPO_ROOT / "models" / "local_models" / "qwen3.5-9b",
-        quantization="bf16",
-    ),
     "qwen3_14b": ModelVariant(
         key="qwen3_14b",
         label="Qwen3-14B",
@@ -75,11 +68,6 @@ MODEL_VARIANTS: dict[str, ModelVariant] = {
 }
 
 MODEL_ALIASES = {
-    "qwen3.5-9b": "qwen35_9b",
-    "qwen35": "qwen35_9b",
-    "qwen35-9b": "qwen35_9b",
-    "qwen3_5_9b": "qwen35_9b",
-    "qwen3.5": "qwen35_9b",
     "qwen3-14b": "qwen3_14b",
     "qwen_3_14b": "qwen3_14b",
     "qwen": "qwen3_14b",
@@ -223,6 +211,37 @@ def _llm_override(model: ModelVariant) -> dict[str, Any]:
     return payload
 
 
+def _apply_historical_qwen35_distribution_profile_compatibility(
+    *,
+    config: dict[str, Any],
+    family: FamilyConfig,
+    testbed: TestbedVariant,
+) -> dict[str, Any]:
+    """Keep water-distribution model swaps capability-equivalent to the seeded anchor."""
+    if (
+        testbed.key != "water_distribution"
+        or family.family_name != "white_box_attacker__agentic_defender"
+    ):
+        return config
+
+    compatible = deepcopy(config)
+    condition = compatible["conditions"][0]
+    profile_overrides = dict(condition.get("profile_overrides") or {})
+    attacker = dict(profile_overrides.get("attacker") or {})
+    behavior_model = dict(attacker.get("behavior_model") or {})
+
+    # The historical Qwen3.5 seeded backbone did not use this strengthened
+    # direct-commit wrapper. Disable it in generated Qwen3/Phi distribution
+    # configs so model-only runs keep the same attacker capability boundary.
+    attacker["white_box_commit_guardrail"] = False
+    behavior_model["white_box_commit_guardrail"] = False
+    attacker["behavior_model"] = behavior_model
+    profile_overrides["attacker"] = attacker
+    condition["profile_overrides"] = profile_overrides
+    compatible["conditions"] = [condition]
+    return compatible
+
+
 def _apply_model_override(
     *,
     raw_config: dict[str, Any],
@@ -275,7 +294,11 @@ def _apply_model_override(
         profile_overrides[role] = role_override
     condition["profile_overrides"] = profile_overrides
     config["conditions"] = [condition]
-    return config
+    return _apply_historical_qwen35_distribution_profile_compatibility(
+        config=config,
+        family=family,
+        testbed=testbed,
+    )
 
 
 def _result_model_root(model: ModelVariant) -> Path:
