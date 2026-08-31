@@ -49,6 +49,77 @@ WHITE_BOX_KNOWLEDGE_ABLATIONS: dict[str, dict[str, Any]] = {
 }
 
 
+class _Qwen35TextGenerationAdapter:
+    """Text-only invocation for Qwen3.5 conditional checkpoints."""
+
+    def __init__(
+        self,
+        *,
+        model: Any,
+        tokenizer: Any,
+        max_new_tokens: int,
+        do_sample: bool,
+        temperature: float,
+    ) -> None:
+        self.model = model
+        self.tokenizer = tokenizer
+        self.max_new_tokens = max_new_tokens
+        self.do_sample = do_sample
+        self.temperature = temperature
+
+    def invoke(self, prompt: str) -> str:
+        import torch  # type: ignore
+
+        device = self._input_device()
+        inputs = self._encode_prompt(str(prompt))
+        if device is not None:
+            inputs = {key: value.to(device) for key, value in inputs.items()}
+        generate_kwargs: dict[str, Any] = {
+            "max_new_tokens": self.max_new_tokens,
+            "do_sample": self.do_sample,
+            "pad_token_id": self.tokenizer.eos_token_id,
+        }
+        if self.do_sample:
+            generate_kwargs["temperature"] = self.temperature
+        with torch.inference_mode():
+            output_ids = self.model.generate(**inputs, **generate_kwargs)
+        prompt_tokens = int(inputs["input_ids"].shape[-1])
+        generated = output_ids[0][prompt_tokens:]
+        return self.tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+    def _encode_prompt(self, prompt: str) -> dict[str, Any]:
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            try:
+                return dict(
+                    self.tokenizer.apply_chat_template(
+                        [{"role": "user", "content": prompt}],
+                        add_generation_prompt=True,
+                        enable_thinking=False,
+                        tokenize=True,
+                        return_tensors="pt",
+                        return_dict=True,
+                    )
+                )
+            except TypeError:
+                pass
+        return dict(self.tokenizer(prompt, return_tensors="pt"))
+
+    def _input_device(self) -> Any:
+        try:
+            embedding = self.model.get_input_embeddings()
+            weight = getattr(embedding, "weight", None)
+            device = getattr(weight, "device", None)
+            if device is not None and str(device) != "meta":
+                return device
+        except Exception:
+            pass
+        for parameter in self.model.parameters():
+            device = getattr(parameter, "device", None)
+            if device is not None and str(device) != "meta":
+                return device
+        return None
+
+
 class CachedQwenDecisionEngine:
     _model_cache: dict[tuple[Any, ...], tuple[Any, Any]] = {}
     _llm_cache: dict[tuple[Any, ...], Any] = {}
@@ -83,6 +154,12 @@ class CachedQwenDecisionEngine:
         self.quantization = str(llm_cfg.get("quantization", "bf16")).strip().lower()
         self.require_cuda = bool(llm_cfg.get("require_cuda", True))
         self.knowledge_files = list(profile.get("knowledge_files", []))
+        self.scaffold_mode = str(
+            profile.get("scaffold_mode", "structured_json")
+        ).strip().lower()
+        self.react_context_mode = str(
+            profile.get("react_context_mode", "full")
+        ).strip().lower()
         self.prompt_text = self._load_prompt()
         self.operational_knowledge = load_manual_bundle(self.knowledge_files)
         self.last_mode = "uninitialized"
@@ -144,7 +221,9 @@ class CachedQwenDecisionEngine:
         import torch  # type: ignore
         from langchain_huggingface import HuggingFacePipeline  # type: ignore
         from transformers import (  # type: ignore
+            AutoConfig,
             AutoModelForCausalLM,
+            AutoModelForImageTextToText,
             AutoTokenizer,
             BitsAndBytesConfig,
             pipeline,
@@ -160,11 +239,24 @@ class CachedQwenDecisionEngine:
             or os.environ.get("QWEN_MODEL_PATH", "").strip()
             or self.model_id
         )
+        model_config = AutoConfig.from_pretrained(
+            model_ref,
+            trust_remote_code=self.trust_remote_code,
+            local_files_only=self.local_files_only,
+        )
+        model_type = str(getattr(model_config, "model_type", ""))
+        model_auto_class = self._select_transformers_auto_model_class(
+            model_config,
+            causal_cls=AutoModelForCausalLM,
+            image_text_cls=AutoModelForImageTextToText,
+        )
         model_cache_key = (
             model_ref,
             self.local_files_only,
             self.trust_remote_code,
             self.quantization,
+            model_type,
+            getattr(model_auto_class, "__name__", str(model_auto_class)),
         )
         if model_cache_key not in self._model_cache:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -193,7 +285,7 @@ class CachedQwenDecisionEngine:
                     load_kwargs["dtype"] = torch.bfloat16
                 else:
                     load_kwargs["dtype"] = torch.float16
-            model = AutoModelForCausalLM.from_pretrained(model_ref, **load_kwargs)
+            model = model_auto_class.from_pretrained(model_ref, **load_kwargs)
             self._model_cache[model_cache_key] = (tokenizer, model)
 
         tokenizer, model = self._model_cache[model_cache_key]
@@ -213,10 +305,22 @@ class CachedQwenDecisionEngine:
         if self.temperature > 0:
             generator_kwargs["temperature"] = self.temperature
 
+        if model_auto_class is AutoModelForImageTextToText:
+            llm = _Qwen35TextGenerationAdapter(
+                model=model,
+                tokenizer=tokenizer,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=generator_kwargs["do_sample"],
+                temperature=self.temperature,
+            )
+            self._llm_cache[llm_cache_key] = llm
+            return llm
+
         if (
             not generator_kwargs["do_sample"]
             and getattr(model, "generation_config", None) is not None
         ):
+            model.generation_config.do_sample = False
             model.generation_config.max_length = None
             model.generation_config.temperature = None
             model.generation_config.top_p = None
@@ -233,12 +337,14 @@ class CachedQwenDecisionEngine:
         # `max_new_tokens`. Clearing that inherited default avoids noisy
         # warnings while preserving the repo-configured token budget.
         if getattr(generator, "generation_config", None) is not None:
+            generator.generation_config.do_sample = generator_kwargs["do_sample"]
             generator.generation_config.max_length = None
             if not generator_kwargs["do_sample"]:
                 generator.generation_config.temperature = None
                 generator.generation_config.top_p = None
                 generator.generation_config.top_k = None
         if getattr(model, "generation_config", None) is not None:
+            model.generation_config.do_sample = generator_kwargs["do_sample"]
             model.generation_config.max_length = None
             if not generator_kwargs["do_sample"]:
                 model.generation_config.temperature = None
@@ -247,6 +353,18 @@ class CachedQwenDecisionEngine:
         llm = HuggingFacePipeline(pipeline=generator)
         self._llm_cache[llm_cache_key] = llm
         return llm
+
+    @staticmethod
+    def _select_transformers_auto_model_class(
+        model_config: Any,
+        *,
+        causal_cls: Any,
+        image_text_cls: Any,
+    ) -> Any:
+        model_type = str(getattr(model_config, "model_type", ""))
+        if model_type == "qwen3_5" and hasattr(model_config, "vision_config"):
+            return image_text_cls
+        return causal_cls
 
     def _format_prompt(self, context: dict[str, Any]) -> str:
         prompt_template = (
@@ -291,12 +409,47 @@ class CachedQwenDecisionEngine:
             payload["recent_decisions"] = context.get("recent_decisions", [])
             payload["metrics"] = context.get("metrics")
             payload["passed"] = context.get("passed")
+        if (
+            self.scaffold_mode in {"pure_react", "react"}
+            and self.react_context_mode == "compact"
+        ):
+            payload = self._compact_react_payload(payload)
+            context_text = json.dumps(payload, separators=(",", ":"), default=str)
+        else:
+            context_text = json.dumps(payload, indent=2, default=str)
         operational_knowledge = self.operational_knowledge.strip()
         knowledge_block = (
             f"Operational manuals:\n{operational_knowledge}\n\n"
             if operational_knowledge
             else ""
         )
+        if self.scaffold_mode in {"pure_react", "react"}:
+            return (
+                f"{prompt_template}\n\n"
+                f"{knowledge_block}"
+                "Use a bounded ReAct scaffold: interpret the observation, state a short "
+                "reasoning summary, choose one candidate action or hold, and predict the "
+                "expected effect.\n"
+                "Return exactly one JSON object and no prose before or after it.\n"
+                "Required keys: observation_summary, reasoning_summary, summary, "
+                "candidate_id, expected_effect, confidence, diagnosis, labels, decision_type.\n"
+                "Rules:\n"
+                "- candidate_id must be either null or match one of candidate_actions[].id.\n"
+                "- Never invent a new action or a new candidate id.\n"
+                "- Use decision_type of note, alert, action, or analysis.\n"
+                "- diagnosis must be null or a short snake_case style label, never a sentence.\n"
+                "- summary must stay under 18 words and should state the chosen move.\n"
+                "- observation_summary must summarize visible evidence only.\n"
+                "- reasoning_summary must explain why this candidate is preferable now.\n"
+                "- expected_effect must predict the next observable effect or explain why holding is safer.\n"
+                "- Do not reveal or assume hidden simulator state, future defender actions, evaluator labels, or authored solutions.\n"
+                "- When structured_prior_knowledge is present, use it as defender-side doctrine grounded in visible evidence, not as hidden truth.\n"
+                "- If the evidence is weak, set diagnosis to null instead of guessing.\n"
+                "- If you want to hold position, prefer the noop candidate when available.\n\n"
+                "Example JSON:\n"
+                '{"observation_summary":"No new alarm is visible.","reasoning_summary":"The best candidate is to hold until a new effect appears.","summary":"Hold and observe.","candidate_id":null,"expected_effect":"One more sample may reveal whether the prior action changed state.","confidence":0.42,"diagnosis":null,"labels":["agentic","react"],"decision_type":"note"}\n\n'
+                f"Context:\n{context_text}"
+            )
         return (
             f"{prompt_template}\n\n"
             f"{knowledge_block}"
@@ -315,16 +468,78 @@ class CachedQwenDecisionEngine:
             "- If you want to hold position, prefer the noop candidate when available.\n\n"
             "Example JSON:\n"
             '{"summary":"Monitor and hold.","candidate_id":null,"confidence":0.42,"diagnosis":null,"labels":["agentic"],"decision_type":"note"}\n\n'
-            f"Context:\n{json.dumps(payload, indent=2)}"
+            f"Context:\n{context_text}"
         )
 
-    def _decide_with_langchain(self, context: dict[str, Any]) -> dict[str, Any]:
-        from langchain_core.output_parsers import StrOutputParser  # type: ignore
-        from langchain_core.prompts import PromptTemplate  # type: ignore
+    @staticmethod
+    def _compact_react_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        structured_memory = payload.get("structured_memory")
+        if isinstance(structured_memory, dict):
+            compact_memory = {
+                key: structured_memory.get(key)
+                for key in (
+                    "phase",
+                    "committed_surface",
+                    "best_known_surface",
+                    "white_box_direct_commit",
+                    "last_diagnosis",
+                    "last_expected_effect",
+                )
+                if key in structured_memory
+            }
+        else:
+            compact_memory = structured_memory
 
-        prompt = PromptTemplate.from_template("{body}")
-        chain = prompt | self._llm() | StrOutputParser()
-        raw = chain.invoke({"body": self._format_prompt(context)})
+        mitre_context = payload.get("mitre_context")
+        if isinstance(mitre_context, dict):
+            compact_mitre = {
+                key: mitre_context.get(key)
+                for key in ("current_phase", "phase_model", "staged_path")
+                if key in mitre_context
+            }
+        else:
+            compact_mitre = mitre_context
+
+        return {
+            "role": payload.get("role"),
+            "scenario_id": payload.get("scenario_id"),
+            "suite": payload.get("suite"),
+            "intent": payload.get("intent"),
+            "time_sec": payload.get("time_sec"),
+            "state_name": payload.get("state_name"),
+            "observation": payload.get("observation"),
+            "candidate_actions": payload.get("candidate_actions", []),
+            "recent_actions": payload.get("recent_actions", [])[-3:],
+            "recent_action_effects": payload.get("recent_action_effects", [])[-3:],
+            "active_alarms": payload.get("active_alarms", []),
+            "short_horizon_trends": payload.get("short_horizon_trends", {}),
+            "risk_flags": payload.get("risk_flags", []),
+            "structured_memory": compact_memory,
+            "system_knowledge": CachedQwenDecisionEngine._compact_value(
+                payload.get("system_knowledge"), max_chars=1000
+            ),
+            "mitre_context": compact_mitre,
+            "role_goal": payload.get("role_goal", [])[:3],
+            "role_constraints": payload.get("role_constraints", [])[:5],
+            "safety_bounds": payload.get("safety_bounds", {}),
+        }
+
+    @staticmethod
+    def _compact_value(value: Any, *, max_chars: int) -> Any:
+        try:
+            text = json.dumps(value, default=str, separators=(",", ":"))
+        except TypeError:
+            text = str(value)
+        if len(text) <= max_chars:
+            return value
+        return {
+            "truncated": True,
+            "excerpt": text[:max_chars],
+            "original_chars": len(text),
+        }
+
+    def _decide_with_langchain(self, context: dict[str, Any]) -> dict[str, Any]:
+        raw = self._invoke_llm(self._format_prompt(context))
         self.last_raw_output = self._raw_excerpt(raw)
         payload = self._parse_output(raw)
         if payload is None:
@@ -346,7 +561,7 @@ class CachedQwenDecisionEngine:
                 lambda state: {"prompt": self._format_prompt(state["context"])},
             )
             graph.add_node(
-                "generate", lambda state: {"raw": self._llm().invoke(state["prompt"])}
+                "generate", lambda state: {"raw": self._invoke_llm(state["prompt"])}
             )
             graph.set_entry_point("prepare")
             graph.add_edge("prepare", "generate")
@@ -366,6 +581,12 @@ class CachedQwenDecisionEngine:
             )
         return self._finalize_payload(payload, context)
 
+    def _invoke_llm(self, prompt: str) -> str:
+        llm = self._llm()
+        if hasattr(llm, "invoke"):
+            return str(llm.invoke(prompt))
+        return str(llm(prompt))
+
     def _parse_failure_payload(self, context: dict[str, Any]) -> dict[str, Any]:
         self.last_error = (
             "model output did not contain valid JSON; using schema-fallback"
@@ -378,8 +599,13 @@ class CachedQwenDecisionEngine:
                 break
         return self._finalize_payload(
             {
+                "observation_summary": "Model output was not parseable.",
+                "reasoning_summary": (
+                    "Use the bounded action wrapper rather than executing unvalidated prose."
+                ),
                 "summary": "Hold because model output was not parseable.",
                 "candidate_id": candidate_id,
+                "expected_effect": "No plant-side action is executed unless a guardrail selects a valid candidate.",
                 "confidence": 0.0,
                 "diagnosis": None,
                 "labels": ["agentic", self.role, "schema-fallback"],
@@ -498,6 +724,9 @@ class CachedQwenDecisionEngine:
             "decision_type",
             "action",
             "metadata",
+            "observation_summary",
+            "reasoning_summary",
+            "expected_effect",
         }
         context_fields = {
             "role",
@@ -525,8 +754,11 @@ class CachedQwenDecisionEngine:
     def _field_fragment_variants(candidate: str) -> list[str]:
         variants: list[str] = []
         field_names = (
+            "observation_summary",
+            "reasoning_summary",
             "summary",
             "candidate_id",
+            "expected_effect",
             "confidence",
             "diagnosis",
             "labels",
@@ -798,6 +1030,9 @@ class AgenticRoleAgent(RoleAgent):
         )
         self.reasoning_cooldown_sec = float(profile.get("reasoning_cooldown_sec", 2.0))
         self.reasoning_refresh_sec = float(profile.get("reasoning_refresh_sec", 6.0))
+        self.max_llm_decisions_per_episode = int(
+            profile.get("max_llm_decisions_per_episode", 0) or 0
+        )
         self.abort_on_backend_error = bool(
             profile.get(
                 "abort_on_backend_error",
@@ -861,6 +1096,7 @@ class AgenticRoleAgent(RoleAgent):
                 "role_memory": {},
                 "decision_journal": [],
                 "action_effect_journal": [],
+                "llm_decision_count": 0,
             }
         )
 
@@ -1143,6 +1379,15 @@ class AgenticRoleAgent(RoleAgent):
         )
         return fallback or decisions
 
+    def _consume_llm_decision_budget(self) -> bool:
+        if self.max_llm_decisions_per_episode <= 0:
+            return True
+        count = int(self._state.get("llm_decision_count", 0) or 0)
+        if count >= self.max_llm_decisions_per_episode:
+            return False
+        self._state["llm_decision_count"] = count + 1
+        return True
+
     def _step_attacker_role(self, context: dict[str, Any]) -> list[Any]:
         agent_context = self._build_online_context(context)
         transition = (
@@ -1161,6 +1406,8 @@ class AgenticRoleAgent(RoleAgent):
         if self._only_noop_candidates(agent_context):
             return []
         if not self._should_reason(agent_context, channel="action"):
+            return []
+        if not self._consume_llm_decision_budget():
             return []
         try:
             payload = self.engine.decide(agent_context)
@@ -12054,6 +12301,22 @@ class AgenticRoleAgent(RoleAgent):
         if not summary and action is None:
             return []
 
+        decision_metadata = dict(payload.get("metadata") or {})
+        scaffold_mode = str(self.profile.get("scaffold_mode", "")).strip().lower()
+        if scaffold_mode in {"pure_react", "react"}:
+            decision_metadata.update(
+                {
+                    "scaffold_mode": "pure_react",
+                    "observation_summary": str(
+                        payload.get("observation_summary", "")
+                    ).strip(),
+                    "reasoning_summary": str(
+                        payload.get("reasoning_summary", "")
+                    ).strip(),
+                    "expected_effect": str(payload.get("expected_effect", "")).strip(),
+                }
+            )
+
         decision = self.decision(
             decision_type=decision_type,
             summary=summary or f"{self.role} decision",
@@ -12071,7 +12334,7 @@ class AgenticRoleAgent(RoleAgent):
             metadata={
                 "backend": self.engine.last_mode,
                 "error": self.engine.last_error,
-                **dict(payload.get("metadata") or {}),
+                **decision_metadata,
                 **self._optionb_mitre_metadata(
                     context=context,
                     action=action,
@@ -12108,12 +12371,18 @@ class AgenticRoleAgent(RoleAgent):
             memory["model_attention_target"] = payload.get("attention_target")
         if payload.get("why_it_matters"):
             memory["model_why_it_matters"] = payload.get("why_it_matters")
+        if payload.get("reasoning_summary"):
+            memory["last_reasoning_summary"] = payload.get("reasoning_summary")
+        if payload.get("expected_effect"):
+            memory["last_expected_effect"] = payload.get("expected_effect")
         journal = self._state.setdefault("decision_journal", [])
         journal.append(
             {
                 "time_sec": round(float(context.get("time_sec", 0.0)), 3),
                 "decision_type": decision.decision_type,
                 "summary": decision.summary,
+                "reasoning_summary": payload.get("reasoning_summary"),
+                "expected_effect": payload.get("expected_effect"),
                 "action": action,
                 "diagnosis": decision.diagnosis,
             }

@@ -2983,11 +2983,40 @@ class OpenPLCEnvironment:
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
 
+    @contextmanager
+    def _bounded_io_call(self, operation: str):
+        timeout_sec = float(self.config.get("io_timeout_sec", 0.0) or 0.0)
+        if timeout_sec <= 0:
+            yield
+            return
+
+        def _raise_timeout(signum: int, frame: Any) -> None:
+            del signum, frame
+            raise TimeoutError(
+                f"OpenPLC {operation} timed out after {timeout_sec:.1f}s"
+            )
+
+        try:
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, _raise_timeout)
+            signal.setitimer(signal.ITIMER_REAL, timeout_sec)
+        except ValueError:
+            yield
+            return
+        try:
+            yield
+        except TimeoutError as exc:
+            raise EnvironmentError(str(exc)) from exc
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
     def observe_flat(self) -> dict[str, Any]:
         if self._backend_impl is not None:
             return self._backend_impl.observe_flat()
         try:
-            return self.testbed.observe_flat()
+            with self._bounded_io_call("observe_flat"):
+                return self.testbed.observe_flat()
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
 
@@ -2995,7 +3024,8 @@ class OpenPLCEnvironment:
         if self._backend_impl is not None:
             return self._backend_impl.observe()
         try:
-            return self.testbed.observe()
+            with self._bounded_io_call("observe"):
+                return self.testbed.observe()
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
 
@@ -3033,7 +3063,8 @@ class OpenPLCEnvironment:
             return state_after
 
         try:
-            return self.testbed.apply_action(action)
+            with self._bounded_io_call("act"):
+                return self.testbed.apply_action(action)
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
 
@@ -3078,7 +3109,8 @@ class OpenPLCEnvironment:
         try:
             custom_inspector = getattr(self.testbed, "inspect_surface", None)
             if callable(custom_inspector):
-                result = custom_inspector(surface)
+                with self._bounded_io_call("inspect_surface"):
+                    result = custom_inspector(surface)
                 if isinstance(result, dict):
                     return result
             return self._inspect_surface(surface)

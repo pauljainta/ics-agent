@@ -420,6 +420,13 @@ class ExperimentOrchestrator:
         return bool(config.get("use_canonical_result_root", False))
 
     @staticmethod
+    def _environment_config(config: dict[str, Any]) -> dict[str, Any]:
+        environment = dict(config.get("environment") or {})
+        runtime_overrides = dict(config.get("environment_runtime") or {})
+        environment.update(runtime_overrides)
+        return environment
+
+    @staticmethod
     def _git_commit(path: Path) -> str | None:
         try:
             return (
@@ -462,6 +469,9 @@ class ExperimentOrchestrator:
             )
             settings[str(role)] = {
                 "profile_id": str(profile_id),
+                "scaffold_mode": str(
+                    profile.get("scaffold_mode", "structured_json")
+                ),
                 "backend": llm.get("backend"),
                 "framework": llm.get("framework"),
                 "model_id": model_id,
@@ -1129,7 +1139,7 @@ class ExperimentOrchestrator:
             },
         )
 
-        env = OpenPLCEnvironment(config.get("environment", {}))
+        env = OpenPLCEnvironment(self._environment_config(config))
         defender_profile = dict(
             (effective_profiles or {}).get("defender")
             or self.agent_profiles.get(condition.get("defender", ""), {})

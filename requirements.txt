@@ -1,6 +1,6 @@
 # Python 3.10.x
-transformers>=4.57.6,<5.0.0
-huggingface-hub>=0.34.0,<1.0.0
+transformers @ git+https://github.com/huggingface/transformers.git@71c6f699ac9b3f8fc42a6a3e9dc59034c349a678
+huggingface-hub>=1.5.0,<2.0.0
 torch>=2.6.0,<2.7.0
 safetensors>=0.4.0,<1.0.0
 accelerate>=1.13.0,<2.0.0
