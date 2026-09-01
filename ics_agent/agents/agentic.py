@@ -1765,7 +1765,14 @@ class AgenticRoleAgent(RoleAgent):
             mitre_context = self._black_box_visible_mitre_context(
                 internal_mitre_context
             )
-            if (
+            if self._uses_autonomous_react_tools():
+                candidate_actions = self._black_box_autonomous_react_candidates(
+                    context=history_context,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=internal_structured_memory,
+                    mitre_context=internal_mitre_context,
+                )
+            elif (
                 self._uses_distribution_scripted_black_box_profile()
                 and self._is_water_distribution_scenario(scenario)
             ):
@@ -2839,6 +2846,230 @@ class AgenticRoleAgent(RoleAgent):
             for item in mitre_context.get("qualification_surfaces", [])
         ]
         return visible
+
+    def _black_box_autonomous_react_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        mitre_context: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Expose generic opaque tools for black-box ReAct discovery and probing."""
+
+        del structured_memory, mitre_context
+        allowed = set(self.profile.get("allowed_action_types", []))
+        observation = dict(context.get("observation") or {})
+        state_name = str(observation.get("STATE_NAME", "")).strip().upper()
+        plant_running = state_name in {"RUNNING", "START", "STARTING"}
+        recent_actions = list(context.get("executed_actions", []))
+        recent_attacker_actions = [
+            normalize_action(item.get("action"))
+            for item in recent_actions
+            if item.get("role") == "attacker"
+        ]
+        inspected_surfaces = {
+            str(action.get("surface", "")).strip()
+            for action in recent_attacker_actions
+            if action is not None
+            and str(action.get("type", "")).strip() == "inspect_surface"
+            and str(action.get("surface", "")).strip()
+        }
+        recon_count = len(
+            [
+                action
+                for action in recent_attacker_actions
+                if action is not None
+                and str(action.get("type", "")).strip() == "inspect_surface"
+            ]
+        )
+        min_recon = self.autonomous_react_min_recon_actions
+        visible_risk_flags = set(self._black_box_visible_risk_flags(telemetry_summary))
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+        candidate_map: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            action: dict[str, Any] | str | None,
+            *,
+            category: str,
+            priority: int,
+            surface: str,
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", "")).strip()
+            if action_type not in allowed:
+                return
+            if action_type != "set_sensor" and self._action_satisfied(
+                normalized,
+                observation=observation,
+            ):
+                return
+            visible_action = self._black_box_visible_action(
+                normalized,
+                observation=observation,
+            )
+            if visible_action is None:
+                return
+            candidate_id = self._black_box_candidate_id(visible_action)
+            payload = {
+                "id": candidate_id,
+                "summary": self._black_box_candidate_summary(
+                    visible_action=visible_action,
+                    category=category,
+                ),
+                "action": visible_action,
+                "source": "black_box_autonomous_react_tool",
+                "priority": int(priority),
+                "surface": self._black_box_surface_alias(surface),
+                "category": category,
+                "mitre_phase": self._autonomous_react_mitre_phase(
+                    action_type=action_type,
+                    recon_count=recon_count,
+                    min_recon=min_recon,
+                ),
+            }
+            existing = candidates_by_id.get(candidate_id)
+            if existing is not None and int(existing.get("priority", 0)) >= int(
+                payload["priority"]
+            ):
+                return
+            candidates_by_id[candidate_id] = payload
+            candidate_map[candidate_id] = {
+                "action": normalized,
+                "summary": payload["summary"],
+                "visible_action": visible_action,
+            }
+
+        if "inspect_surface" in allowed:
+            for index, surface in enumerate(
+                [
+                    "tags",
+                    "registers",
+                    "io_image",
+                    "alarm_bits",
+                    "process2_control_plane",
+                    "actuator_state_bits",
+                ]
+            ):
+                if recon_count >= min_recon and surface in inspected_surfaces:
+                    continue
+                add_candidate(
+                    {"type": "inspect_surface", "surface": surface},
+                    category="recon",
+                    priority=190 - (index * 5)
+                    if recon_count < min_recon
+                    else 58 - (index * 3),
+                    surface=surface,
+                )
+
+        noop_candidate = self._noop_candidate(
+            "Wait one sample and observe whether the last opaque probe changed the interface."
+        )
+        if noop_candidate is not None:
+            add_candidate(
+                noop_candidate.get("action"),
+                category="hold",
+                priority=8,
+                surface="io_image",
+            )
+
+        if recon_count < min_recon:
+            visible_candidates = self._rank_autonomous_react_candidates(
+                candidates_by_id
+            )
+            self._state["black_box_candidate_map"] = candidate_map
+            self.engine.black_box_candidate_map = dict(candidate_map)
+            return visible_candidates
+
+        if "set_sensor" in allowed:
+            signal_fields = [
+                field_name
+                for field_name, value in observation.items()
+                if (
+                    isinstance(field_name, str)
+                    and (
+                        field_name.endswith("_Level")
+                        or field_name.endswith("_Flow")
+                    )
+                    and self._coerce_number(value) is not None
+                )
+            ]
+            signal_priority = 136
+            if visible_risk_flags.intersection(
+                {
+                    "telemetry_shift",
+                    "single_alarm_pressure",
+                    "multi_alarm_pressure",
+                    "reservoir_drift",
+                }
+            ):
+                signal_priority += 6
+            for field_name in sorted(signal_fields):
+                current = float(self._coerce_number(observation.get(field_name)) or 0.0)
+                step = max(250.0, abs(current) * 1.5)
+                high_value = int(round(min(65535.0, current + step)))
+                low_value = int(round(max(0.0, current - step)))
+                for value, offset in ((high_value, 0), (low_value, 4)):
+                    if value == int(round(current)):
+                        continue
+                    add_candidate(
+                        {"type": "set_sensor", "name": field_name, "value": value},
+                        category="hypothesis_test",
+                        priority=signal_priority - offset,
+                        surface="sensor_manipulation",
+                    )
+                signal_priority -= 7
+
+        if "hmi_start" in allowed and not plant_running:
+            add_candidate(
+                {"type": "hmi_start", "process_id": "WT-P1"},
+                category="setup",
+                priority=124,
+                surface="io_image",
+            )
+        if "hmi_stop" in allowed and plant_running:
+            add_candidate(
+                {"type": "hmi_stop", "process_id": "WT-P1"},
+                category="impact_test",
+                priority=116,
+                surface="io_image",
+            )
+        if "hmi_estop" in allowed and plant_running:
+            add_candidate(
+                {"type": "hmi_estop", "process_id": "WT-P1"},
+                category="impact_test",
+                priority=118,
+                surface="io_image",
+            )
+        if "select_process" in allowed:
+            add_candidate(
+                {"type": "select_process", "process_id": "WT-P2", "active": True},
+                category="hypothesis_test",
+                priority=112,
+                surface="process2_control_plane",
+            )
+        if "set_manual_valve" in allowed:
+            valve_priority = 108
+            for chemical in self._available_chemicals(observation)[:3]:
+                add_candidate(
+                    {
+                        "type": "set_manual_valve",
+                        "process_id": "WT-P2",
+                        "chemical": chemical,
+                        "open": True,
+                    },
+                    category="hypothesis_test",
+                    priority=valve_priority,
+                    surface="process2_control_plane",
+                )
+                valve_priority -= 4
+
+        visible_candidates = self._rank_autonomous_react_candidates(candidates_by_id)
+        self._state["black_box_candidate_map"] = candidate_map
+        self.engine.black_box_candidate_map = dict(candidate_map)
+        return visible_candidates
 
     def _black_box_candidate_actions(
         self,
