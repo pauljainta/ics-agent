@@ -1,0 +1,73 @@
+experiment_name: water_distribution_autonomous_react_white_box
+experiment_id: water_distribution_autonomous_react_white_box
+testbed: water_distribution
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/water_distribution_openplc/Autonomous-React/White-Box
+study_metadata:
+  family: water_distribution_white_box_autonomous_react_attacker_vs_agentic_full_containment_defender_mitre11
+  timing_primary_origin: wargame_t0
+  notes:
+    - Full retained water-distribution attack-suite run for the bounded autonomous ReAct white-box attacker.
+    - The attacker starts from bounded post-access context and must inspect reachable surfaces before manipulating sensors or actuators.
+    - The defender is the current full-containment agentic defender with runtime-enforced cutoff actions.
+    - Infrastructure coordinates must come from ignored local environment or infrastructure config.
+environment:
+  backend: sphere_openplc
+  testbed: water_distribution
+  infrastructure_profile: water_distribution
+environment_runtime:
+  io_timeout_sec: 8
+conditions:
+  - name: white_box_autonomous_react_attacker__agentic_defender
+    profiles:
+      attacker: white_box_autonomous_react_attacker
+      defender: agentic_defender
+      observer: scripted_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        react_context_mode: compact
+        max_llm_decisions_per_episode: 10
+        llm:
+          model_id: Qwen/Qwen3.5-9B
+          prompt_file: testbeds/water_distribution/prompts/white_box_attacker.md
+          quantization: 4bit
+          max_new_tokens: 128
+        action_cooldown_sec: 0.5
+        note_cooldown_sec: 2.0
+        reasoning_cooldown_sec: 0.5
+        reasoning_refresh_sec: 1.0
+      defender:
+        behavior_model:
+          id: optionb_mitre_staged
+          policy: agentic
+          notes: MITRE-informed staged agentic defender with concrete runtime containment.
+        allowed_action_types:
+          - hmi_stop
+          - hmi_estop
+          - disable_hmi_session
+          - isolate_engineering_host
+          - block_sensor_write
+          - block_actuator_write
+          - quarantine_signal_source
+          - noop
+        knowledge_files:
+          - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+          - testbeds/water_distribution/knowledge/defender_manual.md
+        llm:
+          model_id: Qwen/Qwen3.5-9B
+          prompt_file: testbeds/water_distribution/prompts/defender.md
+          quantization: 4bit
+          max_new_tokens: 64
+        action_cooldown_sec: 2.0
+        note_cooldown_sec: 12.0
+        reasoning_cooldown_sec: 12.0
+        reasoning_refresh_sec: 18.0

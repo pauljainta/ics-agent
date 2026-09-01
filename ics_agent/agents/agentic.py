@@ -9282,10 +9282,12 @@ class AgenticRoleAgent(RoleAgent):
 
         allowed = set(self.profile.get("allowed_action_types", []))
         scenario = context["scenario"]
+        is_distribution = self._is_water_distribution_scenario(scenario)
         observation = context.get("observation", {})
         now = float(context.get("time_sec", 0.0))
         state_name = str(observation.get("STATE_NAME", "")).upper()
         process_id = str((getattr(scenario, "execution", {}) or {}).get("process_id") or "")
+        primary_process_id = "WD-UC0" if is_distribution else "WT-P1"
         recent_actions = list(context.get("executed_actions", []))
         recent_attacker_actions = [
             normalize_action(item.get("action"))
@@ -9393,7 +9395,7 @@ class AgenticRoleAgent(RoleAgent):
             add_candidate(
                 tool="issue_hmi_command",
                 summary="Start the process so subsequent bounded process actions can produce observable effect.",
-                action={"type": "hmi_start", "process_id": "WT-P1"},
+                action={"type": "hmi_start", "process_id": primary_process_id},
                 priority=132,
                 category="setup",
                 expected_effect="The process state should move toward RUNNING if permissives allow.",
@@ -9436,8 +9438,33 @@ class AgenticRoleAgent(RoleAgent):
                         expected_effect="Telemetry, alarms, or controller state should change if the tag is effectful.",
                     )
 
+        if is_distribution and "set_actuator" in allowed:
+            for index, (actuator_name, value) in enumerate(
+                self._autonomous_react_distribution_actuator_specs(
+                    process_id=process_id
+                )
+            ):
+                add_candidate(
+                    tool="write_allowed_actuator",
+                    summary=(
+                        f"Test the `{actuator_name}` actuator path with a bounded "
+                        "command and observe the distribution-process response."
+                    ),
+                    action={
+                        "type": "set_actuator",
+                        "name": actuator_name,
+                        "value": value,
+                    },
+                    priority=124 - (index * 6),
+                    category="hypothesis_test",
+                    expected_effect=(
+                        "Pump, valve, flow, or downstream tank telemetry should change "
+                        "if the actuator path is effectful."
+                    ),
+                )
+
         p2_selected = self._is_active_flag(observation.get("P2_Selected"))
-        if "select_process" in allowed and not p2_selected:
+        if not is_distribution and "select_process" in allowed and not p2_selected:
             add_candidate(
                 tool="write_allowed_tag",
                 summary="Enable the Process 2 manual-control surface and observe whether valve controls become effectful.",
@@ -9446,7 +9473,7 @@ class AgenticRoleAgent(RoleAgent):
                 category="hypothesis_test",
                 expected_effect="P2_Selected should latch on and expose manual dosing actions if the path is reachable.",
             )
-        if "set_manual_valve" in allowed and p2_selected:
+        if not is_distribution and "set_manual_valve" in allowed and p2_selected:
             for index, chemical in enumerate(self._available_chemicals(observation)[:3]):
                 add_candidate(
                     tool="write_allowed_tag",
@@ -9469,7 +9496,7 @@ class AgenticRoleAgent(RoleAgent):
             add_candidate(
                 tool="issue_hmi_command",
                 summary="Test the HMI emergency-stop command as an availability-impact control path.",
-                action={"type": "hmi_estop", "process_id": "WT-P1"},
+                action={"type": "hmi_estop", "process_id": primary_process_id},
                 priority=121,
                 category="impact_test",
                 expected_effect="The process state should leave RUNNING if the command path is authoritative.",
@@ -9478,7 +9505,7 @@ class AgenticRoleAgent(RoleAgent):
             add_candidate(
                 tool="issue_hmi_command",
                 summary="Test the HMI stop command as a controlled availability-impact path.",
-                action={"type": "hmi_stop", "process_id": "WT-P1"},
+                action={"type": "hmi_stop", "process_id": primary_process_id},
                 priority=113,
                 category="impact_test",
                 expected_effect="The process state should move toward a stopped state if the command path is authoritative.",
@@ -9508,6 +9535,11 @@ class AgenticRoleAgent(RoleAgent):
             "alarm_bits": "inspect_alarm_surface",
             "process2_control_plane": "inspect_control_plane",
             "actuator_state_bits": "inspect_actuator_state",
+            "sensor_write_path": "inspect_sensor_write_path",
+            "actuator_write_path": "inspect_actuator_write_path",
+            "supply_control_plane": "inspect_control_plane",
+            "grid_control_plane": "inspect_control_plane",
+            "return_control_plane": "inspect_control_plane",
         }.get(surface_name, "inspect_network_surface")
 
     @staticmethod
@@ -9536,11 +9568,49 @@ class AgenticRoleAgent(RoleAgent):
             for surface in (mitre_context or {}).get("discovery_surfaces", [])
             if str(surface).strip()
         ]
-        base = (
-            ["process2_control_plane", "tags", "registers", "io_image", "alarm_bits"]
-            if process_id == "WT-P2"
-            else ["tags", "alarm_bits", "io_image", "actuator_state_bits", "registers"]
-        )
+        if process_id.startswith("WD-"):
+            if process_id == "WD-Supply":
+                base = [
+                    "supply_control_plane",
+                    "sensor_write_path",
+                    "actuator_write_path",
+                    "tags",
+                    "alarm_bits",
+                    "registers",
+                ]
+            elif process_id == "WD-Grid":
+                base = [
+                    "grid_control_plane",
+                    "sensor_write_path",
+                    "actuator_write_path",
+                    "tags",
+                    "alarm_bits",
+                    "registers",
+                ]
+            elif process_id == "WD-RWS":
+                base = [
+                    "return_control_plane",
+                    "sensor_write_path",
+                    "actuator_write_path",
+                    "tags",
+                    "alarm_bits",
+                    "registers",
+                ]
+            else:
+                base = [
+                    "tags",
+                    "sensor_write_path",
+                    "actuator_write_path",
+                    "grid_control_plane",
+                    "return_control_plane",
+                    "supply_control_plane",
+                    "alarm_bits",
+                    "registers",
+                ]
+        elif process_id == "WT-P2":
+            base = ["process2_control_plane", "tags", "registers", "io_image", "alarm_bits"]
+        else:
+            base = ["tags", "alarm_bits", "io_image", "actuator_state_bits", "registers"]
         ordered: list[str] = []
         for surface in base + mitre_surfaces:
             if surface and surface not in ordered:
@@ -9556,26 +9626,83 @@ class AgenticRoleAgent(RoleAgent):
         process_id: str,
         observation: dict[str, Any],
     ) -> list[str]:
-        preferred = (
-            ["RW_Tank_Level", "UF_UFFT_Tank_Level"]
-            if process_id != "WT-P2"
-            else [
+        if process_id.startswith("WD-"):
+            if process_id == "WD-Supply":
+                preferred = [
+                    "Supply_Tank_Level",
+                    "Grid_Elev_Tank_Level",
+                    "RWS_Tank_Level",
+                ]
+            elif process_id == "WD-Grid":
+                preferred = [
+                    "Grid_Elev_Tank_Level",
+                    "Grid_Consum_Tank_Level",
+                    "Supply_Tank_Level",
+                    "RWS_Tank_Level",
+                ]
+            elif process_id == "WD-RWS":
+                preferred = [
+                    "RWS_Tank_Level",
+                    "Grid_Elev_Tank_Level",
+                    "Supply_Tank_Level",
+                ]
+            else:
+                preferred = [
+                    "Grid_Elev_Tank_Level",
+                    "RWS_Tank_Level",
+                    "Supply_Tank_Level",
+                    "Grid_Consum_Tank_Level",
+                ]
+        elif process_id == "WT-P2":
+            preferred = [
                 "ChemTreat_NaCl_Level",
                 "ChemTreat_NaOCl_Level",
                 "ChemTreat_HCl_Level",
                 "RW_Tank_Level",
             ]
-        )
+        else:
+            preferred = ["RW_Tank_Level", "UF_UFFT_Tank_Level"]
         ordered: list[str] = []
         for field_name in preferred + sorted(sensor_profiles):
             if field_name not in sensor_profiles or field_name in ordered:
                 continue
-            if field_name.startswith("ChemTreat_") and not self._is_active_flag(
+            if (
+                process_id.startswith("WT-")
+                and field_name.startswith("ChemTreat_")
+                and not self._is_active_flag(
                 observation.get("P2_Selected")
+                )
             ):
                 continue
             ordered.append(field_name)
         return ordered[:4]
+
+    @staticmethod
+    def _autonomous_react_distribution_actuator_specs(
+        *,
+        process_id: str,
+    ) -> list[tuple[str, Any]]:
+        if process_id == "WD-Supply":
+            return [
+                ("Supply_Pump_Speed", 100),
+                ("Supply_Tank_Valve", True),
+            ]
+        if process_id == "WD-Grid":
+            return [
+                ("Grid_Elev_Valve", True),
+                ("Supply_Pump_Speed", 100),
+            ]
+        if process_id == "WD-RWS":
+            return [
+                ("RWS_Pump_Speed", 100),
+                ("RWS_Tank_Valve", True),
+            ]
+        return [
+            ("Grid_Elev_Valve", True),
+            ("RWS_Pump_Speed", 100),
+            ("RWS_Tank_Valve", True),
+            ("Supply_Pump_Speed", 100),
+        ]
 
     def _adaptive_attacker_candidates(
         self,

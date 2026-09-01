@@ -22,6 +22,7 @@ Executable wrappers for experiments and setup. Run them from the repo root with 
 - [`run_water_treatment_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.py`](run_water_treatment_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.py): treatment target-blind high-domain/high-cyber single-family run.
 - [`run_water_distribution_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.py`](run_water_distribution_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.py): distribution target-blind high-domain/high-cyber single-family run.
 - [`run_water_treatment_autonomous_react_white_box_attacker_vs_agentic_full_containment_defender.py`](run_water_treatment_autonomous_react_white_box_attacker_vs_agentic_full_containment_defender.py): treatment autonomous-ReAct white-box attacker against the full-containment agentic defender.
+- [`run_water_distribution_autonomous_react_white_box_attacker_vs_agentic_full_containment_defender.py`](run_water_distribution_autonomous_react_white_box_attacker_vs_agentic_full_containment_defender.py): distribution autonomous-ReAct white-box attacker against the full-containment agentic defender.
 - [`run_water_treatment_single_agentic_attacker_vs_agentic_full_containment_defender.py`](run_water_treatment_single_agentic_attacker_vs_agentic_full_containment_defender.py): treatment single agentic pair helper.
 
 ## Scripted Baseline Scripts
