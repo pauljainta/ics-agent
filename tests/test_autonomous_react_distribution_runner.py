@@ -101,6 +101,8 @@ def test_distribution_autonomous_react_condition_profiles_are_expected() -> None
     assert attacker["knowledge_mode"] == "white_box"
     assert attacker["autonomous_react_tools"] is True
     assert attacker["white_box_commit_guardrail"] is False
+    assert attacker["reasoning_cooldown_sec"] == 0.0
+    assert attacker["reasoning_refresh_sec"] == 0.0
     assert "set_actuator" in attacker["allowed_action_types"]
     assert attacker["llm"]["model_id"] == "Qwen/Qwen3.5-9B"
     assert attacker["llm"]["quantization"] == "4bit"

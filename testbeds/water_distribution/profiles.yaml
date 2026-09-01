@@ -177,8 +177,8 @@ profiles:
       attacker_candidate_window: 8
     action_cooldown_sec: 0.5
     note_cooldown_sec: 2.0
-    reasoning_cooldown_sec: 1.0
-    reasoning_refresh_sec: 2.0
+    reasoning_cooldown_sec: 0.0
+    reasoning_refresh_sec: 0.0
     behavior_model:
       id: optionb_mitre_staged
       policy: agentic

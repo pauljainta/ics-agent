@@ -43,8 +43,8 @@ conditions:
           max_new_tokens: 128
         action_cooldown_sec: 0.5
         note_cooldown_sec: 2.0
-        reasoning_cooldown_sec: 0.5
-        reasoning_refresh_sec: 1.0
+        reasoning_cooldown_sec: 0.0
+        reasoning_refresh_sec: 0.0
       defender:
         behavior_model:
           id: optionb_mitre_staged
