@@ -146,6 +146,22 @@ class FakeOpenPLCWaterTreatmentTestbed:
     def observe(self):
         return self.observe_flat()
 
+    def inspect_surface(self, surface):
+        flat = self.observe_flat()
+        return {
+            "state_name": flat["STATE_NAME"],
+            "reconnaissance": {
+                "category": "reconnaissance",
+                "surface": str(surface),
+                "summary": f"fake surface `{surface}` exposes bounded water-treatment readback",
+                "findings": [
+                    {"name": "RW_Tank_Level", "value": flat["RW_Tank_Level"]},
+                    {"name": "UF_UFFT_Tank_Level", "value": flat["UF_UFFT_Tank_Level"]},
+                    {"name": "P2_Selected", "value": flat["P2_Selected"]},
+                ],
+            },
+        }
+
     def apply_action(self, action):
         descriptor = dict(action)
         self.actions.append(descriptor)

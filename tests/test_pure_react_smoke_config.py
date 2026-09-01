@@ -12,6 +12,9 @@ from ics_agent.types import ScenarioDefinition
 
 
 SMOKE_CONFIG = "water_treatment_white_box_pure_react_attacker_vs_silent_defender_smoke.yaml"
+AUTONOMOUS_SMOKE_CONFIG = (
+    "water_treatment_white_box_autonomous_react_attacker_vs_silent_defender_smoke.yaml"
+)
 SMOKE_SCENARIOS = [
     "wt-attack-p2-multi-chemical-drain",
     "wt-attack-p2-dual-hijack",
@@ -328,6 +331,242 @@ def test_pure_react_four_attack_smoke_executes_with_silent_defender(
                         "name": "white_box_pure_react_attacker__silent_defender",
                         "profiles": {
                             "attacker": "white_box_pure_react_attacker",
+                            "defender": "silent_defender",
+                            "observer": "silent_observer",
+                            "planner": "scripted_planner",
+                            "operator": "scripted_operator",
+                            "offline_analysis": "scripted_offline_analyst",
+                        },
+                    }
+                ],
+            },
+            sort_keys=False,
+        )
+    )
+
+    summary = ExperimentOrchestrator(testbed_id="water_treatment").run(config_path)
+    runs = summary["conditions"][0]["runs"]
+
+    assert summary["status"] == "completed"
+    assert [run["scenario_id"] for run in runs] == SMOKE_SCENARIOS
+    assert all(run["status"] == "completed" for run in runs)
+    assert all((run.get("metrics") or {}).get("attacker_action_count", 0) > 0 for run in runs)
+    assert all((run.get("metrics") or {}).get("defender_action_count", 0) == 0 for run in runs)
+
+
+def _autonomous_agent() -> AgenticRoleAgent:
+    config = load_config(AUTONOMOUS_SMOKE_CONFIG)
+    orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    profile = orchestrator._enumerate_conditions(config)[0]["effective_profiles"][
+        "attacker"
+    ]
+    agent = AgenticRoleAgent("white_box_autonomous_react_attacker", profile)
+    scenario = ScenarioCatalog(testbed_id="water_treatment").get(
+        "attack/wt-attack-sensor-rw-cascade-low-hh"
+    )
+    agent.reset(scenario)
+    return agent
+
+
+def _autonomous_context(
+    scenario_id: str = "attack/wt-attack-sensor-rw-cascade-low-hh",
+    *,
+    executed_actions: list[dict] | None = None,
+) -> tuple[ScenarioDefinition, dict, dict]:
+    scenario = ScenarioCatalog(testbed_id="water_treatment").get(scenario_id)
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "RW_Tank_Level": 600,
+        "UF_UFFT_Tank_Level": 400,
+        "P2_Selected": 0,
+        "ChemTreat_NaCl_Level": 800,
+        "ChemTreat_NaOCl_Level": 800,
+        "ChemTreat_HCl_Level": 800,
+    }
+    context = {
+        "scenario": scenario,
+        "time_sec": 1.0,
+        "observation": observation,
+        "observations": [observation],
+        "executed_actions": list(executed_actions or []),
+        "decisions": [],
+        "alerts": [],
+    }
+    telemetry_summary = {
+        "risk_flags": [],
+        "active_alarms": [],
+        "relationship_notes": [],
+        "active_states": ["RUNNING"],
+        "active_commands": [],
+        "short_horizon_trends": {},
+    }
+    return scenario, context, telemetry_summary
+
+
+def _action_types(candidates: list[dict]) -> set[str]:
+    return {
+        str((item.get("action") or {}).get("type"))
+        for item in candidates
+        if item.get("action")
+    }
+
+
+def test_autonomous_react_profile_keeps_old_white_box_profile_intact() -> None:
+    config = load_config(AUTONOMOUS_SMOKE_CONFIG)
+    orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    profiles = orchestrator.agent_profiles
+
+    autonomous = orchestrator._enumerate_conditions(config)[0]["effective_profiles"][
+        "attacker"
+    ]
+    old_white_box = profiles["white_box_attacker"]
+    old_pure_react = profiles["white_box_pure_react_attacker"]
+
+    assert autonomous["autonomous_react_tools"] is True
+    assert autonomous["white_box_commit_guardrail"] is False
+    assert old_white_box["white_box_commit_guardrail"] is True
+    assert old_pure_react["white_box_commit_guardrail"] is True
+
+
+def test_autonomous_react_starts_with_discovery_tools_only() -> None:
+    agent = _autonomous_agent()
+    _, context, telemetry_summary = _autonomous_context()
+    memory = {"autonomous_react_tool_mode": True}
+
+    candidates = agent._white_box_autonomous_react_candidates(
+        context=context,
+        telemetry_summary=telemetry_summary,
+        structured_memory=memory,
+        mitre_context=None,
+    )
+
+    assert candidates
+    assert _action_types(candidates) <= {"inspect_surface", "noop"}
+    assert candidates[0]["category"] == "recon"
+    assert candidates[0]["source"] == "autonomous_react_tool"
+    assert "tool" in candidates[0]
+
+
+def test_autonomous_react_offers_bounded_write_tools_after_recon() -> None:
+    agent = _autonomous_agent()
+    executed_actions = [
+        {"role": "attacker", "time_sec": 0.5, "action": {"type": "inspect_surface", "surface": "tags"}},
+        {"role": "attacker", "time_sec": 1.0, "action": {"type": "inspect_surface", "surface": "alarm_bits"}},
+    ]
+    _, context, telemetry_summary = _autonomous_context(executed_actions=executed_actions)
+    memory = {"autonomous_react_tool_mode": True}
+
+    candidates = agent._white_box_autonomous_react_candidates(
+        context=context,
+        telemetry_summary=telemetry_summary,
+        structured_memory=memory,
+        mitre_context=None,
+    )
+
+    actions = [item["action"] for item in candidates]
+    assert any(action.get("type") == "set_sensor" for action in actions)
+    assert any(action.get("type") == "hmi_estop" for action in actions)
+    assert any(item.get("tool") == "write_allowed_tag" for item in candidates)
+    assert all(item["source"] == "autonomous_react_tool" for item in candidates)
+
+
+def test_autonomous_react_build_context_removes_surface_priors() -> None:
+    config = load_config(AUTONOMOUS_SMOKE_CONFIG)
+    orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    profile = orchestrator._enumerate_conditions(config)[0]["effective_profiles"][
+        "attacker"
+    ]
+    agent = AgenticRoleAgent("white_box_autonomous_react_attacker", profile)
+    scenario, context, _ = _autonomous_context()
+    agent.reset(scenario)
+
+    online_context = agent._build_online_context(context)
+    system_knowledge = online_context["system_knowledge"]
+    process_context = system_knowledge["process_context"]
+
+    assert online_context["structured_memory"]["autonomous_react_tool_mode"] is True
+    assert process_context["preferred_surface_order"] == []
+    assert process_context["surface_leverage_hints"] == []
+    assert system_knowledge["autonomous_react_context"]["starting_assumption"] == (
+        "bounded_post_access_presence"
+    )
+
+
+def test_autonomous_react_four_attack_smoke_executes_with_silent_defender(
+    fake_openplc,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    del fake_openplc
+
+    def fake_react_decide(
+        self: CachedQwenDecisionEngine,
+        context: dict,
+    ) -> dict:
+        self.last_mode = "unit-test-autonomous-react"
+        self.last_error = None
+        selected = next(
+            (
+                item
+                for item in context.get("candidate_actions", [])
+                if (item.get("action") or {}).get("type") != "noop"
+            ),
+            None,
+        )
+        if selected is None:
+            return {
+                "observation_summary": "No validated tool is currently exposed.",
+                "reasoning_summary": "Hold because the tool menu contains no executable action.",
+                "summary": "Hold.",
+                "candidate_id": None,
+                "expected_effect": "No plant change is expected.",
+                "confidence": 0.4,
+                "diagnosis": None,
+                "labels": ["agentic", "autonomous-react", "unit-test"],
+                "decision_type": "note",
+            }
+        return {
+            "observation_summary": "A bounded tool is available from the current access point.",
+            "reasoning_summary": "Select a validated tool, then use later observations to revise.",
+            "summary": "Use validated ReAct tool.",
+            "candidate_id": selected["id"],
+            "expected_effect": selected.get("expected_effect", "The fake runtime should record the action."),
+            "confidence": 0.88,
+            "diagnosis": "autonomous_react_tool_step",
+            "labels": ["agentic", "autonomous-react", "unit-test"],
+            "decision_type": "action",
+        }
+
+    monkeypatch.setattr(CachedQwenDecisionEngine, "decide", fake_react_decide)
+    config_path = tmp_path / "autonomous_react_four_attack_smoke.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment_name": "autonomous_react_four_attack_smoke",
+                "experiment_id": "autonomous_react_four_attack_smoke",
+                "testbed": "water_treatment",
+                "scenario_selectors": [
+                    f"attack/{scenario_id}" for scenario_id in SMOKE_SCENARIOS
+                ],
+                "repeats": 1,
+                "resume": False,
+                "use_canonical_result_root": True,
+                "reproducibility": {"seed": 101},
+                "results_root": str(tmp_path / "results"),
+                "execution_mode": "live",
+                "environment": {
+                    "backend": "auto",
+                    "testbed": "water_treatment",
+                    "keep_running": True,
+                    "start_bridge": False,
+                    "reset_wait_sec": 0,
+                    "loop_sleep_sec": 0,
+                },
+                "conditions": [
+                    {
+                        "name": "white_box_autonomous_react_attacker__silent_defender",
+                        "profiles": {
+                            "attacker": "white_box_autonomous_react_attacker",
                             "defender": "silent_defender",
                             "observer": "silent_observer",
                             "planner": "scripted_planner",

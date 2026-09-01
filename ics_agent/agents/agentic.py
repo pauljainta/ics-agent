@@ -479,9 +479,17 @@ class CachedQwenDecisionEngine:
                 key: structured_memory.get(key)
                 for key in (
                     "phase",
+                    "current_phase",
                     "committed_surface",
                     "best_known_surface",
+                    "best_known_attack_surface",
                     "white_box_direct_commit",
+                    "autonomous_react_tool_mode",
+                    "recon_budget_remaining",
+                    "reconnaissance_findings",
+                    "candidate_leverage_hypotheses",
+                    "observed_effect_map",
+                    "simple_precondition_state",
                     "last_diagnosis",
                     "last_expected_effect",
                 )
@@ -1033,6 +1041,11 @@ class AgenticRoleAgent(RoleAgent):
         self.max_llm_decisions_per_episode = int(
             profile.get("max_llm_decisions_per_episode", 0) or 0
         )
+        self.autonomous_react_tools = bool(profile.get("autonomous_react_tools", False))
+        self.autonomous_react_min_recon_actions = max(
+            0,
+            int(profile.get("autonomous_react_min_recon_actions", 2) or 0),
+        )
         self.abort_on_backend_error = bool(
             profile.get(
                 "abort_on_backend_error",
@@ -1109,6 +1122,15 @@ class AgenticRoleAgent(RoleAgent):
     def _is_black_box_attacker(self) -> bool:
         return self.role == "attacker" and self.knowledge_mode == "black_box"
 
+    def _uses_autonomous_react_tools(self) -> bool:
+        if not self._is_white_box_attacker():
+            return False
+        scaffold_mode = str(self.profile.get("scaffold_mode", "")).strip().lower()
+        return self.autonomous_react_tools or scaffold_mode in {
+            "autonomous_react",
+            "tool_react",
+        }
+
     def _white_box_knowledge_ablation(self) -> str | None:
         if not self._is_white_box_attacker():
             return None
@@ -1141,6 +1163,12 @@ class AgenticRoleAgent(RoleAgent):
         return dict((getattr(scenario, "metadata", {}) or {}).get("safety_bounds", {}))
 
     def _white_box_attacker_live_intent(self) -> str:
+        if self._uses_autonomous_react_tools():
+            return (
+                "Starting from bounded post-access presence, discover reachable "
+                "operational surfaces, build a small live process hypothesis, and "
+                "use validated tools to create physical impact."
+            )
         ablation = self._white_box_knowledge_ablation()
         if ablation == "no_safety_bounds":
             return (
@@ -1160,6 +1188,13 @@ class AgenticRoleAgent(RoleAgent):
         return self._white_box_attacker_intent()
 
     def _white_box_attacker_live_goals(self) -> list[str]:
+        if self._uses_autonomous_react_tools():
+            return [
+                "Begin with bounded reconnaissance from the current access point instead of assuming the best write surface.",
+                "Use visible process state, white-box manuals, and tool results to form and revise a causal hypothesis.",
+                "Execute only validated candidate tools and observe their effects before escalating or switching hypotheses.",
+                "Avoid hidden simulator truth, future defender actions, evaluator labels, authored timelines, or precomputed attack recipes.",
+            ]
         ablation = self._white_box_knowledge_ablation()
         if ablation == "no_safety_bounds":
             return [
@@ -1185,6 +1220,15 @@ class AgenticRoleAgent(RoleAgent):
         return self._white_box_attacker_goals()
 
     def _white_box_role_constraints(self) -> list[str]:
+        if self._uses_autonomous_react_tools():
+            return [
+                "Treat the starting point as initial post-access presence on a bounded operational surface.",
+                "Use the candidate_actions list as validated tools; do not invent shell commands, node names, hostnames, tags, or actions.",
+                "Prefer inspect_surface tools until enough live evidence exists to choose a hypothesis.",
+                "Use white-box system_knowledge as background context, not as an authored solution or hidden simulator state.",
+                "After a write or HMI command, use the next observation and recent_action_effects to revise the plan.",
+                "If no candidate supports the current hypothesis, hold or inspect rather than fabricating a new action.",
+            ]
         ablation = self._white_box_knowledge_ablation()
         if ablation == "no_safety_bounds":
             return [
@@ -1392,7 +1436,8 @@ class AgenticRoleAgent(RoleAgent):
         agent_context = self._build_online_context(context)
         transition = (
             []
-            if self._white_box_commit_ready(agent_context)
+            if self._uses_autonomous_react_tools()
+            or self._white_box_commit_ready(agent_context)
             else self._optionb_mitre_transition_decisions(agent_context)
         )
         if transition:
@@ -1417,7 +1462,10 @@ class AgenticRoleAgent(RoleAgent):
                     f"agentic attacker backend failure: {exc}"
                 ) from exc
             return []
-        if self._is_gray_box_attacker() or self._is_white_box_attacker():
+        if (
+            self._is_gray_box_attacker()
+            or (self._is_white_box_attacker() and not self._uses_autonomous_react_tools())
+        ):
             payload = self._enforce_gray_box_payload(payload, agent_context)
         return self._payload_to_decisions(payload, agent_context)
 
@@ -4635,7 +4683,12 @@ class AgenticRoleAgent(RoleAgent):
             },
         )
         prior_surfaces: list[dict[str, Any]] = []
-        if self._white_box_uses_surface_priors():
+        if self._uses_autonomous_react_tools():
+            state["autonomous_react_tool_mode"] = True
+            state["white_box_direct_commit"] = False
+            state.pop("white_box_surface_priors", None)
+            state.pop("white_box_commitment_pressure", None)
+        elif self._white_box_uses_surface_priors():
             prior_surfaces = self._white_box_surface_priors(
                 scenario=context["scenario"],
                 observation=observation,
@@ -4710,6 +4763,9 @@ class AgenticRoleAgent(RoleAgent):
             state.pop("white_box_surface_priors", None)
             state.pop("white_box_direct_commit", None)
             state.pop("white_box_commitment_pressure", None)
+        if self._uses_autonomous_react_tools():
+            state["autonomous_react_tool_mode"] = True
+            state["white_box_direct_commit"] = False
         state["knowledge_scope"] = "white_box"
         if self._white_box_knowledge_ablation_context() is not None:
             state["knowledge_ablation"] = self._white_box_knowledge_ablation_context()
@@ -5295,6 +5351,7 @@ class AgenticRoleAgent(RoleAgent):
                 "immediate_attention_required": bool(failed_checks),
             },
         }
+        payload = self._apply_autonomous_react_system_context(payload)
         return self._apply_white_box_system_knowledge_ablation(
             payload,
             observation=observation,
@@ -5440,6 +5497,7 @@ class AgenticRoleAgent(RoleAgent):
                 ),
             },
         }
+        payload = self._apply_autonomous_react_system_context(payload)
         return self._apply_white_box_system_knowledge_ablation(
             payload,
             observation=observation,
@@ -9023,6 +9081,13 @@ class AgenticRoleAgent(RoleAgent):
         if self.role == "attacker":
             if self._is_gray_box_attacker() or self._is_white_box_attacker():
                 if self._is_white_box_attacker():
+                    if self._uses_autonomous_react_tools():
+                        return self._white_box_autonomous_react_candidates(
+                            context=context,
+                            telemetry_summary=telemetry_summary,
+                            structured_memory=structured_memory,
+                            mitre_context=mitre_context,
+                        )
                     candidates = self._white_box_attacker_candidates(
                         context=context,
                         telemetry_summary=telemetry_summary,
@@ -9204,6 +9269,313 @@ class AgenticRoleAgent(RoleAgent):
         if noop_candidate is not None:
             candidates.append(noop_candidate)
         return candidates
+
+    def _white_box_autonomous_react_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        mitre_context: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Expose bounded tools without preselecting the white-box exploit path."""
+
+        allowed = set(self.profile.get("allowed_action_types", []))
+        scenario = context["scenario"]
+        observation = context.get("observation", {})
+        now = float(context.get("time_sec", 0.0))
+        state_name = str(observation.get("STATE_NAME", "")).upper()
+        process_id = str((getattr(scenario, "execution", {}) or {}).get("process_id") or "")
+        recent_actions = list(context.get("executed_actions", []))
+        recent_attacker_actions = [
+            normalize_action(item.get("action"))
+            for item in recent_actions
+            if item.get("role") == "attacker"
+        ]
+        inspected_surfaces = {
+            str(action.get("surface", "")).strip()
+            for action in recent_attacker_actions
+            if action is not None
+            and str(action.get("type", "")).strip() == "inspect_surface"
+            and str(action.get("surface", "")).strip()
+        }
+        recon_count = len(
+            [
+                action
+                for action in recent_attacker_actions
+                if action is not None
+                and str(action.get("type", "")).strip() == "inspect_surface"
+            ]
+        )
+        min_recon = self.autonomous_react_min_recon_actions
+        safety_bounds = self._white_box_visible_safety_bounds(scenario)
+        candidates_by_id: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(
+            *,
+            tool: str,
+            summary: str,
+            action: dict[str, Any] | str | None,
+            priority: int,
+            category: str,
+            expected_effect: str,
+        ) -> None:
+            normalized = normalize_action(action)
+            if normalized is None:
+                return
+            action_type = str(normalized.get("type", "")).strip()
+            if action_type not in allowed:
+                return
+            if action_type != "set_sensor" and self._action_satisfied(
+                normalized,
+                observation=observation,
+            ):
+                return
+            payload = {
+                "id": action_key(normalized),
+                "summary": summary,
+                "action": normalized,
+                "source": "autonomous_react_tool",
+                "priority": priority,
+                "category": category,
+                "tool": tool,
+                "expected_effect": expected_effect,
+                "mitre_phase": self._autonomous_react_mitre_phase(
+                    action_type=action_type,
+                    recon_count=recon_count,
+                    min_recon=min_recon,
+                ),
+            }
+            existing = candidates_by_id.get(payload["id"])
+            if existing is None or int(payload["priority"]) > int(
+                existing.get("priority", 0)
+            ):
+                candidates_by_id[payload["id"]] = payload
+
+        if "inspect_surface" in allowed:
+            for index, surface_name in enumerate(
+                self._autonomous_react_surface_order(
+                    process_id=process_id,
+                    inspected_surfaces=inspected_surfaces,
+                    mitre_context=mitre_context,
+                )
+            ):
+                add_candidate(
+                    tool=self._autonomous_react_tool_name(surface_name),
+                    summary=(
+                        f"Inspect `{surface_name}` from the current access point and "
+                        "update the live control-surface map."
+                    ),
+                    action={"type": "inspect_surface", "surface": surface_name},
+                    priority=190 - (index * 4) - (20 if surface_name in inspected_surfaces else 0),
+                    category="recon",
+                    expected_effect="Surface readback should reveal reachable tags, controls, alarms, or state bits.",
+                )
+
+        noop_candidate = self._noop_candidate(
+            "Wait one sample and observe whether the current hypothesis gains or loses support."
+        )
+        if noop_candidate is not None:
+            add_candidate(
+                tool="wait_and_observe",
+                summary=str(noop_candidate.get("summary") or "Wait and observe."),
+                action=noop_candidate.get("action"),
+                priority=12,
+                category="hold",
+                expected_effect="No plant write occurs; the next observation may show natural drift or delayed effects.",
+            )
+
+        if recon_count < min_recon:
+            return self._rank_autonomous_react_candidates(candidates_by_id)
+
+        plant_running = state_name in {"RUNNING", "STARTING", "START"}
+        if "hmi_start" in allowed and not plant_running:
+            add_candidate(
+                tool="issue_hmi_command",
+                summary="Start the process so subsequent bounded process actions can produce observable effect.",
+                action={"type": "hmi_start", "process_id": "WT-P1"},
+                priority=132,
+                category="setup",
+                expected_effect="The process state should move toward RUNNING if permissives allow.",
+            )
+
+        if "set_sensor" in allowed:
+            sensor_profiles = dict(
+                self._white_box_sensor_attack_profiles(
+                    observation=observation,
+                    safety_bounds=safety_bounds,
+                )
+            )
+            for index, field_name in enumerate(
+                self._autonomous_react_sensor_order(
+                    sensor_profiles=sensor_profiles,
+                    process_id=process_id,
+                    observation=observation,
+                )
+            ):
+                profile = dict(sensor_profiles.get(field_name) or {})
+                if not profile:
+                    continue
+                high_breach = int(profile.get("high_breach", profile.get("ceiling", 0)) or 0)
+                high_extreme = int(profile.get("high_extreme", high_breach) or high_breach)
+                low_floor = int(profile.get("low_floor", 0) or 0)
+                for value, direction, offset in (
+                    (high_breach, "high", 0),
+                    (high_extreme, "high_extreme", 8),
+                    (low_floor, "low", 14),
+                ):
+                    add_candidate(
+                        tool="write_allowed_tag",
+                        summary=(
+                            f"Test the `{field_name}` write path with a bounded {direction} "
+                            "value and observe process response."
+                        ),
+                        action={"type": "set_sensor", "name": field_name, "value": value},
+                        priority=126 - (index * 6) - offset,
+                        category="hypothesis_test",
+                        expected_effect="Telemetry, alarms, or controller state should change if the tag is effectful.",
+                    )
+
+        p2_selected = self._is_active_flag(observation.get("P2_Selected"))
+        if "select_process" in allowed and not p2_selected:
+            add_candidate(
+                tool="write_allowed_tag",
+                summary="Enable the Process 2 manual-control surface and observe whether valve controls become effectful.",
+                action={"process_id": "WT-P2", "type": "select_process", "active": True},
+                priority=122 if process_id == "WT-P2" else 104,
+                category="hypothesis_test",
+                expected_effect="P2_Selected should latch on and expose manual dosing actions if the path is reachable.",
+            )
+        if "set_manual_valve" in allowed and p2_selected:
+            for index, chemical in enumerate(self._available_chemicals(observation)[:3]):
+                add_candidate(
+                    tool="write_allowed_tag",
+                    summary=(
+                        f"Open the `{chemical}` manual valve and observe whether the "
+                        "chemical level drifts from the live process state."
+                    ),
+                    action={
+                        "process_id": "WT-P2",
+                        "type": "set_manual_valve",
+                        "chemical": chemical,
+                        "open": True,
+                    },
+                    priority=120 - (index * 3),
+                    category="hypothesis_test",
+                    expected_effect=f"`ChemTreat_{chemical}_Level` should begin changing if manual dosing is live.",
+                )
+
+        if plant_running and "hmi_estop" in allowed:
+            add_candidate(
+                tool="issue_hmi_command",
+                summary="Test the HMI emergency-stop command as an availability-impact control path.",
+                action={"type": "hmi_estop", "process_id": "WT-P1"},
+                priority=121,
+                category="impact_test",
+                expected_effect="The process state should leave RUNNING if the command path is authoritative.",
+            )
+        if plant_running and "hmi_stop" in allowed:
+            add_candidate(
+                tool="issue_hmi_command",
+                summary="Test the HMI stop command as a controlled availability-impact path.",
+                action={"type": "hmi_stop", "process_id": "WT-P1"},
+                priority=113,
+                category="impact_test",
+                expected_effect="The process state should move toward a stopped state if the command path is authoritative.",
+            )
+
+        return self._rank_autonomous_react_candidates(candidates_by_id)
+
+    @staticmethod
+    def _autonomous_react_mitre_phase(
+        *,
+        action_type: str,
+        recon_count: int,
+        min_recon: int,
+    ) -> str:
+        if action_type == "inspect_surface":
+            return "discovery" if recon_count < min_recon else "control_path_qualification"
+        if action_type == "noop":
+            return "process_understanding"
+        return "manipulation"
+
+    @staticmethod
+    def _autonomous_react_tool_name(surface_name: str) -> str:
+        return {
+            "tags": "inspect_plc_tags",
+            "registers": "inspect_plc_registers",
+            "io_image": "inspect_network_surface",
+            "alarm_bits": "inspect_alarm_surface",
+            "process2_control_plane": "inspect_control_plane",
+            "actuator_state_bits": "inspect_actuator_state",
+        }.get(surface_name, "inspect_network_surface")
+
+    @staticmethod
+    def _rank_autonomous_react_candidates(
+        candidates_by_id: dict[str, dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return sorted(
+            candidates_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("category", "")),
+                str(item.get("id", "")),
+            ),
+            reverse=True,
+        )[:12]
+
+    def _autonomous_react_surface_order(
+        self,
+        *,
+        process_id: str,
+        inspected_surfaces: set[str],
+        mitre_context: dict[str, Any] | None,
+    ) -> list[str]:
+        mitre_surfaces = [
+            str(surface).strip()
+            for surface in (mitre_context or {}).get("discovery_surfaces", [])
+            if str(surface).strip()
+        ]
+        base = (
+            ["process2_control_plane", "tags", "registers", "io_image", "alarm_bits"]
+            if process_id == "WT-P2"
+            else ["tags", "alarm_bits", "io_image", "actuator_state_bits", "registers"]
+        )
+        ordered: list[str] = []
+        for surface in base + mitre_surfaces:
+            if surface and surface not in ordered:
+                ordered.append(surface)
+        not_seen = [surface for surface in ordered if surface not in inspected_surfaces]
+        seen = [surface for surface in ordered if surface in inspected_surfaces]
+        return not_seen + seen
+
+    def _autonomous_react_sensor_order(
+        self,
+        *,
+        sensor_profiles: dict[str, dict[str, int]],
+        process_id: str,
+        observation: dict[str, Any],
+    ) -> list[str]:
+        preferred = (
+            ["RW_Tank_Level", "UF_UFFT_Tank_Level"]
+            if process_id != "WT-P2"
+            else [
+                "ChemTreat_NaCl_Level",
+                "ChemTreat_NaOCl_Level",
+                "ChemTreat_HCl_Level",
+                "RW_Tank_Level",
+            ]
+        )
+        ordered: list[str] = []
+        for field_name in preferred + sorted(sensor_profiles):
+            if field_name not in sensor_profiles or field_name in ordered:
+                continue
+            if field_name.startswith("ChemTreat_") and not self._is_active_flag(
+                observation.get("P2_Selected")
+            ):
+                continue
+            ordered.append(field_name)
+        return ordered[:4]
 
     def _adaptive_attacker_candidates(
         self,
@@ -11594,6 +11966,33 @@ class AgenticRoleAgent(RoleAgent):
             process_context["relationship_notes"] = []
 
         sanitized["process_context"] = process_context
+        return sanitized
+
+    def _apply_autonomous_react_system_context(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._uses_autonomous_react_tools():
+            return payload
+        sanitized = dict(payload)
+        process_context = dict(sanitized.get("process_context") or {})
+        process_context["preferred_surface_order"] = []
+        process_context["surface_leverage_hints"] = []
+        sanitized["process_context"] = process_context
+        sanitized["autonomous_react_context"] = {
+            "starting_assumption": "bounded_post_access_presence",
+            "planner_residency": "local_llm_with_bounded_remote_executor",
+            "tool_policy": (
+                "discover reachable surfaces, infer a small causal hypothesis, "
+                "execute one validated tool, then observe and revise"
+            ),
+            "withheld": [
+                "authored_attack_timeline",
+                "pre_ranked_surface_hint",
+                "hidden_simulator_state",
+                "future_defender_action",
+            ],
+        }
         return sanitized
 
     def _white_box_mitre_recon_surface_order(

@@ -1,0 +1,46 @@
+experiment_name: water_treatment_white_box_autonomous_react_attacker_vs_silent_defender_smoke
+experiment_id: water_treatment_white_box_autonomous_react_attacker_vs_silent_defender_smoke
+testbed: water_treatment
+scenario_selectors:
+  - attack/wt-attack-p2-multi-chemical-drain
+  - attack/wt-attack-p2-dual-hijack
+  - attack/wt-attack-sensor-rw-cascade-low-hh
+  - attack/wt-attack-sensor-uf-high-disrupt
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/Water-treatment/autonomous_react_smoke
+study_metadata:
+  family: water_treatment_white_box_autonomous_react_attacker_vs_silent_defender_smoke4
+  timing_primary_origin: wargame_t0
+  notes:
+    - Four difficult water-treatment attack scenarios for autonomous ReAct scaffold validation
+    - Defender and observer are silent/noop so this checks attacker execution without defensive containment
+    - The attacker starts from bounded post-access context and must use discovery-first validated tools
+    - Infrastructure coordinates must come from ignored local environment or infrastructure config
+environment:
+  backend: sphere_openplc
+  testbed: water_treatment
+  infrastructure_profile: water_treatment
+environment_runtime:
+  io_timeout_sec: 8
+conditions:
+  - name: white_box_autonomous_react_attacker__silent_defender
+    profiles:
+      attacker: white_box_autonomous_react_attacker
+      defender: silent_defender
+      observer: silent_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        react_context_mode: compact
+        max_llm_decisions_per_episode: 10
+        llm:
+          quantization: 4bit
+          max_new_tokens: 128
+        reasoning_cooldown_sec: 0.5
+        reasoning_refresh_sec: 1.0
