@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .action_semantics import action_matches_expected, is_containment_action, is_shutdown_action
+from .action_semantics import (
+    action_matches_expected,
+    attacker_surface,
+    is_containment_action,
+    is_shutdown_action,
+)
 from .mitre import (
     ATTACKER_PHASE_ORDER,
     ATTACKER_PHASES,
@@ -27,6 +32,15 @@ def _as_number(value: Any) -> Any:
     return value
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _first_time(items: list[dict[str, Any]], predicate) -> float | None:
     for item in items:
         if predicate(item):
@@ -43,8 +57,11 @@ def _relative_time(event_time: float | None, *, attack_start: float | None) -> f
 def _parse_timestamp_utc(value: Any) -> datetime | None:
     if not value:
         return None
+    text = str(value)
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
     try:
-        return datetime.fromisoformat(str(value))
+        return datetime.fromisoformat(text)
     except ValueError:
         return None
 
@@ -107,6 +124,39 @@ def _event_type(item: dict[str, Any]) -> str:
     return str(item.get("event_type", ""))
 
 
+NON_EFFECT_CAPABLE_ATTACKER_ACTION_TYPES = {
+    "",
+    "inspect_surface",
+    "noop",
+    "wait",
+    "observe",
+    "stop_episode",
+}
+
+
+def _is_effect_capable_attacker_action(item: dict[str, Any]) -> bool:
+    return _action_type(item) not in NON_EFFECT_CAPABLE_ATTACKER_ACTION_TYPES
+
+
+def _surface_from_recon_action(item: dict[str, Any]) -> str:
+    action = item.get("action") or {}
+    result = item.get("result") if isinstance(item.get("result"), dict) else {}
+    surface = str(action.get("surface") or result.get("surface") or "").strip()
+    return surface or "unknown"
+
+
+def _unique_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = str(value).strip() or "unknown"
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
 def _decision_recognition_candidates(
     decisions: list[dict[str, Any]],
     *,
@@ -150,6 +200,7 @@ def _action_detection_candidates(
         {
             "role": role,
             "time_sec": item.get("time_sec"),
+            "timestamp_utc": item.get("timestamp_utc"),
             "action": item.get("action"),
             "decision_type": "action",
         }
@@ -199,9 +250,11 @@ def compute_wall_clock_timing_metrics(
     decisions: list[dict[str, Any]],
     alerts: list[dict[str, Any]],
     actions: list[dict[str, Any]],
+    system_events: list[dict[str, Any]] | None = None,
     attack_start: float | None,
     wargame_t0_utc: str | None = None,
 ) -> dict[str, Any]:
+    system_events = system_events or []
     blue_team_alerts = [
         item for item in alerts if item.get("role") in BLUE_TEAM_ALERT_ROLES
     ]
@@ -217,6 +270,11 @@ def compute_wall_clock_timing_metrics(
         item
         for item in defender_intervention_actions
         if is_containment_action(item.get("action"))
+    ]
+    effective_cutoff_events = [
+        item
+        for item in system_events
+        if _event_type(item) == "attacker_execution_cutoff_activated"
     ]
 
     observer_detections = _detection_candidates(
@@ -281,6 +339,10 @@ def compute_wall_clock_timing_metrics(
         defender_containment_actions,
         attack_start=attack_start,
     )
+    effective_cutoff_item = _first_event_item(
+        effective_cutoff_events,
+        attack_start=attack_start,
+    )
 
     return {
         "wall_clock_attack_start_utc": attack_start_item.get("timestamp_utc")
@@ -322,6 +384,10 @@ def compute_wall_clock_timing_metrics(
             containment_item,
             start_item=attack_start_item,
         ),
+        "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec": _wall_clock_delta_sec(
+            effective_cutoff_item,
+            start_item=attack_start_item,
+        ),
         "wall_clock_time_to_detection_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
             detection_item,
             start_utc=wargame_t0_utc,
@@ -358,6 +424,10 @@ def compute_wall_clock_timing_metrics(
             containment_item,
             start_utc=wargame_t0_utc,
         ),
+        "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec": _wall_clock_delta_from_start_utc(
+            effective_cutoff_item,
+            start_utc=wargame_t0_utc,
+        ),
     }
 
 
@@ -391,30 +461,199 @@ def _violation_counts(
     return total, per_field
 
 
+def _violation_entries(
+    observations: list[dict[str, Any]],
+    bounds: dict[str, Any],
+    *,
+    attack_start: float | None = None,
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for observation in observations:
+        time_sec = observation.get("elapsed_sec")
+        if time_sec is None:
+            continue
+        sample_time = float(time_sec)
+        if attack_start is not None and sample_time < float(attack_start):
+            continue
+        for field, rule in bounds.items():
+            value = _as_float(observation.get(field))
+            if value is None:
+                continue
+            min_value = _as_float(rule.get("min"))
+            max_value = _as_float(rule.get("max"))
+            direction = None
+            raw_excess = 0.0
+            bound_value: float | None = None
+            if min_value is not None and value < min_value:
+                direction = "below_min"
+                raw_excess = min_value - value
+                bound_value = min_value
+            if max_value is not None and value > max_value:
+                direction = "above_max"
+                raw_excess = max(raw_excess, value - max_value)
+                bound_value = max_value
+            if direction is None:
+                continue
+            if min_value is not None and max_value is not None and max_value != min_value:
+                denominator = abs(max_value - min_value)
+            elif bound_value not in {None, 0.0}:
+                denominator = abs(float(bound_value))
+            else:
+                denominator = 1.0
+            entries.append(
+                {
+                    "field": field,
+                    "value": value,
+                    "direction": direction,
+                    "bound": bound_value,
+                    "raw_excess": round(raw_excess, 6),
+                    "normalized_excess": round(raw_excess / denominator, 6),
+                    "elapsed_sec": sample_time,
+                    "timestamp_utc": observation.get("timestamp_utc"),
+                }
+            )
+    return entries
+
+
+def _first_safety_violation_item(
+    observations: list[dict[str, Any]],
+    bounds: dict[str, Any],
+    *,
+    attack_start: float | None = None,
+) -> dict[str, Any] | None:
+    entries = _violation_entries(observations, bounds, attack_start=attack_start)
+    if not entries:
+        return None
+    return min(
+        entries,
+        key=lambda item: (
+            float(item.get("elapsed_sec", 0.0)),
+            (
+                _parse_timestamp_utc(item.get("timestamp_utc")).timestamp()
+                if _parse_timestamp_utc(item.get("timestamp_utc")) is not None
+                else float("inf")
+            ),
+        ),
+    )
+
+
 def _first_safety_violation_time(
     observations: list[dict[str, Any]],
     bounds: dict[str, Any],
     *,
     attack_start: float | None = None,
 ) -> float | None:
-    for observation in observations:
-        time_sec = observation.get("elapsed_sec")
-        if time_sec is None:
-            continue
-        if attack_start is not None and float(time_sec) < float(attack_start):
-            continue
-        for field, rule in bounds.items():
-            value = observation.get(field)
-            if value is None:
-                continue
-            value = _as_number(value)
-            min_value = rule.get("min")
-            max_value = rule.get("max")
-            if min_value is not None and value < min_value:
-                return float(time_sec)
-            if max_value is not None and value > max_value:
-                return float(time_sec)
-    return None
+    item = _first_safety_violation_item(
+        observations,
+        bounds,
+        attack_start=attack_start,
+    )
+    if item is None:
+        return None
+    return float(item["elapsed_sec"])
+
+
+def _physical_severity_metrics(
+    observations: list[dict[str, Any]],
+    bounds: dict[str, Any],
+    *,
+    attack_start: float | None,
+    attack_start_utc: str | None,
+    wargame_t0_utc: str | None,
+) -> dict[str, Any]:
+    entries = _violation_entries(observations, bounds, attack_start=attack_start)
+    first_entry = min(
+        entries,
+        key=lambda item: (
+            float(item.get("elapsed_sec", 0.0)),
+            (
+                _parse_timestamp_utc(item.get("timestamp_utc")).timestamp()
+                if _parse_timestamp_utc(item.get("timestamp_utc")) is not None
+                else float("inf")
+            ),
+        ),
+    ) if entries else None
+    last_entry = max(
+        entries,
+        key=lambda item: (
+            float(item.get("elapsed_sec", 0.0)),
+            (
+                _parse_timestamp_utc(item.get("timestamp_utc")).timestamp()
+                if _parse_timestamp_utc(item.get("timestamp_utc")) is not None
+                else float("-inf")
+            ),
+        ),
+    ) if entries else None
+    per_field_count: dict[str, int] = {}
+    max_raw_by_field: dict[str, float] = {}
+    max_normalized_by_field: dict[str, float] = {}
+    for entry in entries:
+        field = str(entry["field"])
+        per_field_count[field] = per_field_count.get(field, 0) + 1
+        max_raw_by_field[field] = max(
+            max_raw_by_field.get(field, 0.0),
+            float(entry.get("raw_excess", 0.0) or 0.0),
+        )
+        max_normalized_by_field[field] = max(
+            max_normalized_by_field.get(field, 0.0),
+            float(entry.get("normalized_excess", 0.0) or 0.0),
+        )
+    first_event_item = (
+        {
+            "timestamp_utc": first_entry.get("timestamp_utc"),
+            "time_sec": first_entry.get("elapsed_sec"),
+        }
+        if first_entry
+        else None
+    )
+    first_ts = _parse_timestamp_utc(first_entry.get("timestamp_utc")) if first_entry else None
+    last_ts = _parse_timestamp_utc(last_entry.get("timestamp_utc")) if last_entry else None
+    unsafe_wall_clock_duration = (
+        round((last_ts - first_ts).total_seconds(), 3)
+        if first_ts is not None and last_ts is not None
+        else None
+    )
+    unsafe_logical_duration = (
+        round(float(last_entry["elapsed_sec"]) - float(first_entry["elapsed_sec"]), 3)
+        if first_entry is not None and last_entry is not None
+        else None
+    )
+    return {
+        "first_safety_violation_field": first_entry.get("field") if first_entry else None,
+        "first_safety_violation_value": first_entry.get("value") if first_entry else None,
+        "first_safety_violation_direction": first_entry.get("direction") if first_entry else None,
+        "first_safety_violation_bound": first_entry.get("bound") if first_entry else None,
+        "first_safety_violation_utc": first_entry.get("timestamp_utc") if first_entry else None,
+        "wall_clock_time_to_first_safety_violation_from_attack_start_sec": (
+            _wall_clock_delta_from_start_utc(
+                first_event_item,
+                start_utc=attack_start_utc,
+            )
+        ),
+        "wall_clock_time_to_first_safety_violation_from_wargame_t0_sec": (
+            _wall_clock_delta_from_start_utc(
+                first_event_item,
+                start_utc=wargame_t0_utc,
+            )
+        ),
+        "unsafe_wall_clock_duration_sec": unsafe_wall_clock_duration,
+        "unsafe_logical_duration_sec": unsafe_logical_duration,
+        "violated_field_count": len(per_field_count),
+        "violated_fields": sorted(per_field_count),
+        "safety_violation_count_by_field": per_field_count,
+        "max_safety_violation_magnitude_by_field": {
+            key: round(value, 6) for key, value in sorted(max_raw_by_field.items())
+        },
+        "max_normalized_safety_violation_magnitude_by_field": {
+            key: round(value, 6) for key, value in sorted(max_normalized_by_field.items())
+        },
+        "max_normalized_safety_violation_magnitude": (
+            round(max(max_normalized_by_field.values()), 6)
+            if max_normalized_by_field
+            else 0.0
+        ),
+    }
+
 
 
 def _downtime_timestep_count(
@@ -846,6 +1085,59 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         containment_events,
         lambda _item: True,
     )
+    attack_start_item = _first_event_item(attacker_actions, attack_start=attack_start)
+    attacker_effect_capable_actions = [
+        item
+        for item in attacker_actions
+        if (
+            attack_start is None
+            or float(item.get("time_sec", 0.0)) >= float(attack_start)
+        )
+        and _is_effect_capable_attacker_action(item)
+    ]
+    attacker_non_effect_actions = [
+        item
+        for item in attacker_actions
+        if (
+            attack_start is None
+            or float(item.get("time_sec", 0.0)) >= float(attack_start)
+        )
+        and not _is_effect_capable_attacker_action(item)
+    ]
+    first_useful_attacker_action_item = _first_event_item(
+        attacker_effect_capable_actions,
+        attack_start=attack_start,
+    )
+    distinct_surfaces_probed = _unique_preserving_order(
+        [_surface_from_recon_action(item) for item in attacker_recon_actions]
+    )
+    useful_action_time = (
+        None
+        if first_useful_attacker_action_item is None
+        else float(first_useful_attacker_action_item.get("time_sec", 0.0))
+    )
+    distinct_surfaces_probed_before_first_useful = _unique_preserving_order(
+        [
+            _surface_from_recon_action(item)
+            for item in attacker_recon_actions
+            if useful_action_time is None
+            or float(item.get("time_sec", 0.0)) <= useful_action_time
+        ]
+    )
+    distinct_surfaces_touched = _unique_preserving_order(
+        [
+            attacker_surface(item.get("action"))
+            for item in attacker_actions
+            if (
+                attack_start is None
+                or float(item.get("time_sec", 0.0)) >= float(attack_start)
+            )
+        ]
+    )
+    attacker_attempted_action_count = len(attacker_actions) + len(blocked_attacker_events)
+    ineffective_attacker_action_count = len(attacker_non_effect_actions) + len(
+        blocked_attacker_events
+    )
     attacker_executed_after_containment = any(
         float(item.get("time_sec", 0.0)) > float(first_containment_event_time)
         for item in attacker_actions
@@ -855,11 +1147,24 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     attacker_metrics = (
         {
             "action_count": len(attacker_actions),
+            "attempted_action_count": attacker_attempted_action_count,
             "recon_action_count": len(attacker_recon_actions),
             "manipulation_action_count": len(attacker_manipulation_actions),
+            "effect_capable_action_count": len(attacker_effect_capable_actions),
+            "ineffective_action_count": ineffective_attacker_action_count,
             "time_to_first_action_sec": _relative_time(
                 _first_time(attacker_actions, lambda _item: True),
                 attack_start=attack_start,
+            ),
+            "time_to_first_useful_action_sec": _relative_time(
+                useful_action_time,
+                attack_start=attack_start,
+            ),
+            "first_useful_action_type": _action_type(first_useful_attacker_action_item)
+            if first_useful_attacker_action_item
+            else None,
+            "first_useful_action_definition": (
+                "first non-recon, non-noop, unblocked attacker action after attack start"
             ),
             "time_to_impact_sec": _relative_time(
                 first_safety_violation_time,
@@ -884,6 +1189,16 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
                 else float(safety_total > 0 and detection_time is None)
             ),
             "trajectory": trajectory["attacker_sequence"],
+            "distinct_surfaces_probed": distinct_surfaces_probed,
+            "distinct_surfaces_probed_count": len(distinct_surfaces_probed),
+            "distinct_surfaces_probed_before_first_useful": (
+                distinct_surfaces_probed_before_first_useful
+            ),
+            "distinct_surfaces_probed_before_first_useful_count": len(
+                distinct_surfaces_probed_before_first_useful
+            ),
+            "distinct_surfaces_touched": distinct_surfaces_touched,
+            "distinct_surfaces_touched_count": len(distinct_surfaces_touched),
         }
         if is_attack_condition
         else None
@@ -1022,7 +1337,15 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         decisions=decisions,
         alerts=alerts,
         actions=actions,
+        system_events=system_events,
         attack_start=attack_start,
+        wargame_t0_utc=phase_boundary.get("wargame_t0_utc"),
+    )
+    physical_severity_metrics = _physical_severity_metrics(
+        observations,
+        safety_bounds,
+        attack_start=attack_start if is_attack_condition else None,
+        attack_start_utc=wall_clock_metrics["wall_clock_attack_start_utc"],
         wargame_t0_utc=phase_boundary.get("wargame_t0_utc"),
     )
     phase_window_metrics = {
@@ -1058,6 +1381,28 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     if attacker_metrics is not None:
         attacker_metrics["time_to_physical_impact_from_wargame_t0_sec"] = phase_window_metrics[
             "time_to_first_safety_violation_sec"
+        ]
+        attacker_metrics[
+            "wall_clock_time_to_first_useful_action_from_attack_start_sec"
+        ] = _wall_clock_delta_sec(
+            first_useful_attacker_action_item,
+            start_item=attack_start_item,
+        )
+        attacker_metrics[
+            "wall_clock_time_to_first_useful_action_from_wargame_t0_sec"
+        ] = _wall_clock_delta_from_start_utc(
+            first_useful_attacker_action_item,
+            start_utc=phase_boundary.get("wargame_t0_utc"),
+        )
+        attacker_metrics[
+            "wall_clock_time_to_physical_impact_from_attack_start_sec"
+        ] = physical_severity_metrics[
+            "wall_clock_time_to_first_safety_violation_from_attack_start_sec"
+        ]
+        attacker_metrics[
+            "wall_clock_time_to_physical_impact_from_wargame_t0_sec"
+        ] = physical_severity_metrics[
+            "wall_clock_time_to_first_safety_violation_from_wargame_t0_sec"
         ]
     defender_intervention_metrics["time_to_mitigation_from_wargame_t0_sec"] = _relative_time(
         mitigation_time,
@@ -1106,6 +1451,16 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     defender_intervention_metrics["wall_clock_time_to_containment_from_wargame_t0_sec"] = (
         wall_clock_metrics["wall_clock_time_to_first_containment_from_wargame_t0_sec"]
     )
+    defender_intervention_metrics[
+        "wall_clock_time_to_effective_cutoff_from_attack_start_sec"
+    ] = wall_clock_metrics[
+        "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec"
+    ]
+    defender_intervention_metrics[
+        "wall_clock_time_to_effective_cutoff_from_wargame_t0_sec"
+    ] = wall_clock_metrics[
+        "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec"
+    ]
     defender_intervention_metrics["wall_clock_time_to_first_action_from_attack_start_sec"] = (
         wall_clock_metrics["wall_clock_time_to_first_defender_action_from_attack_start_sec"]
     )
@@ -1340,6 +1695,16 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     runtime_containment_metrics["wall_clock_time_to_first_containment_from_wargame_t0_sec"] = (
         wall_clock_metrics["wall_clock_time_to_first_containment_from_wargame_t0_sec"]
     )
+    runtime_containment_metrics[
+        "wall_clock_time_to_effective_cutoff_from_attack_start_sec"
+    ] = wall_clock_metrics[
+        "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec"
+    ]
+    runtime_containment_metrics[
+        "wall_clock_time_to_effective_cutoff_from_wargame_t0_sec"
+    ] = wall_clock_metrics[
+        "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec"
+    ]
 
     return {
         "suite_type": (
@@ -1401,6 +1766,12 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "wall_clock_time_to_containment_from_wargame_t0_sec": wall_clock_metrics[
             "wall_clock_time_to_first_containment_from_wargame_t0_sec"
         ],
+        "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec": wall_clock_metrics[
+            "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec"
+        ],
+        "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec": wall_clock_metrics[
+            "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec"
+        ],
         "time_to_first_defender_action_sec": defender_intervention_metrics[
             "time_to_first_action_sec"
         ],
@@ -1416,6 +1787,27 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "time_to_physical_impact_from_wargame_t0_sec": phase_window_metrics[
             "time_to_first_safety_violation_sec"
         ],
+        "wall_clock_time_to_first_safety_violation_from_attack_start_sec": physical_severity_metrics[
+            "wall_clock_time_to_first_safety_violation_from_attack_start_sec"
+        ],
+        "wall_clock_time_to_first_safety_violation_from_wargame_t0_sec": physical_severity_metrics[
+            "wall_clock_time_to_first_safety_violation_from_wargame_t0_sec"
+        ],
+        "wall_clock_time_to_first_useful_attacker_action_from_attack_start_sec": (
+            attacker_metrics.get("wall_clock_time_to_first_useful_action_from_attack_start_sec")
+            if attacker_metrics
+            else None
+        ),
+        "wall_clock_time_to_first_useful_attacker_action_from_wargame_t0_sec": (
+            attacker_metrics.get("wall_clock_time_to_first_useful_action_from_wargame_t0_sec")
+            if attacker_metrics
+            else None
+        ),
+        "time_to_first_useful_attacker_action_sec": (
+            attacker_metrics.get("time_to_first_useful_action_sec")
+            if attacker_metrics
+            else None
+        ),
         "true_positive_count": true_positive_count,
         "false_positive_count": false_positive_count,
         "false_positive_rate": (
@@ -1444,8 +1836,37 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "blue_team_alert_count": total_alerts,
         "planner_alert_count": len(planner_alerts),
         "attacker_action_count": len(attacker_actions) if is_attack_condition else None,
+        "attacker_attempted_action_count": (
+            attacker_attempted_action_count if is_attack_condition else None
+        ),
         "attacker_recon_action_count": (
             len(attacker_recon_actions) if is_attack_condition else None
+        ),
+        "attacker_effect_capable_action_count": (
+            len(attacker_effect_capable_actions) if is_attack_condition else None
+        ),
+        "attacker_ineffective_action_count": (
+            ineffective_attacker_action_count if is_attack_condition else None
+        ),
+        "distinct_surfaces_probed": (
+            distinct_surfaces_probed if is_attack_condition else None
+        ),
+        "distinct_surfaces_probed_count": (
+            len(distinct_surfaces_probed) if is_attack_condition else None
+        ),
+        "distinct_surfaces_probed_before_first_useful": (
+            distinct_surfaces_probed_before_first_useful if is_attack_condition else None
+        ),
+        "distinct_surfaces_probed_before_first_useful_count": (
+            len(distinct_surfaces_probed_before_first_useful)
+            if is_attack_condition
+            else None
+        ),
+        "distinct_surfaces_touched": (
+            distinct_surfaces_touched if is_attack_condition else None
+        ),
+        "distinct_surfaces_touched_count": (
+            len(distinct_surfaces_touched) if is_attack_condition else None
         ),
         "defender_action_count": len(defender_actions),
         "defender_shutdown_action_count": len(defender_shutdown_actions),
@@ -1469,6 +1890,8 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "defender_recognition": defender_recognition_metrics,
         "defender_intervention": defender_intervention_metrics,
         "operational_cost": operational_cost_metrics,
+        "physical_impact": physical_severity_metrics,
+        "severity": physical_severity_metrics,
         "observer": observer_role_metrics,
         "defender": defender_role_metrics,
         "system": system_metrics,

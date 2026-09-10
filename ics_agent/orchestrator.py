@@ -1428,12 +1428,55 @@ class ExperimentOrchestrator:
                 "wall_clock_time_to_mitigation_from_wargame_t0_sec": run.get(
                     "metrics", {}
                 ).get("wall_clock_time_to_mitigation_from_wargame_t0_sec"),
+                "time_to_effective_containment_cutoff_from_attack_start_sec": run.get(
+                    "metrics", {}
+                )
+                .get("runtime_containment", {})
+                .get("attacker_execution_cutoff_activation_time_sec"),
+                "time_to_effective_containment_cutoff_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                )
+                .get("runtime_containment", {})
+                .get("attacker_execution_cutoff_activation_from_wargame_t0_sec"),
+                "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec"),
+                "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec"),
                 "attacker_action_count": run.get("metrics", {}).get(
                     "attacker_action_count"
+                ),
+                "attacker_attempted_action_count": run.get("metrics", {}).get(
+                    "attacker_attempted_action_count"
                 ),
                 "attacker_recon_action_count": run.get("metrics", {}).get(
                     "attacker_recon_action_count"
                 ),
+                "attacker_effect_capable_action_count": run.get("metrics", {}).get(
+                    "attacker_effect_capable_action_count"
+                ),
+                "attacker_ineffective_action_count": run.get("metrics", {}).get(
+                    "attacker_ineffective_action_count"
+                ),
+                "distinct_surfaces_probed_count": run.get("metrics", {}).get(
+                    "distinct_surfaces_probed_count"
+                ),
+                "distinct_surfaces_probed_before_first_useful_count": run.get(
+                    "metrics", {}
+                ).get("distinct_surfaces_probed_before_first_useful_count"),
+                "distinct_surfaces_touched_count": run.get("metrics", {}).get(
+                    "distinct_surfaces_touched_count"
+                ),
+                "time_to_first_useful_attacker_action_sec": run.get(
+                    "metrics", {}
+                ).get("time_to_first_useful_attacker_action_sec"),
+                "wall_clock_time_to_first_useful_attacker_action_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_first_useful_attacker_action_from_attack_start_sec"),
+                "wall_clock_time_to_first_useful_attacker_action_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_first_useful_attacker_action_from_wargame_t0_sec"),
                 "attacker_time_to_impact_sec": run.get("metrics", {})
                 .get("attacker", {})
                 .get("time_to_impact_sec"),
@@ -1446,6 +1489,24 @@ class ExperimentOrchestrator:
                 "time_to_physical_impact_from_wargame_t0_sec": run.get("metrics", {})
                 .get("phase_window", {})
                 .get("time_to_first_safety_violation_sec"),
+                "wall_clock_time_to_first_safety_violation_from_attack_start_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_first_safety_violation_from_attack_start_sec"),
+                "wall_clock_time_to_first_safety_violation_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("wall_clock_time_to_first_safety_violation_from_wargame_t0_sec"),
+                "unsafe_wall_clock_duration_sec": run.get("metrics", {})
+                .get("physical_impact", {})
+                .get("unsafe_wall_clock_duration_sec"),
+                "unsafe_logical_duration_sec": run.get("metrics", {})
+                .get("physical_impact", {})
+                .get("unsafe_logical_duration_sec"),
+                "violated_field_count": run.get("metrics", {})
+                .get("physical_impact", {})
+                .get("violated_field_count"),
+                "max_normalized_safety_violation_magnitude": run.get("metrics", {})
+                .get("physical_impact", {})
+                .get("max_normalized_safety_violation_magnitude"),
                 "attacker_execution_success_rate": run.get("metrics", {})
                 .get("attacker", {})
                 .get("execution_success_rate"),
@@ -1768,9 +1829,48 @@ class ExperimentOrchestrator:
             "wall_clock_time_to_mitigation_from_wargame_t0_sec_avg": average(
                 "wall_clock_time_to_mitigation_from_wargame_t0_sec"
             ),
+            "time_to_effective_containment_cutoff_from_attack_start_sec_avg": average(
+                "time_to_effective_containment_cutoff_from_attack_start_sec"
+            ),
+            "time_to_effective_containment_cutoff_from_wargame_t0_sec_avg": average(
+                "time_to_effective_containment_cutoff_from_wargame_t0_sec"
+            ),
+            "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_effective_containment_cutoff_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec"
+            ),
             "attacker_action_count_avg": average("attacker_action_count"),
+            "attacker_attempted_action_count_avg": average(
+                "attacker_attempted_action_count"
+            ),
             "attacker_recon_action_count_avg": average(
                 "attacker_recon_action_count"
+            ),
+            "attacker_effect_capable_action_count_avg": average(
+                "attacker_effect_capable_action_count"
+            ),
+            "attacker_ineffective_action_count_avg": average(
+                "attacker_ineffective_action_count"
+            ),
+            "distinct_surfaces_probed_count_avg": average(
+                "distinct_surfaces_probed_count"
+            ),
+            "distinct_surfaces_probed_before_first_useful_count_avg": average(
+                "distinct_surfaces_probed_before_first_useful_count"
+            ),
+            "distinct_surfaces_touched_count_avg": average(
+                "distinct_surfaces_touched_count"
+            ),
+            "time_to_first_useful_attacker_action_sec_avg": average(
+                "time_to_first_useful_attacker_action_sec"
+            ),
+            "wall_clock_time_to_first_useful_attacker_action_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_first_useful_attacker_action_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_first_useful_attacker_action_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_first_useful_attacker_action_from_wargame_t0_sec"
             ),
             "attacker_time_to_impact_sec_avg": average("attacker_time_to_impact_sec"),
             "time_to_physical_impact_sec_avg": average(primary_impact_metric),
@@ -1779,6 +1879,20 @@ class ExperimentOrchestrator:
             ),
             "time_to_physical_impact_from_wargame_t0_sec_avg": average(
                 "time_to_physical_impact_from_wargame_t0_sec"
+            ),
+            "wall_clock_time_to_first_safety_violation_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_first_safety_violation_from_attack_start_sec"
+            ),
+            "wall_clock_time_to_first_safety_violation_from_wargame_t0_sec_avg": average(
+                "wall_clock_time_to_first_safety_violation_from_wargame_t0_sec"
+            ),
+            "unsafe_wall_clock_duration_sec_avg": average(
+                "unsafe_wall_clock_duration_sec"
+            ),
+            "unsafe_logical_duration_sec_avg": average("unsafe_logical_duration_sec"),
+            "violated_field_count_avg": average("violated_field_count"),
+            "max_normalized_safety_violation_magnitude_avg": average(
+                "max_normalized_safety_violation_magnitude"
             ),
             "attacker_execution_success_rate_avg": average(
                 "attacker_execution_success_rate"
