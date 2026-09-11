@@ -7,8 +7,10 @@ Experiment YAMLs in this folder are the main declarative entry points for the or
 - `water_treatment_agentic_*`: water-treatment agentic attacker and defender comparisons.
 - `water_treatment_scripted_*`: water-treatment deterministic scripted attacker baselines.
 - `water_treatment_*_ablation*`: treatment context, domain, and defender-authority ablations.
+- `water_treatment_target_semantic_ablation*`: treatment attacker target-semantics ablations with fixed observation, candidate, validator, timing, and defender capabilities.
 - `water_distribution_*_vs_agentic_defender.yaml`: distribution attacker-knowledge comparisons.
 - `water_distribution_*_ablation*.yaml`: distribution context, domain, and defender-authority ablations.
+- `water_distribution_target_semantic_ablation*`: distribution attacker target-semantics ablations with fixed observation, candidate, validator, timing, and defender capabilities.
 - `water_distribution_scripted_*`: distribution deterministic scripted attacker baselines.
 - `water_treatment_sphere_smoke.yaml`: backend smoke validation for treatment.
 

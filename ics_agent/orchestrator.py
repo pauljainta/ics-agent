@@ -128,6 +128,7 @@ class ExperimentOrchestrator:
             "gray_box",
             "black_box",
             "white_box",
+            "target_semantic_ablation",
         }:
             allowed = list(normalized.get("allowed_action_types", []))
             if "inspect_surface" not in allowed:

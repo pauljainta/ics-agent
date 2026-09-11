@@ -461,6 +461,8 @@ def test_sphere_backend_stages_openplc_payloads_without_bridge_bytecode(tmp_path
     backend._stage_remote_runtime(targets=("controller",))
 
     assert any("payloads" in command for command in mkdir_commands)
+    assert any("$HOME/runtime_payload_test/payloads" in command for command in mkdir_commands)
+    assert not any("'$HOME/runtime_payload_test/payloads'" in command for command in mkdir_commands)
     assert any("payloads/native_plc_runtime.cpython-310.pyc_payload" in item for item in staged_destinations)
     assert any("payloads/modbus_raw.cpython-310.pyc_payload" in item for item in staged_destinations)
     assert any(item.endswith("runtime_payload_test/modbus_bridge.py") for item in staged_destinations)

@@ -1735,13 +1735,9 @@ class _SphereOpenPLCBackend:
                 + " "
                 + self._remote_shell_path(self.remote_state_dir)
                 + " "
-                + self._remote_shell_path(
-                    self._remote_file_path(self.remote_runtime_dir, "__pycache__")
-                )
+                + self._remote_file_path(self.remote_runtime_dir, "__pycache__")
                 + " "
-                + self._remote_shell_path(
-                    self._remote_file_path(self.remote_runtime_dir, "payloads")
-                ),
+                + self._remote_file_path(self.remote_runtime_dir, "payloads"),
                 timeout_sec=self.payload_stage_timeout_sec,
             )
             for source, remote_relative_path in sources:

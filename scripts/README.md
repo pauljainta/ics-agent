@@ -17,6 +17,8 @@ Executable wrappers for experiments and setup. Run them from the repo root with 
 - [`run_water_distribution_agentic_black_gray_white_target_blind_attackers_vs_agentic_full_containment_defender_seeded.py`](run_water_distribution_agentic_black_gray_white_target_blind_attackers_vs_agentic_full_containment_defender_seeded.py): distribution seeded attacker-knowledge comparison.
 - [`run_water_treatment_agentic_white_box_context_ablation_attackers_vs_agentic_full_containment_defender.py`](run_water_treatment_agentic_white_box_context_ablation_attackers_vs_agentic_full_containment_defender.py): treatment white-box context ablation.
 - [`run_water_distribution_agentic_white_box_context_ablation_attackers_vs_agentic_full_containment_defender.py`](run_water_distribution_agentic_white_box_context_ablation_attackers_vs_agentic_full_containment_defender.py): distribution white-box context ablation.
+- [`run_water_distribution_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py`](run_water_distribution_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py): distribution target-semantic ablation. This varies only the attacker target-system context payload while keeping the agentic full-containment defender fixed.
+- [`run_water_treatment_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py`](run_water_treatment_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py): treatment target-semantic ablation. This runs the same eight semantic variants against the restored Water Treatment full-containment defender, supports `--seed`, and writes seed-specific progress metadata.
 - [`run_water_treatment_agentic_attackers_vs_agentic_observe_only_and_delayed_containment_defenders.py`](run_water_treatment_agentic_attackers_vs_agentic_observe_only_and_delayed_containment_defenders.py): treatment defender-authority ablation.
 - [`run_water_distribution_agentic_attackers_vs_agentic_observe_only_and_delayed_containment_defenders.py`](run_water_distribution_agentic_attackers_vs_agentic_observe_only_and_delayed_containment_defenders.py): distribution defender-authority ablation.
 - [`run_water_treatment_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.py`](run_water_treatment_agentic_black_box_high_cyber_high_domain_attacker_vs_agentic_full_containment_defender.py): treatment target-blind high-domain/high-cyber single-family run.
@@ -57,6 +59,32 @@ Smoke mode validates configs and model availability without running scenarios:
 
 ```bash
 .venv/bin/python scripts/run_qwen3_14b_water_treatment_model_variant.py --smoke-only
+```
+
+## Target-Semantic Ablation
+
+Validate the water-distribution target-semantic ablation grid without starting the backend:
+
+```bash
+.venv/bin/python scripts/run_water_distribution_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py --validate-only
+```
+
+Run the seed-101 water-distribution target-semantic ablation:
+
+```bash
+.venv/bin/python scripts/run_water_distribution_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py
+```
+
+Validate the water-treatment target-semantic ablation grid without starting the backend:
+
+```bash
+.venv/bin/python scripts/run_water_treatment_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py --validate-only --seed 101
+```
+
+Run the seed-101 water-treatment target-semantic ablation:
+
+```bash
+.venv/bin/python scripts/run_water_treatment_agentic_target_semantic_ablation_attacker_vs_agentic_full_containment_defender.py --seed 101
 ```
 
 ## Backend Smoke
