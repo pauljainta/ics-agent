@@ -76,6 +76,11 @@ TARGET_SEMANTIC_SYMBOLS = {
     "surface": "K_surface",
 }
 
+TARGET_INTERFACE_VARIANTS = {
+    "normalized_interface",
+    "legacy_white_interface",
+}
+
 
 class _Qwen35TextGenerationAdapter:
     """Text-only invocation for Qwen3.5 conditional checkpoints."""
@@ -1221,6 +1226,35 @@ class AgenticRoleAgent(RoleAgent):
             raise ValueError(f"unsupported target semantic ablation variant `{variant}`")
         return variant
 
+    def _target_semantic_interface_variant(self) -> str:
+        raw_config = self.profile.get("target_semantics")
+        raw_variant: Any = None
+        if isinstance(raw_config, dict):
+            raw_variant = raw_config.get("interface_variant")
+            if raw_variant is None:
+                raw_variant = raw_config.get("interaction_interface")
+        if raw_variant is None:
+            raw_variant = self.profile.get("target_interface_variant")
+        variant = str(raw_variant or "normalized_interface").strip().lower()
+        variant = variant.replace("-", "_")
+        aliases = {
+            "normalized": "normalized_interface",
+            "opaque": "normalized_interface",
+            "legacy_white": "legacy_white_interface",
+            "white_box_style": "legacy_white_interface",
+            "legacy_white_box": "legacy_white_interface",
+        }
+        variant = aliases.get(variant, variant)
+        if variant not in TARGET_INTERFACE_VARIANTS:
+            raise ValueError(f"unsupported target interface variant `{variant}`")
+        return variant
+
+    def _uses_target_semantic_legacy_white_interface(self) -> bool:
+        return (
+            self._is_target_semantic_ablation_attacker()
+            and self._target_semantic_interface_variant() == "legacy_white_interface"
+        )
+
     def _target_semantic_enabled_resources(self) -> set[str]:
         if not self._is_target_semantic_ablation_attacker():
             return set()
@@ -1230,10 +1264,20 @@ class AgenticRoleAgent(RoleAgent):
         if not self._is_target_semantic_ablation_attacker():
             return None
         variant = self._target_semantic_ablation_variant()
+        interface_variant = self._target_semantic_interface_variant()
         resources = sorted(self._target_semantic_enabled_resources())
+        varied_dimension = "attacker_target_specific_semantic_knowledge"
+        fixed_interface_entries = [
+            "candidate_generator",
+            "candidate_representation",
+        ]
+        if interface_variant != "normalized_interface":
+            varied_dimension = "attacker_interaction_interface"
+            fixed_interface_entries = []
         return {
             "variant": variant,
-            "varied_dimension": "attacker_target_specific_semantic_knowledge",
+            "interface_variant": interface_variant,
+            "varied_dimension": varied_dimension,
             "enabled_resources": resources,
             "withheld_resources": [
                 item for item in TARGET_SEMANTIC_RESOURCE_KEYS if item not in resources
@@ -1247,10 +1291,9 @@ class AgenticRoleAgent(RoleAgent):
                 "generic_domain_expertise",
                 "executable_action_authority",
                 "action_validator",
-                "candidate_generator",
-                "candidate_representation",
                 "policy_scaffold",
                 "timing_budget",
+                *fixed_interface_entries,
             ],
         }
 
@@ -1271,6 +1314,14 @@ class AgenticRoleAgent(RoleAgent):
         ]
 
     def _target_semantic_role_constraints(self) -> list[str]:
+        if self._uses_target_semantic_legacy_white_interface():
+            return [
+                "This run fixes full target semantics, runtime observations, executable action authority, validation rules, timing, and policy scaffold.",
+                "The varied input is only the policy-facing candidate interface shown in candidate_actions.",
+                "Choose only from candidate_actions and prefer candidate_id when selecting a listed action.",
+                "Do not use hidden simulator truth, future defender behavior, authored attack recipes, or unlisted operations.",
+                "Treat irrelevant_context_control, if present, as non-target background that should not define plant behavior.",
+            ]
         return [
             "The only varied input in this run is system_knowledge.target_semantics.",
             "Candidate ids, candidate order, runtime observations, and validation rules are intentionally fixed.",
@@ -1904,6 +1955,15 @@ class AgenticRoleAgent(RoleAgent):
                         telemetry_summary=telemetry_summary,
                     )
                 )
+            elif self._uses_target_semantic_legacy_white_interface():
+                candidate_actions = (
+                    self._target_semantic_legacy_white_interface_candidates(
+                        context=history_context,
+                        telemetry_summary=telemetry_summary,
+                        structured_memory=internal_structured_memory,
+                        mitre_context=internal_mitre_context,
+                    )
+                )
             else:
                 candidate_actions = self._black_box_candidate_actions(
                     context=history_context,
@@ -2435,7 +2495,12 @@ class AgenticRoleAgent(RoleAgent):
         payload = {
             "knowledge_regime": "target_semantic_ablation",
             "variant": variant,
-            "capability_manifest": self._target_semantic_capability_manifest(enabled),
+            "interface_variant": self._target_semantic_interface_variant(),
+            "capability_manifest": self._target_semantic_capability_manifest(
+                enabled,
+                semantic_variant=variant,
+                interface_variant=self._target_semantic_interface_variant(),
+            ),
             "target_semantics": target_semantics,
         }
         if variant == "irrelevant_context":
@@ -2445,26 +2510,42 @@ class AgenticRoleAgent(RoleAgent):
         return payload
 
     @staticmethod
-    def _target_semantic_capability_manifest(enabled: set[str]) -> dict[str, Any]:
+    def _target_semantic_capability_manifest(
+        enabled: set[str],
+        *,
+        semantic_variant: str,
+        interface_variant: str,
+    ) -> dict[str, Any]:
+        target_flags = {
+            TARGET_SEMANTIC_SYMBOLS[key]: key in enabled
+            for key in TARGET_SEMANTIC_RESOURCE_KEYS
+        }
+        if interface_variant == "normalized_interface":
+            varied: dict[str, Any] = {"K_A_t": target_flags}
+        else:
+            varied = {
+                "I_A": interface_variant,
+                "K_A_t": {
+                    **target_flags,
+                    "fixed_variant": semantic_variant,
+                },
+            }
+        fixed = {
+            "P_A": "post_access_operational_surface",
+            "R_A": "fixed_reachable_interface_for_scenario",
+            "Q_A": "fixed_persistence_within_episode",
+            "O_A": "fixed_opaque_runtime_observation",
+            "K_A_g": "fixed_generic_ics_cyber_context",
+            "U_A": "fixed_executable_action_authority_and_validator",
+            "pi_A": "fixed_agentic_policy_scaffold",
+            "Delta_A": "fixed_timing_and_decision_budget",
+        }
+        if interface_variant == "normalized_interface":
+            fixed["I_A"] = "fixed_policy_facing_candidate_interface"
         return {
             "actor": "attacker",
-            "fixed": {
-                "P_A": "post_access_operational_surface",
-                "R_A": "fixed_reachable_interface_for_scenario",
-                "Q_A": "fixed_persistence_within_episode",
-                "O_A": "fixed_opaque_runtime_observation",
-                "K_A_g": "fixed_generic_ics_cyber_context",
-                "I_A": "fixed_executable_interface_and_validator",
-                "U_A": "fixed_attack_objective_prompt",
-                "pi_A": "fixed_agentic_policy_scaffold",
-                "Delta_A": "fixed_timing_and_decision_budget",
-            },
-            "varied": {
-                "K_A_t": {
-                    TARGET_SEMANTIC_SYMBOLS[key]: key in enabled
-                    for key in TARGET_SEMANTIC_RESOURCE_KEYS
-                }
-            },
+            "fixed": fixed,
+            "varied": varied,
         }
 
     def _target_semantic_known_alias(
@@ -2600,28 +2681,12 @@ class AgenticRoleAgent(RoleAgent):
                 "inspect_surface": "returns bounded reachability evidence for a treatment surface",
                 "trip_or_stop": "moves the treatment process toward a stopped safe state",
             }
-        candidate_effects = []
-        for candidate_id, item in sorted(
-            dict(self._state.get("black_box_candidate_map") or {}).items()
-        ):
-            visible_action = dict(item.get("visible_action") or {})
-            if not visible_action:
-                continue
-            action_type = str(visible_action.get("type", "")).strip()
-            effect = families.get(action_type)
-            if effect is None and action_type == "toggle_control":
-                effect = families.get("toggle_control")
-            if effect:
-                candidate_effects.append(
-                    {
-                        "candidate_id": candidate_id,
-                        "visible_action_type": action_type,
-                        "effect_semantics": effect,
-                    }
-                )
         return {
             "action_family_effects": families,
-            "current_candidate_effects": candidate_effects[:8],
+            "mapping_scope": (
+                "family-level control-effect semantics independent of the "
+                "policy-facing candidate interface"
+            ),
         }
 
     def _target_semantic_safety(self, *, scenario: Any) -> dict[str, Any]:
@@ -3566,6 +3631,81 @@ class AgenticRoleAgent(RoleAgent):
             ),
             reverse=True,
         )
+
+    def _target_semantic_legacy_white_interface_candidates(
+        self,
+        *,
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        mitre_context: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        real_candidates = self._white_box_attacker_candidates(
+            context=context,
+            telemetry_summary=telemetry_summary,
+            structured_memory=structured_memory,
+        )
+        if mitre_context is not None:
+            real_candidates = self._optionb_mitre_attacker_candidates(
+                context=context,
+                candidates=real_candidates,
+                structured_memory=structured_memory,
+                mitre_context=mitre_context,
+            )
+
+        allowed = set(self.profile.get("allowed_action_types", []))
+        visible_by_id: dict[str, dict[str, Any]] = {}
+        candidate_map: dict[str, dict[str, Any]] = {}
+        for item in real_candidates:
+            real_action = normalize_action(item.get("action"))
+            if real_action is None:
+                continue
+            action_type = str(real_action.get("type", "")).strip()
+            if action_type not in allowed:
+                continue
+            candidate_id = action_key(real_action)
+            summary = str(item.get("summary") or "").strip()
+            if not summary:
+                summary = (
+                    f"Use `{action_type}` through the listed bounded "
+                    "target-system interface."
+                )
+            payload = {
+                "id": candidate_id,
+                "summary": summary,
+                "action": real_action,
+                "source": "legacy_white_interface",
+                "priority": int(item.get("priority", 0)),
+                "interface_variant": "legacy_white_interface",
+            }
+            for key in ("surface", "category", "chain_goal"):
+                if item.get(key):
+                    payload[key] = item.get(key)
+            existing = visible_by_id.get(candidate_id)
+            if existing is None or int(payload["priority"]) > int(
+                existing.get("priority", 0)
+            ):
+                visible_by_id[candidate_id] = payload
+                candidate_map[candidate_id] = {
+                    "action": real_action,
+                    "summary": payload["summary"],
+                    "visible_action": real_action,
+                }
+
+        ranked = sorted(
+            visible_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                str(item.get("id", "")),
+            ),
+            reverse=True,
+        )
+        self._state["black_box_candidate_map"] = {
+            str(item["id"]): candidate_map[str(item["id"])] for item in ranked
+        }
+        self.engine.black_box_candidate_map = dict(self._state["black_box_candidate_map"])
+        return ranked
 
     def _uses_distribution_scripted_black_box_profile(self) -> bool:
         return self.profile_name == "scripted_black_box_distribution_attacker"

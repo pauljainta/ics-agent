@@ -1,0 +1,74 @@
+experiment_name: water_distribution_target_interface_ablation
+experiment_id: water_distribution_target_interface_ablation_vs_agentic_full_containment_defender
+testbed: water_distribution
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/water_distribution_openplc/target-interface-ablation
+study_metadata:
+  family: water_distribution_target_interface_ablation
+  timing_primary_origin: wargame_t0
+  notes:
+    - Pre-experiment config only; do not run until the interface-isolation setup has been reviewed.
+    - Full target semantics are fixed in both conditions.
+    - The only intended attacker-side capability difference is target_semantics.interface_variant.
+    - The defender is the same active full-containment agentic defender used by current distribution semantic runs.
+environment:
+  backend: sphere_openplc
+  testbed: water_distribution
+  infrastructure_profile: water_distribution
+
+condition_profiles: &condition_profiles
+  attacker: target_semantic_ablation_attacker
+  defender: agentic_defender
+  observer: scripted_observer
+  planner: scripted_planner
+  operator: scripted_operator
+  offline_analysis: scripted_offline_analyst
+
+frozen_defender_override: &frozen_defender_override
+  allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_actuator_write
+    - quarantine_signal_source
+    - noop
+  knowledge_files:
+    - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+    - testbeds/water_distribution/knowledge/defender_manual.md
+  abort_on_backend_error: false
+  action_cooldown_sec: 2.0
+  note_cooldown_sec: 12.0
+  reasoning_cooldown_sec: 12.0
+  reasoning_refresh_sec: 18.0
+  llm:
+    backend: qwen_langchain
+    prompt_file: testbeds/water_distribution/prompts/defender.md
+    use_langgraph: false
+    allow_langchain_fallback: false
+    max_new_tokens: 48
+
+conditions:
+  - name: full_target_semantics_normalized_interface__agentic_defender
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        target_semantics:
+          variant: full
+          interface_variant: normalized_interface
+      defender: *frozen_defender_override
+  - name: full_target_semantics_legacy_white_interface__agentic_defender
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        target_semantics:
+          variant: full
+          interface_variant: legacy_white_interface
+      defender: *frozen_defender_override
