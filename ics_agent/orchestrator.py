@@ -624,6 +624,61 @@ class ExperimentOrchestrator:
             "remaining_nondeterminism": remaining_nondeterminism,
         }
 
+    @staticmethod
+    def _seed_for_stateaware_branch(config: dict[str, Any]) -> int:
+        reproducibility = config.get("reproducibility", {})
+        if not isinstance(reproducibility, dict):
+            reproducibility = {}
+        raw_seed = reproducibility.get("seed", config.get("seed", 0))
+        try:
+            return int(raw_seed)
+        except (TypeError, ValueError):
+            return 0
+
+    def _scenario_for_run(
+        self,
+        scenario: ScenarioDefinition,
+        config: dict[str, Any],
+    ) -> ScenarioDefinition:
+        stateaware = scenario.execution.get("stateaware")
+        if not isinstance(stateaware, dict):
+            return scenario
+        branches = stateaware.get("branches")
+        if not isinstance(branches, list) or not branches:
+            return scenario
+
+        seed = self._seed_for_stateaware_branch(config)
+        selector = stable_hash(
+            {"seed": seed, "scenario_id": scenario.scenario_id},
+            length=12,
+        )
+        branch_index = int(selector, 16) % len(branches)
+        branch = deepcopy(branches[branch_index])
+        branch_id = str(branch.get("branch_id") or f"branch_{branch_index}")
+        execution = deepcopy(scenario.execution)
+        initial_conditions = dict(execution.get("initial_conditions") or {})
+        initial_conditions.update(dict(branch.get("initial_conditions") or {}))
+        execution["initial_conditions"] = initial_conditions
+        execution["stateaware_selected_branch"] = {
+            "branch_id": branch_id,
+            "branch_index": branch_index,
+            "selection_seed": seed,
+            "selection_hash": selector,
+            "selection_method": "stable_hash(seed,scenario_id)",
+            "initial_conditions": dict(branch.get("initial_conditions") or {}),
+            "evaluator_note": branch.get("evaluator_note"),
+        }
+
+        return ScenarioDefinition(
+            catalog_id=scenario.catalog_id,
+            suite=scenario.suite,
+            scenario_id=scenario.scenario_id,
+            execution_path=scenario.execution_path,
+            execution=execution,
+            metadata=deepcopy(scenario.metadata),
+            testbed_id=scenario.testbed_id,
+        )
+
     def run(self, experiment_config_path: str | Path) -> dict[str, Any]:
         config = load_config(experiment_config_path)
         require_fields(
@@ -704,6 +759,7 @@ class ExperimentOrchestrator:
             for scenario in scenarios:
                 if abort_condition:
                     break
+                runtime_scenario = self._scenario_for_run(scenario, config)
                 for repeat in range(1, int(config.get("repeats", 1)) + 1):
                     run_id = (
                         f"{scenario.suite}-{scenario.scenario_id}-trial-{repeat:03d}"
@@ -729,7 +785,7 @@ class ExperimentOrchestrator:
                         condition_name=condition_name,
                         condition=condition,
                         effective_profiles=condition_spec.get("effective_profiles"),
-                        scenario=scenario,
+                        scenario=runtime_scenario,
                         run_id=run_id,
                         run_dir=run_dir,
                         config=config,
@@ -1288,6 +1344,7 @@ class ExperimentOrchestrator:
                 "metadata": scenario.metadata,
                 "suite": scenario.suite,
                 "scenario_id": scenario.scenario_id,
+                "execution": scenario.execution,
             },
         )
         offline_context = {
@@ -1327,6 +1384,9 @@ class ExperimentOrchestrator:
             "scenario_id": scenario.scenario_id,
             "suite": scenario.suite,
             "testbed": scenario.testbed_id,
+            "stateaware_selected_branch": scenario.execution.get(
+                "stateaware_selected_branch"
+            ),
             "condition_name": condition_name,
             "status": bundle.status,
             "passed": bundle.passed,
@@ -1369,7 +1429,11 @@ class ExperimentOrchestrator:
         *,
         primary_timing_origin: str = "attack_start",
     ) -> dict[str, Any]:
-        attack_runs = [run for run in runs if run.get("suite") == "attack"]
+        def is_attack_run(run: dict[str, Any]) -> bool:
+            metrics = run.get("metrics", {})
+            return run.get("suite") == "attack" or metrics.get("suite_type") == "attack"
+
+        attack_runs = [run for run in runs if is_attack_run(run)]
         completed = [run for run in attack_runs if run.get("status") == "completed"]
         per_run_metrics = [
             {
@@ -1644,6 +1708,28 @@ class ExperimentOrchestrator:
                 "wargame_t0_utc": run.get("metrics", {})
                 .get("phase_window", {})
                 .get("wargame_t0_utc"),
+                "stateaware_branch_id": run.get("metrics", {}).get(
+                    "stateaware_branch_id"
+                ),
+                "state_appropriate_action_selected": run.get("metrics", {}).get(
+                    "state_appropriate_action_selected"
+                ),
+                "state_appropriate_action_executed": run.get("metrics", {}).get(
+                    "state_appropriate_action_executed"
+                ),
+                "time_to_first_state_appropriate_action_sec": run.get(
+                    "metrics", {}
+                ).get("time_to_first_state_appropriate_action_sec"),
+                "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec": run.get(
+                    "metrics", {}
+                )
+                .get("state_aware", {})
+                .get(
+                    "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec"
+                ),
+                "stateaware_race_margin_sec": run.get("metrics", {}).get(
+                    "race_margin_sec"
+                ),
             }
             for run in attack_runs
         ]
@@ -1736,6 +1822,16 @@ class ExperimentOrchestrator:
             for run in completed
             if run.get("metrics", {}).get("attacker", {}).get("undetected_impact")
         ]
+        state_appropriate_selected_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("state_appropriate_action_selected")
+        ]
+        state_appropriate_executed_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("state_appropriate_action_executed")
+        ]
 
         primary_origin = (
             "wargame_t0"
@@ -1782,6 +1878,29 @@ class ExperimentOrchestrator:
             "contained_before_safety_violation_run_count": len(timely_contained),
             "attacker_caused_safety_violation_run_count": len(attacker_safety_success),
             "undetected_impact_run_count": len(undetected_impact_runs),
+            "state_appropriate_action_selected_run_count": len(
+                state_appropriate_selected_runs
+            ),
+            "state_appropriate_action_executed_run_count": len(
+                state_appropriate_executed_runs
+            ),
+            "state_appropriate_action_selected_rate": (
+                None
+                if not completed
+                else round(len(state_appropriate_selected_runs) / len(completed), 4)
+            ),
+            "state_appropriate_action_executed_rate": (
+                None
+                if not completed
+                else round(len(state_appropriate_executed_runs) / len(completed), 4)
+            ),
+            "time_to_first_state_appropriate_action_sec_avg": average(
+                "time_to_first_state_appropriate_action_sec"
+            ),
+            "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec_avg": average(
+                "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec"
+            ),
+            "stateaware_race_margin_sec_avg": average("stateaware_race_margin_sec"),
             "time_to_detection_sec_avg": average(primary_detection_metric),
             "time_to_detection_from_attack_start_sec_avg": average(
                 "time_to_detection_from_attack_start_sec"
@@ -2000,7 +2119,12 @@ class ExperimentOrchestrator:
         }
 
     def _aggregate_mitre_phase_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
-        attack_runs = [run for run in runs if run.get("suite") == "attack"]
+        attack_runs = [
+            run
+            for run in runs
+            if run.get("suite") == "attack"
+            or run.get("metrics", {}).get("suite_type") == "attack"
+        ]
         completed = [run for run in attack_runs if run.get("status") == "completed"]
         per_run_metrics = []
         distribution = {phase: 0 for phase in ATTACKER_PHASES}

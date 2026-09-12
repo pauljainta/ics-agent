@@ -112,6 +112,50 @@ suite_defaults:
       ChemTreat_NaOCl_Level: { min: 0, max: 1000 }
       ChemTreat_HCl_Level: { min: 0, max: 1000 }
     tags: [attack, cyber-physical]
+  stateaware:
+    name: State-Aware Attack Scenario
+    intent: Exercise observation-conditioned cyber-physical attacks where the useful malicious action depends on the current plant state rather than a fixed open-loop recipe.
+    prerequisites:
+      - The OpenPLC environment is reachable and resettable.
+      - The attacker receives only the configured runtime observation and candidate interface for the condition.
+      - Seeded branch selection is paired across all attacker observation/interface conditions.
+    start_state:
+      source: execution.initial_conditions plus deterministic stateaware branch override
+      mode: online
+    attacker_actions:
+      - Infer the useful state-conditioned action from runtime evidence and the bounded action interface.
+    defender_responses:
+      - Use the same active full-containment response capability as the main water-treatment defender.
+      - Detect abnormal telemetry or command evidence and apply containment when warranted.
+    expected_outcomes:
+      - The run records the selected state branch, visible attacker observations, candidate presentations, decoded actions, and evaluator-derived state-appropriate decisions.
+      - Metrics distinguish effect-capable actions from state-appropriate actions.
+    success_conditions:
+      - State-aware branch selection is deterministic for the configured seed.
+      - Run artifacts capture observations, actions, decisions, and state-aware metrics.
+    failure_conditions:
+      - Branch selection is not reproducible.
+      - The scenario terminates without state-aware artifacts.
+    required_metrics: *global_required_metrics
+    ground_truth:
+      incident_type: attack
+      mitigation_actions:
+        - hmi_stop
+        - hmi_estop
+        - select_process
+        - disable_hmi_session
+        - isolate_engineering_host
+        - block_sensor_write
+        - block_process2_manual_path
+        - quarantine_signal_source
+      incident_start_time_sec: 0
+    safety_bounds:
+      RW_Tank_Level: { min: 0, max: 1200 }
+      UF_UFFT_Tank_Level: { min: 0, max: 1200 }
+      ChemTreat_NaCl_Level: { min: 0, max: 1000 }
+      ChemTreat_NaOCl_Level: { min: 0, max: 1000 }
+      ChemTreat_HCl_Level: { min: 0, max: 1000 }
+    tags: [attack, cyber-physical, state-aware]
   recheck:
     name: Regression Recheck Scenario
     intent: Re-run representative scenarios after changes to confirm prior fixes and baseline behaviors still hold.

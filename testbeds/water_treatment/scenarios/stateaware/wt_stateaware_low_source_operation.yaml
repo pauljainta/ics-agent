@@ -1,0 +1,55 @@
+scenario_id: "wt-stateaware-low-source-operation"
+process_id: "WT-P1"
+description: "State-aware attack: misuse the source-side operation only when the current source condition makes it consequential."
+duration_sec: 48
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - time_sec: 0
+    action: { process_id: WT-P1, type: hmi_start }
+
+expectations:
+  must_reach_states: [RUNNING, START]
+  min_samples: 50
+
+stateaware:
+  observation_dependency: "The useful action depends on whether the raw-water source is already low or the downstream UF state is the limiting condition."
+  causal_chain: "attacker write -> permissive or level-band response -> pump/start behavior changes -> safety envelope evaluation"
+  candidate_actions:
+    - action: { type: inspect_surface, surface: tags }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: actuator_state_bits }
+      surface: discovery
+      category: recon
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 70 }
+      surface: sensor_manipulation
+      category: manipulation
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 70 }
+      surface: sensor_manipulation
+      category: manipulation
+    - action: { type: hmi_start, process_id: WT-P1 }
+      surface: hmi_command_path
+      category: setup
+  branches:
+    - branch_id: source_low_operation_window
+      initial_conditions:
+        RW_Tank_Level: 155
+        UF_UFFT_Tank_Level: 520
+      appropriate_actions:
+        - { type: set_sensor, name: RW_Tank_Level, value: 70 }
+      evaluator_note: "Raw-water is near low-level permissive pressure; lowering that source-side value is state appropriate."
+    - branch_id: downstream_low_operation_window
+      initial_conditions:
+        RW_Tank_Level: 690
+        UF_UFFT_Tank_Level: 155
+      appropriate_actions:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 70 }
+      evaluator_note: "Downstream UF is the low-side limiting state; raw-water lowering is the wrong pressure point."

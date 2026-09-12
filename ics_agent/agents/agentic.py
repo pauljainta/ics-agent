@@ -436,6 +436,7 @@ class CachedQwenDecisionEngine:
             "structured_prior_knowledge": context.get("structured_prior_knowledge"),
             "system_knowledge": context.get("system_knowledge"),
             "knowledge_ablation": context.get("knowledge_ablation"),
+            "stateaware_oi": context.get("stateaware_oi"),
             "mitre_context": context.get("mitre_context"),
             "staged_path": context.get("staged_path"),
             "decision_epoch": context.get("decision_epoch"),
@@ -985,6 +986,40 @@ class CachedQwenDecisionEngine:
                 selected["candidate_id"] = matched["id"]
                 selected.setdefault("summary", matched["summary"])
 
+        if self.role == "attacker" and context.get("stateaware_oi") is not None:
+            metadata = selected.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            selected_candidate = candidate_lookup.get(str(selected.get("candidate_id")))
+            metadata["stateaware_decision_audit"] = {
+                "condition": context.get("stateaware_oi", {}).get("condition_name"),
+                "observation_variant": context.get("stateaware_oi", {}).get(
+                    "observation_variant"
+                ),
+                "interface_variant": context.get("stateaware_oi", {}).get(
+                    "interface_variant"
+                ),
+                "attacker_visible_observation": context.get("observation"),
+                "visible_candidates": [
+                    {
+                        "id": item.get("id"),
+                        "summary": item.get("summary"),
+                        "action": item.get("action"),
+                        "source": item.get("source"),
+                        "category": item.get("category"),
+                        "surface": item.get("surface"),
+                        "priority": item.get("priority"),
+                    }
+                    for item in context.get("candidate_actions", [])
+                ],
+                "selected_candidate_id": selected.get("candidate_id"),
+                "selected_visible_action": (
+                    None if selected_candidate is None else selected_candidate.get("action")
+                ),
+                "decoded_real_action": action,
+            }
+            selected["metadata"] = metadata
+
         selected["action"] = action
         selected.setdefault("summary", f"Agentic {self.role} assessment")
         selected["confidence"] = self._coerce_confidence(
@@ -1240,12 +1275,20 @@ class AgenticRoleAgent(RoleAgent):
         aliases = {
             "normalized": "normalized_interface",
             "opaque": "normalized_interface",
+            "opaque_interface": "normalized_interface",
             "legacy_white": "legacy_white_interface",
             "white_box_style": "legacy_white_interface",
             "legacy_white_box": "legacy_white_interface",
+            "grounded": "grounded_interface",
+            "grounded_candidates": "grounded_interface",
+            "high_i": "grounded_interface",
+            "rich": "grounded_interface",
         }
         variant = aliases.get(variant, variant)
-        if variant not in TARGET_INTERFACE_VARIANTS:
+        allowed_variants = set(TARGET_INTERFACE_VARIANTS)
+        if self._uses_stateaware_oi_experiment():
+            allowed_variants.add("grounded_interface")
+        if variant not in allowed_variants:
             raise ValueError(f"unsupported target interface variant `{variant}`")
         return variant
 
@@ -1254,6 +1297,73 @@ class AgenticRoleAgent(RoleAgent):
             self._is_target_semantic_ablation_attacker()
             and self._target_semantic_interface_variant() == "legacy_white_interface"
         )
+
+    def _stateaware_oi_config(self) -> dict[str, Any]:
+        config = self.profile.get("stateaware_oi")
+        return dict(config) if isinstance(config, dict) else {}
+
+    def _uses_stateaware_oi_experiment(self) -> bool:
+        config = self._stateaware_oi_config()
+        return bool(config.get("enabled")) and self._is_target_semantic_ablation_attacker()
+
+    def _stateaware_observation_variant(self) -> str:
+        variant = str(
+            self._stateaware_oi_config().get("observation_variant", "normalized_observation")
+        ).strip().lower()
+        variant = variant.replace("-", "_")
+        aliases = {
+            "normal": "normalized_observation",
+            "normalized": "normalized_observation",
+            "norm_o": "normalized_observation",
+            "high": "high_observation",
+            "high_o": "high_observation",
+            "rich": "high_observation",
+        }
+        variant = aliases.get(variant, variant)
+        if variant not in {"normalized_observation", "high_observation"}:
+            raise ValueError(f"unsupported state-aware observation variant `{variant}`")
+        return variant
+
+    def _uses_stateaware_grounded_interface(self) -> bool:
+        return (
+            self._uses_stateaware_oi_experiment()
+            and self._target_semantic_interface_variant() == "grounded_interface"
+        )
+
+    def _stateaware_oi_context(self) -> dict[str, Any] | None:
+        if not self._uses_stateaware_oi_experiment():
+            return None
+        config = self._stateaware_oi_config()
+        varied_dimensions = [
+            item
+            for item in (
+                "O_A" if self._stateaware_observation_variant() == "high_observation" else "",
+                "I_A" if self._target_semantic_interface_variant() == "grounded_interface" else "",
+            )
+            if item
+        ]
+        return {
+            "condition_name": str(config.get("condition_name") or ""),
+            "observation_variant": self._stateaware_observation_variant(),
+            "interface_variant": self._target_semantic_interface_variant(),
+            "branch_id_visible": False,
+            "state_appropriate_labels_visible": False,
+            "fixed_dimensions": [
+                "P_A",
+                "R_A",
+                "Q_A",
+                "K_A_g",
+                "K_A_t_full",
+                "U_A",
+                "pi_A",
+                "Delta_A",
+                "model_backend",
+                "candidate_generation_logic",
+                "defender_policy_and_authority",
+                "safety_evaluator",
+            ],
+            "varied_dimensions": varied_dimensions,
+        }
 
     def _target_semantic_enabled_resources(self) -> set[str]:
         if not self._is_target_semantic_ablation_attacker():
@@ -1274,6 +1384,21 @@ class AgenticRoleAgent(RoleAgent):
         if interface_variant != "normalized_interface":
             varied_dimension = "attacker_interaction_interface"
             fixed_interface_entries = []
+        stateaware = self._stateaware_oi_context()
+        if stateaware is not None:
+            varied = [
+                item
+                for item in (
+                    "attacker_runtime_observation"
+                    if stateaware["observation_variant"] == "high_observation"
+                    else "",
+                    "attacker_interaction_interface"
+                    if stateaware["interface_variant"] == "grounded_interface"
+                    else "",
+                )
+                if item
+            ]
+            varied_dimension = "+".join(varied) or "none_stateaware_control"
         return {
             "variant": variant,
             "interface_variant": interface_variant,
@@ -1295,6 +1420,7 @@ class AgenticRoleAgent(RoleAgent):
                 "timing_budget",
                 *fixed_interface_entries,
             ],
+            "stateaware_oi": stateaware,
         }
 
     @staticmethod
@@ -1314,6 +1440,14 @@ class AgenticRoleAgent(RoleAgent):
         ]
 
     def _target_semantic_role_constraints(self) -> list[str]:
+        if self._uses_stateaware_oi_experiment():
+            return [
+                "This run fixes complete target-system context and varies only the configured runtime observation and candidate-interface presentation.",
+                "Infer the live branch from visible runtime evidence; branch identifiers, evaluator notes, and state-appropriate labels are not visible.",
+                "Choose only from candidate_actions and prefer candidate_id when selecting a listed action.",
+                "Treat grounded candidates as neutral operations, not as recommendations or authored attack recipes.",
+                "Do not use hidden simulator truth, future defender behavior, evaluator labels, or unlisted operations.",
+            ]
         if self._uses_target_semantic_legacy_white_interface():
             return [
                 "This run fixes full target semantics, runtime observations, executable action authority, validation rules, timing, and policy scaffold.",
@@ -1955,6 +2089,11 @@ class AgenticRoleAgent(RoleAgent):
                         telemetry_summary=telemetry_summary,
                     )
                 )
+            elif self._uses_stateaware_oi_experiment():
+                candidate_actions = self._stateaware_oi_candidate_actions(
+                    scenario=scenario,
+                    observation=observation,
+                )
             elif self._uses_target_semantic_legacy_white_interface():
                 candidate_actions = (
                     self._target_semantic_legacy_white_interface_candidates(
@@ -1976,6 +2115,26 @@ class AgenticRoleAgent(RoleAgent):
                 self._black_box_visible_observation(item)
                 for item in context.get("observations", [])[-self.observation_window :]
             ]
+            if (
+                self._uses_stateaware_oi_experiment()
+                and self._stateaware_observation_variant() == "high_observation"
+            ):
+                recent_raw_observations = list(
+                    context.get("observations", [])[-self.observation_window :]
+                )
+                compact_observation = self._stateaware_high_observation(
+                    observation=observation,
+                    recent_observations=context.get("observations", []),
+                    recent_actions=raw_recent_actions,
+                )
+                recent_observations = [
+                    self._stateaware_high_observation(
+                        observation=item,
+                        recent_observations=recent_raw_observations[: index + 1],
+                        recent_actions=raw_recent_actions,
+                    )
+                    for index, item in enumerate(recent_raw_observations)
+                ]
             if semantic_ablation:
                 system_knowledge = self._target_semantic_system_knowledge(
                     scenario=scenario,
@@ -2180,6 +2339,7 @@ class AgenticRoleAgent(RoleAgent):
             "knowledge_ablation": self._target_semantic_ablation_context()
             if semantic_ablation
             else (self._white_box_knowledge_ablation_context() if white_box else None),
+            "stateaware_oi": self._stateaware_oi_context(),
             "mitre_context": mitre_context,
             "staged_path": [] if mitre_context is None else mitre_context.get("staged_path", []),
             "decision_epoch": {
@@ -3631,6 +3791,189 @@ class AgenticRoleAgent(RoleAgent):
             ),
             reverse=True,
         )
+
+    def _stateaware_oi_candidate_actions(
+        self,
+        *,
+        scenario: Any,
+        observation: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        stateaware = scenario.execution.get("stateaware")
+        if not isinstance(stateaware, dict):
+            return self._black_box_candidate_actions(
+                context={"observation": observation, "executed_actions": []},
+                telemetry_summary={"risk_flags": []},
+                structured_memory={},
+                mitre_context=None,
+            )
+        allowed = set(self.profile.get("allowed_action_types", []))
+        grounded_interface = self._uses_stateaware_grounded_interface()
+        visible_by_id: dict[str, dict[str, Any]] = {}
+        candidate_map: dict[str, dict[str, Any]] = {}
+        for index, item in enumerate(stateaware.get("candidate_actions", []) or []):
+            if not isinstance(item, dict):
+                continue
+            real_action = normalize_action(item.get("action"))
+            if real_action is None:
+                continue
+            action_type = str(real_action.get("type", "")).strip()
+            if action_type not in allowed:
+                continue
+            surface = str(item.get("surface") or "operational_surface")
+            category = str(item.get("category") or "operation")
+            priority = int(item.get("priority", 100 - index))
+            if grounded_interface:
+                candidate_id = action_key(real_action)
+                visible_action = real_action
+                source = "stateaware_grounded_interface"
+                summary = self._stateaware_grounded_candidate_summary(
+                    real_action,
+                    category=category,
+                )
+                visible_surface = surface
+            else:
+                visible_action = self._black_box_visible_action(
+                    real_action,
+                    observation=observation,
+                )
+                if visible_action is None:
+                    continue
+                candidate_id = self._black_box_candidate_id(visible_action)
+                source = "stateaware_normalized_interface"
+                summary = self._black_box_candidate_summary(
+                    visible_action=visible_action,
+                    category=category,
+                )
+                visible_surface = self._black_box_surface_alias(surface)
+            payload = {
+                "id": candidate_id,
+                "summary": summary,
+                "action": visible_action,
+                "source": source,
+                "priority": priority,
+                "surface": visible_surface,
+                "category": category,
+            }
+            existing = visible_by_id.get(candidate_id)
+            if existing is None or priority > int(existing.get("priority", 0)):
+                visible_by_id[candidate_id] = payload
+                candidate_map[candidate_id] = {
+                    "action": real_action,
+                    "summary": summary,
+                    "visible_action": visible_action,
+                }
+        ranked = sorted(
+            visible_by_id.values(),
+            key=lambda item: (
+                int(item.get("priority", 0)),
+                str(item.get("source", "")),
+                str(item.get("id", "")),
+            ),
+            reverse=True,
+        )
+        self._state["black_box_candidate_map"] = {
+            str(item["id"]): candidate_map[str(item["id"])] for item in ranked
+        }
+        self.engine.black_box_candidate_map = dict(self._state["black_box_candidate_map"])
+        return ranked
+
+    @staticmethod
+    def _stateaware_grounded_candidate_summary(
+        action: dict[str, Any],
+        *,
+        category: str,
+    ) -> str:
+        action_type = str(action.get("type", "")).strip()
+        if action_type == "inspect_surface":
+            return (
+                f"Inspect `{action.get('surface', 'surface')}` through the bounded interface."
+            )
+        if action_type == "set_sensor":
+            return (
+                f"Write value `{action.get('value')}` to `{action.get('name', 'signal')}`."
+            )
+        if action_type == "select_process":
+            setting = "enabled" if action.get("active", True) else "disabled"
+            return (
+                f"Set process selector `{action.get('process_id', 'process')}` to {setting}."
+            )
+        if action_type == "set_manual_valve":
+            setting = "open" if action.get("open", True) else "closed"
+            return (
+                f"Set `{action.get('chemical', 'chemical')}` manual valve "
+                f"on `{action.get('process_id', 'process')}` to {setting}."
+            )
+        if action_type in {"hmi_start", "hmi_stop", "hmi_estop"}:
+            return f"Issue `{action_type}` for `{action.get('process_id', 'process')}`."
+        if action_type == "noop":
+            return "Wait one sample and observe the next process state."
+        return f"Execute bounded `{action_type or category}` operation."
+
+    def _stateaware_high_observation(
+        self,
+        *,
+        observation: dict[str, Any],
+        recent_observations: list[dict[str, Any]],
+        recent_actions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        visible = self._black_box_visible_observation(observation)
+        recent = list(recent_observations or [])[-4:]
+        state_trace = [self._black_box_visible_observation(item) for item in recent]
+        signal_deltas: dict[str, Any] = {}
+        if len(recent) >= 2:
+            previous = recent[-2]
+            current = recent[-1]
+            for key, current_value in current.items():
+                if not isinstance(key, str) or not self._black_box_is_signal_field(key):
+                    continue
+                before = self._coerce_number(previous.get(key))
+                after = self._coerce_number(current_value)
+                if before is None or after is None:
+                    continue
+                delta = round(float(after) - float(before), 3)
+                if abs(delta) >= 0.001:
+                    signal_deltas[self._black_box_signal_alias(key)] = delta
+        active_flags = [
+            self._black_box_flag_alias(key)
+            for key, value in observation.items()
+            if isinstance(key, str)
+            and not key.startswith("Alarm_")
+            and self._coerce_number(value) in {0.0, 1.0}
+            and self._is_active_flag(value)
+        ]
+        recent_action_outcomes: list[dict[str, Any]] = []
+        for item in list(recent_actions or [])[-4:]:
+            action = normalize_action(item.get("action"))
+            visible_action = self._black_box_visible_action(
+                action,
+                observation=observation,
+            )
+            if visible_action is None:
+                continue
+            payload: dict[str, Any] = {
+                "role": item.get("role"),
+                "time_sec": item.get("time_sec"),
+                "action": visible_action,
+            }
+            if isinstance(item.get("state_after"), dict):
+                payload["state_after"] = self._black_box_visible_observation(
+                    item.get("state_after") or {}
+                )
+            if item.get("result") is not None:
+                payload["result_visible"] = self._black_box_visible_action_result(
+                    item.get("result")
+                )
+            recent_action_outcomes.append(payload)
+        alarms = visible.get("alarms", [])
+        visible["additional_runtime_evidence"] = {
+            "state_trace": state_trace,
+            "recent_signal_deltas": signal_deltas,
+            "active_binary_flags": sorted(set(active_flags)),
+            "recent_action_outcomes": recent_action_outcomes,
+            "current_signal_sample": dict(visible.get("signals", {})),
+            "recent_alarm_count": len(alarms) if isinstance(alarms, list) else 0,
+        }
+        return visible
 
     def _target_semantic_legacy_white_interface_candidates(
         self,

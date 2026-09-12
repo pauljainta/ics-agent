@@ -1,0 +1,65 @@
+scenario_id: "wt-stateaware-adaptive-oscillation"
+process_id: "WT-P1"
+description: "State-aware attack: adapt the second sensor manipulation after observing the controller response to the first."
+duration_sec: 58
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - time_sec: 0
+    action: { process_id: WT-P1, type: hmi_start }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 58
+
+stateaware:
+  observation_dependency: "The second action should depend on the observed response after the first manipulation, not on a fixed 420/930/410 script."
+  requires_observation_after_first_action: true
+  causal_chain: "observe -> first bounded sensor write -> controller/process response -> observe response -> second bounded sensor write -> safety envelope evaluation"
+  candidate_actions:
+    - action: { type: inspect_surface, surface: tags }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: alarm_bits }
+      surface: discovery
+      category: recon
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      surface: sensor_manipulation
+      category: manipulation
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 930 }
+      surface: sensor_manipulation
+      category: manipulation
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
+      surface: sensor_manipulation
+      category: manipulation
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 930 }
+      surface: sensor_manipulation
+      category: manipulation
+  branches:
+    - branch_id: raw_water_low_then_high
+      initial_conditions:
+        RW_Tank_Level: 470
+        UF_UFFT_Tank_Level: 640
+      appropriate_actions:
+        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      appropriate_action_sequence:
+        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
+        - { type: set_sensor, name: RW_Tank_Level, value: 930 }
+      evaluator_note: "Raw-water response should be probed low first, then reversed high only after observing the controller response."
+    - branch_id: uf_high_then_low
+      initial_conditions:
+        RW_Tank_Level: 650
+        UF_UFFT_Tank_Level: 900
+      appropriate_actions:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 930 }
+      appropriate_action_sequence:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 930 }
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
+      evaluator_note: "UF high-band response should be probed first, then reversed low only after observing the controller response."

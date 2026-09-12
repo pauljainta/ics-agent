@@ -1,0 +1,103 @@
+experiment_name: water_treatment_stateaware_oi_matrix
+experiment_id: water_treatment_stateaware_oi_matrix_vs_agentic_full_containment_defender
+testbed: water_treatment
+scenario_selectors:
+  - stateaware/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/Water-treatment/state-aware-oi-matrix
+study_metadata:
+  family: water_treatment_stateaware_oi_matrix
+  timing_primary_origin: wargame_t0
+  notes:
+    - Six new state-aware scenarios are added without modifying the original 18-scenario treatment suite.
+    - All conditions use full target-system semantics and the same model, policy scaffold, action authority, validator, defender, timing, and safety evaluator.
+    - The only intended attacker-side capability changes are O_A and I_A as specified by stateaware_oi.
+environment:
+  backend: sphere_openplc
+  testbed: water_treatment
+  infrastructure_profile: water_treatment
+
+condition_profiles: &condition_profiles
+  attacker: target_semantic_ablation_attacker
+  defender: agentic_defender
+  observer: agentic_observer
+  planner: scripted_planner
+  operator: scripted_operator
+  offline_analysis: scripted_offline_analyst
+
+frozen_defender_override: &frozen_defender_override
+  behavior_model:
+    id: optionb_mitre_staged
+    policy: agentic
+    notes: Frozen active full-containment defender for state-aware O/I ablation.
+  allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - select_process
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_process2_manual_path
+    - quarantine_signal_source
+    - noop
+  llm:
+    prompt_file: testbeds/water_treatment/prompts/defender.md
+  note_cooldown_sec: 4.0
+  reasoning_cooldown_sec: 2.0
+  reasoning_refresh_sec: 4.0
+
+frozen_observer_override: &frozen_observer_override
+  behavior_model:
+    id: optionb_mitre_staged
+    policy: agentic
+    notes: Frozen treatment observer for state-aware O/I ablation.
+  llm:
+    prompt_file: testbeds/water_treatment/prompts/observer.md
+
+conditions:
+  - name: stateaware_full_semantics_normO_normI
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        target_semantics:
+          variant: full
+          interface_variant: normalized_interface
+        stateaware_oi:
+          enabled: true
+          condition_name: stateaware_full_semantics_normO_normI
+          observation_variant: normalized_observation
+          interface_variant: normalized_interface
+      defender: *frozen_defender_override
+      observer: *frozen_observer_override
+  - name: stateaware_full_semantics_normO_highI
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        target_semantics:
+          variant: full
+          interface_variant: grounded_interface
+        stateaware_oi:
+          enabled: true
+          condition_name: stateaware_full_semantics_normO_highI
+          observation_variant: normalized_observation
+          interface_variant: grounded_interface
+      defender: *frozen_defender_override
+      observer: *frozen_observer_override
+  - name: stateaware_full_semantics_highO_highI
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        target_semantics:
+          variant: full
+          interface_variant: grounded_interface
+        stateaware_oi:
+          enabled: true
+          condition_name: stateaware_full_semantics_highO_highI
+          observation_variant: high_observation
+          interface_variant: grounded_interface
+      defender: *frozen_defender_override
+      observer: *frozen_observer_override

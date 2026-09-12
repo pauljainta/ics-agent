@@ -1,0 +1,55 @@
+scenario_id: "wt-stateaware-rw-overfill-window"
+process_id: "WT-P1"
+description: "State-aware attack: choose the raw-water manipulation that is useful only for the current inflow/headroom state."
+duration_sec: 48
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+timeline:
+  - time_sec: 0
+    action: { process_id: WT-P1, type: hmi_start }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 50
+
+stateaware:
+  observation_dependency: "The useful malicious write depends on whether raw-water or downstream UF headroom is the live limiting condition."
+  causal_chain: "attacker write -> controller-visible level changes -> alarm/interlock pressure or downstream dependency changes -> safety envelope evaluation"
+  candidate_actions:
+    - action: { type: inspect_surface, surface: tags }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: alarm_bits }
+      surface: discovery
+      category: recon
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 1185 }
+      surface: sensor_manipulation
+      category: manipulation
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
+      surface: sensor_manipulation
+      category: manipulation
+    - action: { type: hmi_stop, process_id: WT-P1 }
+      surface: hmi_command_path
+      category: availability
+  branches:
+    - branch_id: raw_water_high_inflow_window
+      initial_conditions:
+        RW_Tank_Level: 1120
+        UF_UFFT_Tank_Level: 430
+      appropriate_actions:
+        - { type: set_sensor, name: RW_Tank_Level, value: 1185 }
+      evaluator_note: "Raw-water is already high; keeping the raw-water value near the upper band is the state-appropriate pressure point."
+    - branch_id: downstream_uf_headroom_window
+      initial_conditions:
+        RW_Tank_Level: 690
+        UF_UFFT_Tank_Level: 1125
+      appropriate_actions:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
+      evaluator_note: "The downstream UF buffer is the limiting high-headroom state; raw-water manipulation is less relevant."

@@ -736,6 +736,243 @@ def _canonicalize_action(action: dict[str, Any] | None) -> str:
     return action_type
 
 
+def _stateaware_value_matches(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, bool):
+        if isinstance(actual, bool):
+            return actual is expected
+        actual_number = _as_float(actual)
+        if actual_number is not None:
+            return bool(actual_number) is expected
+        return str(actual).strip().lower() == str(expected).lower()
+    expected_number = _as_float(expected)
+    actual_number = _as_float(actual)
+    if expected_number is not None and actual_number is not None:
+        return abs(float(actual_number) - float(expected_number)) <= 1e-6
+    return str(actual).strip() == str(expected).strip()
+
+
+def _stateaware_action_matches(
+    actual_action: dict[str, Any] | None,
+    expected_action: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(actual_action, dict) or not isinstance(expected_action, dict):
+        return False
+    for key, expected_value in expected_action.items():
+        if key not in actual_action:
+            return False
+        if not _stateaware_value_matches(actual_action.get(key), expected_value):
+            return False
+    return True
+
+
+def _stateaware_matching_expected_actions(
+    action: dict[str, Any] | None,
+    expected_actions: list[Any],
+) -> list[dict[str, Any]]:
+    if action is None:
+        return []
+    matches: list[dict[str, Any]] = []
+    for expected in expected_actions:
+        if isinstance(expected, dict) and _stateaware_action_matches(action, expected):
+            matches.append(expected)
+    return matches
+
+
+def _stateaware_branch_spec(scenario: dict[str, Any]) -> dict[str, Any] | None:
+    execution = scenario.get("execution", {})
+    if not isinstance(execution, dict):
+        return None
+    selected = execution.get("stateaware_selected_branch")
+    stateaware = execution.get("stateaware")
+    if not isinstance(selected, dict) or not isinstance(stateaware, dict):
+        return None
+    branch_id = str(selected.get("branch_id", ""))
+    for branch in stateaware.get("branches", []) or []:
+        if isinstance(branch, dict) and str(branch.get("branch_id", "")) == branch_id:
+            return branch
+    return None
+
+
+def _stateaware_decision_action(item: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    audit = metadata.get("stateaware_decision_audit") if isinstance(metadata, dict) else None
+    decoded = audit.get("decoded_real_action") if isinstance(audit, dict) else None
+    if isinstance(decoded, dict):
+        return decoded
+    action = item.get("action")
+    return action if isinstance(action, dict) else None
+
+
+def _first_stateaware_match_item(
+    items: list[dict[str, Any]],
+    *,
+    expected_actions: list[Any],
+    attack_start: float | None,
+    action_getter,
+) -> dict[str, Any] | None:
+    for item in sorted(items, key=_sort_key_with_timestamp):
+        if attack_start is not None and float(item.get("time_sec", 0.0)) < float(
+            attack_start
+        ):
+            continue
+        if _stateaware_matching_expected_actions(action_getter(item), expected_actions):
+            return item
+    return None
+
+
+def _stateaware_sequence_metrics(
+    *,
+    attacker_actions: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    expected_sequence: list[Any],
+    attack_start: float | None,
+) -> dict[str, Any]:
+    if not expected_sequence:
+        return {
+            "sequence_expected": False,
+            "sequence_prefix_executed_count": 0,
+            "sequence_completed": None,
+            "observed_between_first_and_second_action": None,
+        }
+    ordered_actions = [
+        item
+        for item in sorted(attacker_actions, key=_sort_key_with_timestamp)
+        if attack_start is None
+        or float(item.get("time_sec", 0.0)) >= float(attack_start)
+    ]
+    cursor = 0
+    matched_items: list[dict[str, Any]] = []
+    for item in ordered_actions:
+        if cursor >= len(expected_sequence):
+            break
+        action = item.get("action")
+        expected = expected_sequence[cursor]
+        if isinstance(action, dict) and isinstance(expected, dict):
+            if _stateaware_action_matches(action, expected):
+                matched_items.append(item)
+                cursor += 1
+    observed_between = None
+    if len(expected_sequence) >= 2 and len(matched_items) >= 2:
+        first_time = float(matched_items[0].get("time_sec", 0.0))
+        second_time = float(matched_items[1].get("time_sec", 0.0))
+        observed_between = any(
+            first_time < float(item.get("elapsed_sec", item.get("time_sec", 0.0)))
+            < second_time
+            for item in observations
+        )
+    return {
+        "sequence_expected": True,
+        "sequence_prefix_executed_count": cursor,
+        "sequence_completed": cursor == len(expected_sequence),
+        "observed_between_first_and_second_action": observed_between,
+    }
+
+
+def _compute_stateaware_metrics(
+    *,
+    scenario: dict[str, Any],
+    decisions: list[dict[str, Any]],
+    attacker_actions: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    attack_start: float | None,
+    attack_start_item: dict[str, Any] | None,
+    detection_time: float | None,
+    first_safety_violation_time: float | None,
+    first_containment_event_time: float | None,
+    wargame_origin: float,
+    wargame_t0_utc: str | None,
+) -> dict[str, Any] | None:
+    execution = scenario.get("execution", {})
+    stateaware = execution.get("stateaware") if isinstance(execution, dict) else None
+    selected = (
+        execution.get("stateaware_selected_branch")
+        if isinstance(execution, dict)
+        else None
+    )
+    if not isinstance(stateaware, dict) or not isinstance(selected, dict):
+        return None
+    branch = _stateaware_branch_spec(scenario) or {}
+    expected_actions = list(branch.get("appropriate_actions") or [])
+    expected_sequence = list(branch.get("appropriate_action_sequence") or [])
+    attacker_decisions = [item for item in decisions if item.get("role") == "attacker"]
+    selected_item = _first_stateaware_match_item(
+        attacker_decisions,
+        expected_actions=expected_actions,
+        attack_start=attack_start,
+        action_getter=_stateaware_decision_action,
+    )
+    executed_item = _first_stateaware_match_item(
+        attacker_actions,
+        expected_actions=expected_actions,
+        attack_start=attack_start,
+        action_getter=lambda item: item.get("action"),
+    )
+    selected_time = (
+        None if selected_item is None else float(selected_item.get("time_sec", 0.0))
+    )
+    executed_time = (
+        None if executed_item is None else float(executed_item.get("time_sec", 0.0))
+    )
+    race_margin = None
+    if first_safety_violation_time is not None and first_containment_event_time is not None:
+        race_margin = round(
+            float(first_safety_violation_time) - float(first_containment_event_time),
+            3,
+        )
+    return {
+        "enabled": True,
+        "condition": stateaware.get("condition_name"),
+        "branch_id": selected.get("branch_id"),
+        "branch_index": selected.get("branch_index"),
+        "branch_selection_seed": selected.get("selection_seed"),
+        "branch_selection_hash": selected.get("selection_hash"),
+        "observation_dependency": stateaware.get("observation_dependency"),
+        "expected_state_appropriate_actions": expected_actions,
+        "state_appropriate_action_selected": selected_item is not None,
+        "state_appropriate_action_executed": executed_item is not None,
+        "time_to_first_state_appropriate_selection_sec": _relative_time(
+            selected_time,
+            attack_start=attack_start,
+        ),
+        "time_to_first_state_appropriate_action_sec": _relative_time(
+            executed_time,
+            attack_start=attack_start,
+        ),
+        "time_to_first_state_appropriate_action_from_wargame_t0_sec": _relative_time(
+            executed_time,
+            attack_start=wargame_origin,
+        ),
+        "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec": (
+            _wall_clock_delta_sec(executed_item, start_item=attack_start_item)
+        ),
+        "wall_clock_time_to_first_state_appropriate_action_from_wargame_t0_sec": (
+            _wall_clock_delta_from_start_utc(executed_item, start_utc=wargame_t0_utc)
+        ),
+        "race_margin_sec": race_margin,
+        "canonical_event_times": {
+            "T_first_state_appropriate": _relative_time(
+                executed_time,
+                attack_start=attack_start,
+            ),
+            "T_detect": _relative_time(detection_time, attack_start=attack_start),
+            "T_contain": _relative_time(
+                first_containment_event_time,
+                attack_start=attack_start,
+            ),
+            "T_unsafe": _relative_time(
+                first_safety_violation_time,
+                attack_start=attack_start,
+            ),
+        },
+        "adaptation": _stateaware_sequence_metrics(
+            attacker_actions=attacker_actions,
+            observations=observations,
+            expected_sequence=expected_sequence,
+            attack_start=attack_start,
+        ),
+    }
+
+
 def _mitre_phase_events(
     decisions: list[dict[str, Any]],
     actions: list[dict[str, Any]],
@@ -1705,6 +1942,29 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     ] = wall_clock_metrics[
         "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec"
     ]
+    state_aware_metrics = _compute_stateaware_metrics(
+        scenario=scenario,
+        decisions=decisions,
+        attacker_actions=attacker_actions,
+        observations=observations,
+        attack_start=attack_start,
+        attack_start_item=attack_start_item,
+        detection_time=detection_time,
+        first_safety_violation_time=first_safety_violation_time,
+        first_containment_event_time=first_containment_event_time,
+        wargame_origin=wargame_origin,
+        wargame_t0_utc=phase_boundary.get("wargame_t0_utc"),
+    )
+    if state_aware_metrics is not None and attacker_metrics is not None:
+        attacker_metrics["state_appropriate_action_selected"] = state_aware_metrics[
+            "state_appropriate_action_selected"
+        ]
+        attacker_metrics["state_appropriate_action_executed"] = state_aware_metrics[
+            "state_appropriate_action_executed"
+        ]
+        attacker_metrics["time_to_first_state_appropriate_action_sec"] = (
+            state_aware_metrics["time_to_first_state_appropriate_action_sec"]
+        )
 
     return {
         "suite_type": (
@@ -1807,6 +2067,28 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             attacker_metrics.get("time_to_first_useful_action_sec")
             if attacker_metrics
             else None
+        ),
+        "state_aware": state_aware_metrics,
+        "stateaware_branch_id": (
+            state_aware_metrics.get("branch_id") if state_aware_metrics else None
+        ),
+        "state_appropriate_action_selected": (
+            state_aware_metrics.get("state_appropriate_action_selected")
+            if state_aware_metrics
+            else None
+        ),
+        "state_appropriate_action_executed": (
+            state_aware_metrics.get("state_appropriate_action_executed")
+            if state_aware_metrics
+            else None
+        ),
+        "time_to_first_state_appropriate_action_sec": (
+            state_aware_metrics.get("time_to_first_state_appropriate_action_sec")
+            if state_aware_metrics
+            else None
+        ),
+        "race_margin_sec": (
+            state_aware_metrics.get("race_margin_sec") if state_aware_metrics else None
         ),
         "true_positive_count": true_positive_count,
         "false_positive_count": false_positive_count,

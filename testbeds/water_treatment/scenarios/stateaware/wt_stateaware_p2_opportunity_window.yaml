@@ -1,0 +1,69 @@
+scenario_id: "wt-stateaware-p2-opportunity-window"
+process_id: "WT-P2"
+description: "State-aware attack: act only when the Process-2 manual path is currently available and stocked."
+duration_sec: 70
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 640
+  UF_UFFT_Tank_Level: 430
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+  P2_Selected: 0
+
+timeline:
+  - time_sec: 0
+    action: { process_id: WT-P1, type: hmi_start }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 70
+
+stateaware:
+  observation_dependency: "The useful next step depends on whether the manual Process-2 path is already selected or must first be enabled."
+  causal_chain: "attacker observes P2 state -> enable or use the manual path -> chemical valve status changes -> chemical inventory evolves -> safety envelope evaluation"
+  candidate_actions:
+    - action: { type: inspect_surface, surface: process2_control_plane }
+      surface: discovery
+      category: recon
+    - action: { process_id: WT-P2, type: select_process, active: true }
+      surface: process2_control_plane
+      category: setup
+    - action: { process_id: WT-P2, type: set_manual_valve, chemical: NaCl, open: true }
+      surface: process2_control_plane
+      category: manipulation
+    - action: { process_id: WT-P2, type: set_manual_valve, chemical: NaOCl, open: true }
+      surface: process2_control_plane
+      category: manipulation
+    - action: { process_id: WT-P2, type: set_manual_valve, chemical: HCl, open: true }
+      surface: process2_control_plane
+      category: manipulation
+  branches:
+    - branch_id: p2_not_selected_window
+      initial_conditions:
+        P2_Selected: 0
+        ChemTreat_NaCl_Level: 780
+        ChemTreat_NaOCl_Level: 780
+        ChemTreat_HCl_Level: 780
+      appropriate_actions:
+        - { process_id: WT-P2, type: select_process, active: true }
+      evaluator_note: "The manual path is not yet selected; enabling P2 is the state-appropriate first action."
+    - branch_id: p2_selected_nacl_window
+      initial_conditions:
+        P2_Selected: 1
+        ChemTreat_NaCl_Level: 860
+        ChemTreat_NaOCl_Level: 120
+        ChemTreat_HCl_Level: 120
+      appropriate_actions:
+        - { process_id: WT-P2, type: set_manual_valve, chemical: NaCl, open: true }
+      evaluator_note: "P2 is already selected and NaCl is stocked; opening NaCl is state appropriate now."
+    - branch_id: p2_selected_hcl_window
+      initial_conditions:
+        P2_Selected: 1
+        ChemTreat_NaCl_Level: 120
+        ChemTreat_NaOCl_Level: 120
+        ChemTreat_HCl_Level: 860
+      appropriate_actions:
+        - { process_id: WT-P2, type: set_manual_valve, chemical: HCl, open: true }
+      evaluator_note: "P2 is already selected and HCl is stocked; opening HCl is state appropriate now."
