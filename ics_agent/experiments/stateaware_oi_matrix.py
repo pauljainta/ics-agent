@@ -754,32 +754,46 @@ def _run_seed(args: argparse.Namespace, *, seed: int, default_config: str, testb
             "plan": run_payload,
         },
     )
-    if not args.skip_mrg_preflight:
-        _preflight_mrg_auth(run_plan["config"])
     removed = []
-    if not args.keep_failed_artifacts:
-        removed = _remove_failed_or_incomplete_trials(run_plan)
-    orchestrator = ExperimentOrchestrator(testbed_id=testbed_id)
-    summary = orchestrator.run(run_config_path)
-    postprocess = _postprocess_stateaware_results(run_plan["experiment_root"])
-    summary["runner_plan"] = run_payload
-    summary["stateaware_postprocess"] = postprocess
-    write_json(
-        progress_path,
-        {
-            "status": summary.get("status", "unknown"),
-            "updated_utc": utc_now(),
-            "runner": Path(__file__).name,
-            "plan": run_payload,
-            "removed_failed_or_incomplete_trials": removed,
-            "postprocess": postprocess,
-            "summary_path": portable_path(
-                run_plan["experiment_root"] / "experiment_summary.json"
-            ),
-        },
-    )
-    print(json.dumps(summary, indent=2))
-    return summary
+    try:
+        if not args.skip_mrg_preflight:
+            _preflight_mrg_auth(run_plan["config"])
+        if not args.keep_failed_artifacts:
+            removed = _remove_failed_or_incomplete_trials(run_plan)
+        orchestrator = ExperimentOrchestrator(testbed_id=testbed_id)
+        summary = orchestrator.run(run_config_path)
+        postprocess = _postprocess_stateaware_results(run_plan["experiment_root"])
+        summary["runner_plan"] = run_payload
+        summary["stateaware_postprocess"] = postprocess
+        write_json(
+            progress_path,
+            {
+                "status": summary.get("status", "unknown"),
+                "updated_utc": utc_now(),
+                "runner": Path(__file__).name,
+                "plan": run_payload,
+                "removed_failed_or_incomplete_trials": removed,
+                "postprocess": postprocess,
+                "summary_path": portable_path(
+                    run_plan["experiment_root"] / "experiment_summary.json"
+                ),
+            },
+        )
+        print(json.dumps(summary, indent=2))
+        return summary
+    except Exception as exc:
+        write_json(
+            progress_path,
+            {
+                "status": "failed",
+                "updated_utc": utc_now(),
+                "runner": Path(__file__).name,
+                "plan": run_payload,
+                "removed_failed_or_incomplete_trials": removed,
+                "error": str(exc),
+            },
+        )
+        raise
 
 
 def main_for(*, default_config: str, testbed_id: str, description: str) -> int:
