@@ -97,6 +97,18 @@ WATER_DISTRIBUTION_INITIAL_STATE_FIELDS = (
     "RWS_Tank_Level",
 )
 
+WATER_TREATMENT_INITIAL_LEVEL_FIELDS = (
+    "RW_Tank_Level",
+    "UF_UFFT_Tank_Level",
+    "ChemTreat_NaCl_Level",
+    "ChemTreat_NaOCl_Level",
+    "ChemTreat_HCl_Level",
+)
+
+WATER_TREATMENT_INITIAL_CONTROL_FIELDS = {
+    "P2_Selected",
+}
+
 
 @contextmanager
 def _temporary_testbed_backend_mode(requested_backend: str):
@@ -698,20 +710,57 @@ class _SphereOpenPLCBackend:
             # replacement services on the tunneled ports, which collides with the
             # active forwards and breaks readiness. For this remote path, reseed the
             # simulator levels directly over Modbus instead.
+            level_conditions, control_conditions = self._split_treatment_reset_conditions(
+                conditions
+            )
             reset_snapshot = testbed.set_levels(
-                conditions,
+                level_conditions,
                 wait_sec=float(self.config.get("soft_reset_level_wait_sec", 1.0)),
             )
         else:
+            control_conditions = {}
             reset_snapshot = testbed.reset(
                 conditions,
                 wait_sec=float(self.config.get("soft_reset_level_wait_sec", 1.0)),
             )
         testbed._clear_external_controls()
+        if control_conditions:
+            self._apply_treatment_reset_controls(testbed, control_conditions)
+            try:
+                reset_snapshot = testbed.observe_flat()
+            except Exception:
+                reset_snapshot = testbed.observe()
         time.sleep(float(self.config.get("reset_wait_sec", 1.5)))
         if self.start_bridge:
             self._start_bridge()
         return reset_snapshot
+
+    @staticmethod
+    def _split_treatment_reset_conditions(
+        conditions: dict[str, int],
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        level_conditions: dict[str, int] = {}
+        control_conditions: dict[str, int] = {}
+        for key, value in dict(conditions or {}).items():
+            if key in WATER_TREATMENT_INITIAL_CONTROL_FIELDS:
+                control_conditions[key] = int(value)
+            else:
+                level_conditions[key] = int(value)
+        return level_conditions, control_conditions
+
+    @staticmethod
+    def _apply_treatment_reset_controls(
+        testbed: Any,
+        control_conditions: dict[str, int],
+    ) -> None:
+        if "P2_Selected" in control_conditions:
+            testbed.apply_action(
+                {
+                    "type": "select_process",
+                    "process_id": "WT-P2",
+                    "active": bool(int(control_conditions["P2_Selected"])),
+                }
+            )
 
     def _should_use_remote_level_reseed(self, testbed: Any) -> bool:
         if self.testbed_id == "water_distribution":

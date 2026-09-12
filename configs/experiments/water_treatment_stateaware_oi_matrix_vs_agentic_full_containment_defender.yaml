@@ -46,6 +46,7 @@ frozen_defender_override: &frozen_defender_override
     - noop
   llm:
     prompt_file: testbeds/water_treatment/prompts/defender.md
+    compact_prompt_json: true
   note_cooldown_sec: 4.0
   reasoning_cooldown_sec: 2.0
   reasoning_refresh_sec: 4.0
@@ -57,12 +58,15 @@ frozen_observer_override: &frozen_observer_override
     notes: Frozen treatment observer for state-aware O/I ablation.
   llm:
     prompt_file: testbeds/water_treatment/prompts/observer.md
+    compact_prompt_json: true
 
 conditions:
   - name: stateaware_full_semantics_normO_normI
     profiles: *condition_profiles
     profile_overrides:
       attacker:
+        llm:
+          compact_prompt_json: true
         target_semantics:
           variant: full
           interface_variant: normalized_interface
@@ -77,6 +81,8 @@ conditions:
     profiles: *condition_profiles
     profile_overrides:
       attacker:
+        llm:
+          compact_prompt_json: true
         target_semantics:
           variant: full
           interface_variant: grounded_interface
@@ -91,6 +97,8 @@ conditions:
     profiles: *condition_profiles
     profile_overrides:
       attacker:
+        llm:
+          compact_prompt_json: true
         target_semantics:
           variant: full
           interface_variant: grounded_interface

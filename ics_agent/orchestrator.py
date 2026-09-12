@@ -91,6 +91,43 @@ class ExperimentOrchestrator:
         )
         return "mrg" in error_text and any(marker in error_text for marker in auth_markers)
 
+    @staticmethod
+    def _existing_run_summary(
+        *,
+        run_dir: Path,
+        run_id: str,
+        scenario: ScenarioDefinition,
+    ) -> dict[str, Any]:
+        summary_path = run_dir / "summary.json"
+        metrics_path = run_dir / "metrics.json"
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text())
+            if isinstance(summary, dict):
+                summary.setdefault("run_id", run_id)
+                summary.setdefault("scenario", scenario.catalog_id)
+                summary.setdefault("scenario_id", scenario.scenario_id)
+                summary.setdefault("suite", scenario.suite)
+                summary.setdefault("run_dir", portable_path(run_dir))
+                if "metrics" not in summary and metrics_path.exists():
+                    metrics = json.loads(metrics_path.read_text())
+                    if isinstance(metrics, dict):
+                        summary["metrics"] = metrics
+                return summary
+
+        skipped = {
+            "run_id": run_id,
+            "scenario": scenario.catalog_id,
+            "scenario_id": scenario.scenario_id,
+            "suite": scenario.suite,
+            "status": "skipped_existing",
+            "run_dir": portable_path(run_dir),
+        }
+        if metrics_path.exists():
+            metrics = json.loads(metrics_path.read_text())
+            if isinstance(metrics, dict):
+                skipped["metrics"] = metrics
+        return skipped
+
     @classmethod
     def _load_profile_registry(cls, testbed_id: str) -> dict[str, Any]:
         profile_paths = profile_registry_paths(testbed_id)
@@ -772,12 +809,11 @@ class ExperimentOrchestrator:
                     )
                     if config.get("resume") and (run_dir / "metrics.json").exists():
                         condition_summary["runs"].append(
-                            {
-                                "run_id": run_id,
-                                "scenario": scenario.catalog_id,
-                                "status": "skipped_existing",
-                                "run_dir": portable_path(run_dir),
-                            }
+                            self._existing_run_summary(
+                                run_dir=run_dir,
+                                run_id=run_id,
+                                scenario=scenario,
+                            )
                         )
                         continue
                     bundle = self._run_single(

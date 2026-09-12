@@ -494,6 +494,7 @@ class _FakeTreatmentTestbed:
         self.clear_calls = 0
         self.reset_calls: list[dict[str, object]] = []
         self.set_levels_calls: list[dict[str, object]] = []
+        self.apply_action_calls: list[dict[str, object]] = []
 
     def _backend_mode(self) -> str:
         return "native"
@@ -517,6 +518,15 @@ class _FakeTreatmentTestbed:
                 "wait_sec": wait_sec,
             }
         )
+        return dict(self.reset_snapshot)
+
+    def apply_action(self, action: dict[str, object]) -> dict[str, object]:
+        self.apply_action_calls.append(dict(action))
+        if str(action.get("type")) == "select_process":
+            self.reset_snapshot["P2_Selected"] = int(bool(action.get("active")))
+        return dict(self.reset_snapshot)
+
+    def observe_flat(self) -> dict[str, object]:
         return dict(self.reset_snapshot)
 
 
@@ -641,6 +651,43 @@ def test_treatment_backend_soft_reset_uses_remote_level_reseed_when_native_mode(
     assert fake_testbed.set_levels_calls[0]["wait_sec"] == 0.25
     assert result["post_reset_observation"]["STATE_NAME"] == "RUNNING"
     assert "initial_state_validation" not in result
+
+
+def test_treatment_backend_soft_reset_applies_p2_initial_control_after_level_reseed() -> None:
+    reset_snapshot = {
+        "STATE_NAME": "RUNNING",
+        "RW_Tank_Level": 600.0,
+        "UF_UFFT_Tank_Level": 400.0,
+        "ChemTreat_NaCl_Level": 800.0,
+        "ChemTreat_NaOCl_Level": 800.0,
+        "ChemTreat_HCl_Level": 800.0,
+        "P2_Selected": 0,
+    }
+    fake_testbed = _FakeTreatmentTestbed(reset_snapshot)
+    fake_direct_env = _FakeDistributionDirectEnv(
+        testbed=fake_testbed,
+        observations=[reset_snapshot],
+    )
+    backend = _treatment_backend(fake_direct_env)
+
+    result = backend.reset(
+        {
+            "RW_Tank_Level": 620,
+            "UF_UFFT_Tank_Level": 410,
+            "P2_Selected": 1,
+        }
+    )
+
+    assert len(fake_testbed.set_levels_calls) == 1
+    assert "P2_Selected" not in fake_testbed.set_levels_calls[0]["initial_conditions"]
+    assert fake_testbed.apply_action_calls == [
+        {
+            "type": "select_process",
+            "process_id": "WT-P2",
+            "active": True,
+        }
+    ]
+    assert result["post_reset_observation"]["P2_Selected"] == 1
 
 
 def test_distribution_backend_reset_fails_loudly_on_initial_state_mismatch() -> None:

@@ -185,6 +185,7 @@ class CachedQwenDecisionEngine:
         self.max_new_tokens = int(llm_cfg.get("max_new_tokens", 192))
         self.temperature = float(llm_cfg.get("temperature", 0.0))
         self.quantization = str(llm_cfg.get("quantization", "bf16")).strip().lower()
+        self.compact_prompt_json = bool(llm_cfg.get("compact_prompt_json", False))
         self.require_cuda = bool(llm_cfg.get("require_cuda", True))
         self.knowledge_files = list(profile.get("knowledge_files", []))
         self.scaffold_mode = str(
@@ -454,6 +455,8 @@ class CachedQwenDecisionEngine:
             and self.react_context_mode == "compact"
         ):
             payload = self._compact_react_payload(payload)
+            context_text = json.dumps(payload, separators=(",", ":"), default=str)
+        elif self.compact_prompt_json:
             context_text = json.dumps(payload, separators=(",", ":"), default=str)
         else:
             context_text = json.dumps(payload, indent=2, default=str)
