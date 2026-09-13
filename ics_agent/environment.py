@@ -2678,7 +2678,12 @@ class _SphereOpenPLCBackend:
     def _fetch_remote_file(self, target: str, remote_path: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if self._prefer_mrg_xdc_transport and self._can_use_mrg_xdc_transport(target):
-            self._mrg_fetch_remote_file(target, remote_path, destination)
+            try:
+                self._mrg_fetch_remote_file(target, remote_path, destination)
+            except EnvironmentError as exc:
+                destination.write_text(
+                    f"log fetch failed from {target}:{remote_path}\n{exc}\n"
+                )
             return
 
         try:

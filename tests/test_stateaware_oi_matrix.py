@@ -311,6 +311,69 @@ def test_stateaware_process_defender_filters_attacker_side_evidence() -> None:
     assert "process2_manual_path_active" not in built["risk_flags"]
 
 
+def test_stateaware_process_defender_helpers_do_not_leak_or_crash() -> None:
+    condition = next(iter(_condition_map().values()))
+    defender_profile = condition["effective_profiles"]["defender"]
+    scenario = ScenarioCatalog(testbed_id="water_treatment").get(
+        "stateaware/wt-stateaware-rw-overfill-window"
+    )
+    runtime_scenario = ExperimentOrchestrator(
+        testbed_id="water_treatment"
+    )._scenario_for_run(scenario, load_config(CONFIG))
+    agent = AgenticRoleAgent("process_defender_helper_audit", defender_profile)
+    agent.reset(runtime_scenario)
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "elapsed_sec": 1.0,
+        "sample_phase": "online",
+        "RW_Tank_Level": 1185,
+        "UF_UFFT_Tank_Level": 430,
+        "ChemTreat_NaCl_Level": 800,
+        "ChemTreat_NaOCl_Level": 800,
+        "ChemTreat_HCl_Level": 800,
+        "P2_Selected": 0,
+        "RW_Pump_Sts": 1,
+        "Alarm_RW_Tank_HH": 1,
+    }
+    telemetry_summary = {
+        "risk_flags": ["sensor_or_process_jump"],
+        "relationship_notes": ["abrupt_change:RW_Tank_Level"],
+        "active_alarms": ["Alarm_RW_Tank_HH"],
+    }
+    defender_reasoning = {
+        "trust_assessment": {"low_trust_signal_count": 1},
+        "control_logic_checks": {"checks": []},
+    }
+    recent_actions = [
+        {
+            "role": "attacker",
+            "time_sec": 1.0,
+            "action": {"type": "set_sensor", "name": "RW_Tank_Level", "value": 1185},
+        }
+    ]
+
+    surface = agent._attack_surface_assessment(
+        observation=observation,
+        telemetry_summary=telemetry_summary,
+        incident={"type": "telemetry_anomaly", "severity": 2},
+        defender_reasoning=defender_reasoning,
+        recent_actions=recent_actions,
+        recent_alerts=[],
+    )
+    recommendation = agent._incident_recommended_action(
+        incident_type="telemetry_anomaly",
+        severity=2,
+        observation=observation,
+        telemetry_summary=telemetry_summary,
+        defender_reasoning=defender_reasoning,
+        recent_actions=recent_actions,
+        recent_alerts=[],
+    )
+
+    assert surface["attack_surface"] != "sensor_write_path"
+    assert recommendation in {"block_sensor_write", "quarantine_signal_source"}
+
+
 def test_stateaware_runner_dry_run_validates_full_matrix() -> None:
     result = subprocess.run(
         [sys.executable, RUNNER, "--dry-run", "--seed", "101"],

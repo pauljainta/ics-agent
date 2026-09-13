@@ -469,6 +469,34 @@ def test_sphere_backend_stages_openplc_payloads_without_bridge_bytecode(tmp_path
     assert not any("modbus_bridge.cpython-310.pyc" in item for item in staged_destinations)
 
 
+def test_sphere_backend_missing_optional_remote_log_is_nonfatal(tmp_path: Path) -> None:
+    backend = environment_module._SphereOpenPLCBackend(
+        _sphere_backend_config("water_treatment")
+    )
+    destination = tmp_path / "remote_logs" / "controller_runtime.log"
+
+    def _can_use_mrg(self, target: str) -> bool:
+        return target == "controller"
+
+    def _missing_log(self, target: str, remote_path: str, destination: Path) -> None:
+        raise EnvironmentError("remote log is absent")
+
+    backend._prefer_mrg_xdc_transport = True
+    backend._can_use_mrg_xdc_transport = MethodType(_can_use_mrg, backend)
+    backend._mrg_fetch_remote_file = MethodType(_missing_log, backend)
+
+    backend._fetch_remote_file(
+        "controller",
+        "$HOME/runtime_state/controller.log",
+        destination,
+    )
+
+    assert destination.exists()
+    assert "log fetch failed from controller:$HOME/runtime_state/controller.log" in (
+        destination.read_text()
+    )
+
+
 class _FakeDistributionTestbed:
     def __init__(self, reset_snapshot: dict[str, object]) -> None:
         self.reset_snapshot = dict(reset_snapshot)

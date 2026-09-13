@@ -7911,6 +7911,7 @@ class AgenticRoleAgent(RoleAgent):
         observation: dict[str, Any],
         telemetry_summary: dict[str, Any],
         incident: dict[str, Any] | None,
+        defender_reasoning: dict[str, Any] | None = None,
         prior_mitigations: list[str] | None = None,
         containment_effective: bool | None = None,
         recent_actions: list[dict[str, Any]] | None = None,
@@ -9607,6 +9608,7 @@ class AgenticRoleAgent(RoleAgent):
                 "severity": severity,
                 "recommended_action": recommended_action,
             },
+            defender_reasoning=defender_reasoning,
             prior_mitigations=prior_mitigations,
             containment_effective=containment_effective,
             recent_actions=recent_actions,
@@ -9832,9 +9834,23 @@ class AgenticRoleAgent(RoleAgent):
             for item in control_logic_checks.get("checks", [])
             if item.get("status") == "failed"
         }
-        attack_activity = self._recent_attack_activity(
-            recent_actions=recent_actions,
-            recent_alerts=recent_alerts,
+        process_physics_only = self._uses_process_physics_defender_only()
+        attack_activity = (
+            {}
+            if process_physics_only
+            else self._recent_attack_activity(
+                recent_actions=recent_actions,
+                recent_alerts=recent_alerts,
+            )
+        )
+        trust_assessment = dict((defender_reasoning or {}).get("trust_assessment") or {})
+        sensor_integrity_suspect = process_physics_only and (
+            "sensor_or_process_jump" in telemetry_summary.get("risk_flags", [])
+            or any(
+                str(note).startswith("abrupt_change:")
+                for note in telemetry_summary.get("relationship_notes", [])
+            )
+            or int(trust_assessment.get("low_trust_signal_count", 0) or 0) >= 1
         )
         if self._uses_blue_team_prior_knowledge() and incident_type != "none":
             containment_effective = self._containment_effective(
@@ -9852,6 +9868,7 @@ class AgenticRoleAgent(RoleAgent):
                     "defender_action_count": defender_action_count,
                     **dict(prior_state or {}),
                 },
+                defender_reasoning=defender_reasoning,
                 prior_mitigations=list(prior_mitigations or []),
                 containment_effective=containment_effective,
                 recent_actions=recent_actions,
