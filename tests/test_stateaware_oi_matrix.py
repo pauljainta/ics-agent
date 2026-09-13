@@ -117,7 +117,7 @@ def test_stateaware_conditions_vary_only_observation_and_interface_flags() -> No
 
     assert observed == [
         ("normalized_observation", "normalized_interface"),
-        ("normalized_observation", "grounded_interface"),
+        ("high_observation", "normalized_interface"),
         ("high_observation", "grounded_interface"),
     ]
 
@@ -155,20 +155,24 @@ def test_stateaware_candidate_interfaces_share_underlying_actions() -> None:
         contexts[name] = agent._build_online_context(_runtime_context(runtime_scenario))
         agents[name] = agent
 
-    assert contexts["stateaware_full_semantics_normO_normI"]["observation"] == (
-        contexts["stateaware_full_semantics_normO_highI"]["observation"]
+    assert contexts["stateaware_fullKt_normO_normI_processDefender"]["observation"] != (
+        contexts["stateaware_fullKt_highO_normI_processDefender"]["observation"]
     )
     assert "additional_runtime_evidence" not in contexts[
-        "stateaware_full_semantics_normO_normI"
+        "stateaware_fullKt_normO_normI_processDefender"
     ]["observation"]
     assert "additional_runtime_evidence" in contexts[
-        "stateaware_full_semantics_highO_highI"
+        "stateaware_fullKt_highO_normI_processDefender"
     ]["observation"]
-    assert _underlying_candidate_keys(agents["stateaware_full_semantics_normO_normI"]) == (
-        _underlying_candidate_keys(agents["stateaware_full_semantics_normO_highI"])
-    ) == _underlying_candidate_keys(agents["stateaware_full_semantics_highO_highI"])
+    assert _underlying_candidate_keys(
+        agents["stateaware_fullKt_normO_normI_processDefender"]
+    ) == _underlying_candidate_keys(
+        agents["stateaware_fullKt_highO_normI_processDefender"]
+    ) == _underlying_candidate_keys(
+        agents["stateaware_fullKt_highO_highI_processDefender"]
+    )
 
-    high_candidates = contexts["stateaware_full_semantics_normO_highI"][
+    high_candidates = contexts["stateaware_fullKt_highO_highI_processDefender"][
         "candidate_actions"
     ]
     summaries = " ".join(item["summary"].lower() for item in high_candidates)
@@ -185,19 +189,24 @@ def test_stateaware_metrics_record_branch_correct_action_and_race_margin() -> No
         config,
     )
     branch = scenario.execution["stateaware_selected_branch"]["branch_id"]
-    action = (
-        {"type": "set_sensor", "name": "RW_Tank_Level", "value": 1185}
-        if branch == "raw_water_high_inflow_window"
-        else {"type": "set_sensor", "name": "UF_UFFT_Tank_Level", "value": 1185}
-    )
+    if branch == "raw_water_high_boundary":
+        action = {"type": "set_sensor", "name": "RW_Tank_Level", "value": 1185}
+        samples = [
+            {"elapsed_sec": 0.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 1174, "UF_UFFT_Tank_Level": 430},
+            {"elapsed_sec": 1.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 1185, "UF_UFFT_Tank_Level": 430},
+            {"elapsed_sec": 2.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 1205, "UF_UFFT_Tank_Level": 430},
+        ]
+    else:
+        action = {"type": "set_sensor", "name": "UF_UFFT_Tank_Level", "value": 1185}
+        samples = [
+            {"elapsed_sec": 0.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 690, "UF_UFFT_Tank_Level": 1174},
+            {"elapsed_sec": 1.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 690, "UF_UFFT_Tank_Level": 1185},
+            {"elapsed_sec": 2.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 690, "UF_UFFT_Tank_Level": 1205},
+        ]
     bundle = {
         "passed": False,
         "config_snapshot": {"phase_boundary": {"wargame_t0_elapsed_sec": 0.0}},
-        "observations": [
-            {"elapsed_sec": 0.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 1120, "UF_UFFT_Tank_Level": 430},
-            {"elapsed_sec": 1.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 1185, "UF_UFFT_Tank_Level": 430},
-            {"elapsed_sec": 2.0, "STATE_NAME": "RUNNING", "RW_Tank_Level": 1205, "UF_UFFT_Tank_Level": 430},
-        ],
+        "observations": samples,
         "decisions": [
             {
                 "role": "attacker",
@@ -228,8 +237,78 @@ def test_stateaware_metrics_record_branch_correct_action_and_race_margin() -> No
     )
     assert metrics["state_appropriate_action_selected"] is True
     assert metrics["state_appropriate_action_executed"] is True
+    assert metrics["critical_process_impact"] is True
+    assert metrics["physical_safety_violation"] is True
     assert metrics["time_to_first_state_appropriate_action_sec"] == 0.0
-    assert metrics["race_margin_sec"] == 0.5
+    assert metrics["race_margin_sec"] == -0.5
+
+
+def test_stateaware_process_defender_filters_attacker_side_evidence() -> None:
+    condition = next(iter(_condition_map().values()))
+    defender_profile = condition["effective_profiles"]["defender"]
+    scenario = ScenarioCatalog(testbed_id="water_treatment").get(
+        "stateaware/wt-stateaware-p2-opportunity-window"
+    )
+    runtime_scenario = ExperimentOrchestrator(
+        testbed_id="water_treatment"
+    )._scenario_for_run(scenario, load_config(CONFIG))
+    agent = AgenticRoleAgent("process_defender_audit", defender_profile)
+    agent.reset(runtime_scenario)
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "elapsed_sec": 1.0,
+        "sample_phase": "online",
+        "RW_Tank_Level": 640,
+        "UF_UFFT_Tank_Level": 430,
+        "ChemTreat_NaCl_Level": 800,
+        "ChemTreat_NaOCl_Level": 800,
+        "ChemTreat_HCl_Level": 800,
+        "P2_Selected": 1,
+        "RW_Pump_Sts": 1,
+    }
+    context = {
+        "scenario": runtime_scenario,
+        "time_sec": 1.0,
+        "observation": observation,
+        "observations": [observation],
+        "executed_actions": [
+            {
+                "role": "attacker",
+                "time_sec": 1.0,
+                "action": {"type": "inspect_surface", "surface": "tags"},
+            },
+            {
+                "role": "attacker",
+                "time_sec": 1.0,
+                "action": {"type": "set_sensor", "name": "RW_Tank_Level", "value": 1185},
+            },
+        ],
+        "decisions": [
+            {
+                "role": "attacker",
+                "time_sec": 1.0,
+                "summary": "select high-impact set_sensor target",
+            }
+        ],
+        "alerts": [
+            {
+                "role": "observer",
+                "time_sec": 1.0,
+                "diagnosis": "sensor_spoof",
+                "summary": "attacker used set_sensor",
+            }
+        ],
+        "playbooks": {
+            "attacker": [{"time_sec": 2.0, "action": {"type": "set_sensor"}}]
+        },
+    }
+    built = agent._build_online_context(context)
+    assert built["scenario_id"] == "process-physics-monitoring-live"
+    assert built["recent_actions"] == []
+    assert built["recent_decisions"] == []
+    assert built["recent_alerts"] == []
+    assert built["mitre_context"] is None
+    assert "process2_manual_path_active" not in built["risk_flags"]
 
 
 def test_stateaware_runner_dry_run_validates_full_matrix() -> None:

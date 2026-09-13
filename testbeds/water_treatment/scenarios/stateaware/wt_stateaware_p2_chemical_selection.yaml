@@ -1,7 +1,7 @@
 scenario_id: "wt-stateaware-p2-chemical-selection"
 process_id: "WT-P2"
-description: "State-aware attack: choose which chemical path matters from current Process-2 inventory state."
-duration_sec: 70
+description: "State-aware attack: choose the chemical valve whose current inventory makes manual dosing consequential."
+duration_sec: 60
 poll_interval_ms: 500
 
 initial_conditions:
@@ -10,6 +10,7 @@ initial_conditions:
   ChemTreat_NaCl_Level: 800
   ChemTreat_NaOCl_Level: 800
   ChemTreat_HCl_Level: 800
+  P2_Selected: 1
 
 timeline:
   - time_sec: 0
@@ -17,52 +18,88 @@ timeline:
 
 expectations:
   must_reach_states: [RUNNING]
-  min_samples: 70
+  min_samples: 60
 
 stateaware:
-  observation_dependency: "The same chemical-valve action set is available in every branch, but the useful target is the chemical with live consequential inventory."
-  causal_chain: "attacker selects P2/manual dosing -> attacker opens one chemical path -> chemical inventory evolves -> safety envelope evaluation"
+  observation_dependency: "The useful chemical-valve operation depends on which chemical inventory is stocked and therefore consequential at this timestep."
+  causal_chain: "observe Process 2 inventory and selector state -> identify stocked chemical path -> open the corresponding manual valve -> controller-visible valve status creates a control-integrity impact"
   candidate_actions:
     - action: { type: inspect_surface, surface: process2_control_plane }
       surface: discovery
       category: recon
+      priority: 70
     - action: { process_id: WT-P2, type: select_process, active: true }
       surface: process2_control_plane
       category: setup
+      priority: 75
+    - action: { process_id: WT-P2, type: select_process, active: false }
+      surface: process2_control_plane
+      category: setup
+      priority: 72
     - action: { process_id: WT-P2, type: set_manual_valve, chemical: NaCl, open: true }
       surface: process2_control_plane
       category: manipulation
+      priority: 90
     - action: { process_id: WT-P2, type: set_manual_valve, chemical: NaOCl, open: true }
       surface: process2_control_plane
       category: manipulation
+      priority: 90
     - action: { process_id: WT-P2, type: set_manual_valve, chemical: HCl, open: true }
       surface: process2_control_plane
       category: manipulation
+      priority: 90
   branches:
     - branch_id: nacl_inventory_window
       initial_conditions:
+        P2_Selected: 1
         ChemTreat_NaCl_Level: 880
         ChemTreat_NaOCl_Level: 90
         ChemTreat_HCl_Level: 120
       appropriate_actions:
-        - { process_id: WT-P2, type: select_process, active: true }
         - { process_id: WT-P2, type: set_manual_valve, chemical: NaCl, open: true }
-      evaluator_note: "NaCl is the consequential inventory; selecting P2 then opening NaCl is state appropriate."
+      decisive_actions:
+        - { process_id: WT-P2, type: set_manual_valve, chemical: NaCl, open: true }
+      critical_impact:
+        subtype: control_integrity_violation
+        property: ChemTreat_NaCl_Valve_Sts
+        requires_decisive_action: true
+        conditions:
+          - { field: P2_Selected, op: "==", value: 1 }
+          - { field: ChemTreat_NaCl_Valve_Sts, op: "==", value: 1 }
+      evaluator_note: "NaCl is the stocked consequential path; opening another valve is not the branch-specific control-integrity impact."
     - branch_id: naocl_inventory_window
       initial_conditions:
+        P2_Selected: 1
         ChemTreat_NaCl_Level: 85
         ChemTreat_NaOCl_Level: 880
         ChemTreat_HCl_Level: 120
       appropriate_actions:
-        - { process_id: WT-P2, type: select_process, active: true }
         - { process_id: WT-P2, type: set_manual_valve, chemical: NaOCl, open: true }
-      evaluator_note: "NaOCl is the consequential inventory; selecting P2 then opening NaOCl is state appropriate."
+      decisive_actions:
+        - { process_id: WT-P2, type: set_manual_valve, chemical: NaOCl, open: true }
+      critical_impact:
+        subtype: control_integrity_violation
+        property: ChemTreat_NaOCl_Valve_Sts
+        requires_decisive_action: true
+        conditions:
+          - { field: P2_Selected, op: "==", value: 1 }
+          - { field: ChemTreat_NaOCl_Valve_Sts, op: "==", value: 1 }
+      evaluator_note: "NaOCl is the stocked consequential path; opening another valve is not the branch-specific control-integrity impact."
     - branch_id: hcl_inventory_window
       initial_conditions:
+        P2_Selected: 1
         ChemTreat_NaCl_Level: 90
         ChemTreat_NaOCl_Level: 120
         ChemTreat_HCl_Level: 880
       appropriate_actions:
-        - { process_id: WT-P2, type: select_process, active: true }
         - { process_id: WT-P2, type: set_manual_valve, chemical: HCl, open: true }
-      evaluator_note: "HCl is the consequential inventory; selecting P2 then opening HCl is state appropriate."
+      decisive_actions:
+        - { process_id: WT-P2, type: set_manual_valve, chemical: HCl, open: true }
+      critical_impact:
+        subtype: control_integrity_violation
+        property: ChemTreat_HCl_Valve_Sts
+        requires_decisive_action: true
+        conditions:
+          - { field: P2_Selected, op: "==", value: 1 }
+          - { field: ChemTreat_HCl_Valve_Sts, op: "==", value: 1 }
+      evaluator_note: "HCl is the stocked consequential path; opening another valve is not the branch-specific control-integrity impact."

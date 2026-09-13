@@ -1,6 +1,6 @@
 scenario_id: "wt-stateaware-controller-permissive"
 process_id: "WT-P1"
-description: "State-aware attack: choose a permissive or runtime manipulation based on the current controller state."
+description: "State-aware attack: choose a permissive, runtime, or availability operation based on controller-visible state."
 duration_sec: 52
 poll_interval_ms: 500
 
@@ -20,36 +20,76 @@ expectations:
   min_samples: 52
 
 stateaware:
-  observation_dependency: "The useful attack depends on whether the controller is in startup/permissive pressure or already running."
-  causal_chain: "attacker writes state-relevant level -> controller permissive or runtime branch reacts -> process state or alarm state shifts -> safety envelope evaluation"
+  observation_dependency: "The useful operation depends on whether the controller evidence points to source-low pressure, downstream-high pressure, or availability exposure."
+  causal_chain: "observe controller state and process levels -> choose the matching bounded operation -> controller-visible state or level changes -> critical impact is recorded"
   candidate_actions:
     - action: { type: inspect_surface, surface: tags }
       surface: discovery
       category: recon
+      priority: 70
     - action: { type: inspect_surface, surface: io_image }
       surface: discovery
       category: recon
-    - action: { type: set_sensor, name: RW_Tank_Level, value: 70 }
+      priority: 70
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 420 }
       surface: sensor_manipulation
       category: manipulation
+      priority: 90
     - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
       surface: sensor_manipulation
       category: manipulation
+      priority: 90
+    - action: { type: hmi_stop, process_id: WT-P1 }
+      surface: hmi_command_path
+      category: availability
+      priority: 90
     - action: { type: hmi_estop, process_id: WT-P1 }
       surface: hmi_command_path
       category: availability
+      priority: 88
   branches:
-    - branch_id: startup_low_source_permissive
+    - branch_id: startup_source_low_pressure
       initial_conditions:
-        RW_Tank_Level: 145
-        UF_UFFT_Tank_Level: 450
+        RW_Tank_Level: 454
+        UF_UFFT_Tank_Level: 520
       appropriate_actions:
-        - { type: set_sensor, name: RW_Tank_Level, value: 70 }
-      evaluator_note: "Startup is sensitive to raw-water low permissive pressure; lowering RW is the state-appropriate manipulation."
-    - branch_id: running_downstream_high_permissive
+        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      decisive_actions:
+        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: RW_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: RW_Tank_Level, op: "<=", value: 450 }
+      evaluator_note: "Source-low evidence makes the raw-water low write consequential; stopping the HMI is not the branch-specific physical impact."
+    - branch_id: running_downstream_high_pressure
       initial_conditions:
         RW_Tank_Level: 700
-        UF_UFFT_Tank_Level: 1115
+        UF_UFFT_Tank_Level: 1174
       appropriate_actions:
         - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
-      evaluator_note: "Runtime downstream high-band pressure is live; UF high manipulation is the state-appropriate action."
+      decisive_actions:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: UF_UFFT_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: UF_UFFT_Tank_Level, op: ">=", value: 1180 }
+      evaluator_note: "Downstream high evidence makes the UF high write consequential; the raw-water low write targets the wrong condition."
+    - branch_id: running_availability_exposure
+      initial_conditions:
+        RW_Tank_Level: 720
+        UF_UFFT_Tank_Level: 620
+      appropriate_actions:
+        - { type: hmi_stop, process_id: WT-P1 }
+      decisive_actions:
+        - { type: hmi_stop, process_id: WT-P1 }
+      critical_impact:
+        subtype: availability_violation
+        property: STATE_NAME
+        requires_decisive_action: true
+        conditions:
+          - { field: STATE_NAME, op: "in", value: [SHUTDOWN, IDLE] }
+      evaluator_note: "Levels are not near a physical bound; the consequential path is availability disruption through the HMI stop surface."

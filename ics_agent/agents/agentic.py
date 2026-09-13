@@ -1218,6 +1218,17 @@ class AgenticRoleAgent(RoleAgent):
             "tool_react",
         }
 
+    def _uses_process_physics_defender_only(self) -> bool:
+        if self.role != "defender":
+            return False
+        return bool(self.profile.get("process_physics_only")) or str(
+            self.profile.get("defender_observation_mode", "")
+        ).strip().lower() in {
+            "process_physics_only",
+            "process_only",
+            "physics_only",
+        }
+
     def _white_box_knowledge_ablation(self) -> str | None:
         if not self._is_white_box_attacker():
             return None
@@ -1949,6 +1960,7 @@ class AgenticRoleAgent(RoleAgent):
         black_box = self._is_black_box_attacker()
         semantic_ablation = self._is_target_semantic_ablation_attacker()
         opaque_attacker = self._uses_opaque_candidate_interface()
+        process_only_defender = self._uses_process_physics_defender_only()
         target_context_attacker = (
             gray_box or white_box or black_box or semantic_ablation
         )
@@ -2019,7 +2031,7 @@ class AgenticRoleAgent(RoleAgent):
         )
         planned_relationship_notes = (
             []
-            if target_context_attacker
+            if target_context_attacker or process_only_defender
             else self._planned_relationship_notes(context)
         )
         telemetry_summary = self._summarize_telemetry(
@@ -2208,6 +2220,8 @@ class AgenticRoleAgent(RoleAgent):
                 incident=internal_incident,
                 structured_memory=structured_memory,
             )
+            if process_only_defender:
+                mitre_context = None
             candidate_actions = self._candidate_actions(
                 history_context,
                 visible_remaining_playbook,
@@ -2251,6 +2265,20 @@ class AgenticRoleAgent(RoleAgent):
             process_id = None
             expected_outcomes = []
             safety_bounds = {}
+        elif process_only_defender:
+            scenario_id = "process-physics-monitoring-live"
+            process_id = scenario.execution.get("process_id")
+            intent = (
+                "Monitor the water-treatment process from controller-visible "
+                "telemetry, actuator status, alarms, command/status consistency, "
+                "and short-horizon physical trends."
+            )
+            role_goal = [
+                "Detect abnormal process behavior from process and controller evidence only.",
+                "Use estimated state, trust assessment, and control-logic checks before intervening.",
+                "Select containment or stabilization actions only when visible evidence supports them.",
+            ]
+            expected_outcomes = []
         role_constraints = [
             "Use recent telemetry and state to justify the decision.",
             "Choose only from candidate_actions or emit a note/alert with no live action.",
@@ -2282,6 +2310,14 @@ class AgenticRoleAgent(RoleAgent):
             role_constraints.append(
                 "Use estimated_state, trust_assessment, and control_logic_checks to reason about likely plant behavior rather than trusting every reported signal equally."
             )
+            if process_only_defender:
+                role_constraints.extend(
+                    [
+                        "Do not use attacker action history, attacker decision text, action labels, branch identifiers, evaluator notes, or authored attack objectives.",
+                        "Treat Process 2 selection as a process state, not as standalone evidence of compromise unless corroborated by dosing, depletion, alarms, or command/status inconsistency.",
+                        "Containment may cut off future attacker-facing paths, but it must be justified by process/controller evidence visible at this timestep.",
+                    ]
+                )
         elif structured_prior_knowledge is not None:
             role_constraints.append(
                 "Use structured_prior_knowledge to connect plant semantics, safety thresholds, and mitigation doctrine to the current evidence."
@@ -2363,6 +2399,30 @@ class AgenticRoleAgent(RoleAgent):
         self,
         context: dict[str, Any],
     ) -> dict[str, Any]:
+        if self._uses_process_physics_defender_only():
+            sanitized = dict(context)
+            sanitized["executed_actions"] = [
+                item
+                for item in context.get("executed_actions", []) or []
+                if isinstance(item, dict)
+                and str(item.get("role", "")).strip() not in {"attacker", "planner"}
+            ]
+            sanitized["decisions"] = [
+                item
+                for item in context.get("decisions", []) or []
+                if isinstance(item, dict)
+                and str(item.get("role", "")).strip() == "defender"
+            ]
+            sanitized["alerts"] = [
+                item
+                for item in context.get("alerts", []) or []
+                if isinstance(item, dict)
+                and str(item.get("role", "")).strip() == "defender"
+            ]
+            sanitized["playbooks"] = {}
+            sanitized["planned_events"] = []
+            sanitized["process_physics_only_defender_history"] = True
+            return sanitized
         if not self._uses_water_distribution_defender_recon_filter():
             return context
         sanitized = dict(context)
@@ -7857,9 +7917,23 @@ class AgenticRoleAgent(RoleAgent):
         recent_alerts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         incident_type = str((incident or {}).get("type", "none"))
-        attack_activity = self._recent_attack_activity(
-            recent_actions=recent_actions,
-            recent_alerts=recent_alerts,
+        process_physics_only = self._uses_process_physics_defender_only()
+        attack_activity = (
+            {}
+            if process_physics_only
+            else self._recent_attack_activity(
+                recent_actions=recent_actions,
+                recent_alerts=recent_alerts,
+            )
+        )
+        trust_assessment = dict((defender_reasoning or {}).get("trust_assessment") or {})
+        sensor_integrity_suspect = process_physics_only and (
+            "sensor_or_process_jump" in telemetry_summary.get("risk_flags", [])
+            or any(
+                str(note).startswith("abrupt_change:")
+                for note in telemetry_summary.get("relationship_notes", [])
+            )
+            or int(trust_assessment.get("low_trust_signal_count", 0) or 0) >= 1
         )
         matched_patterns = self._matched_blue_team_patterns(
             observation=observation,
@@ -9120,7 +9194,10 @@ class AgenticRoleAgent(RoleAgent):
                 touch("process2_manual_path", "command_status_mismatch", str(note), 0.3)
             elif str(note) == "process2_manual_dosing_active":
                 touch("process2_manual_path", "unexpected_manual_dosing", str(note), 0.08)
-            elif str(note) == "process2_selected":
+            elif (
+                str(note) == "process2_selected"
+                and not self._uses_process_physics_defender_only()
+            ):
                 touch("process2_manual_path", "process2_enabled", str(note), 0.05)
             elif str(note).startswith("abrupt_change:RW_Tank_Level"):
                 touch("RW_Tank_Level", "abrupt_signal_change", str(note), 0.35)
@@ -9643,6 +9720,7 @@ class AgenticRoleAgent(RoleAgent):
         diagnosis_set = set(diagnoses)
         planned_nominal_process2 = "planned_process2_operation" in relationship_notes
         planned_nominal_refill = "planned_refill_response" in relationship_notes
+        process_physics_only = self._uses_process_physics_defender_only()
         if "sensor_spoof" in diagnosis_set:
             return "telemetry_anomaly"
         if (
@@ -9652,7 +9730,10 @@ class AgenticRoleAgent(RoleAgent):
                 or "process2_manual_path_active" in risk_flags
                 or "unauthorized_manual_dosing_possible" in risk_flags
                 or any(flag.endswith("_depleting") for flag in risk_flags)
-                or "process2_selected" in relationship_notes
+                or (
+                    "process2_selected" in relationship_notes
+                    and not process_physics_only
+                )
                 or "process2_manual_dosing_active" in relationship_notes
             )
         ):
@@ -9703,7 +9784,10 @@ class AgenticRoleAgent(RoleAgent):
                 return 4 if sum(flag.endswith("_depleting") for flag in risk_flags) >= 2 else 3
             if "process2_manual_dosing_active" in relationship_notes:
                 return 3
-            if "process2_selected" in relationship_notes:
+            if (
+                "process2_selected" in relationship_notes
+                and not self._uses_process_physics_defender_only()
+            ):
                 return 2
             return 1
         if incident_type == "raw_water_overflow":
@@ -9801,7 +9885,9 @@ class AgenticRoleAgent(RoleAgent):
                 "block_sensor_write",
                 "quarantine_signal_source",
             )
-            if targeted_action and attack_activity.get("sensor_write_active"):
+            if targeted_action and (
+                attack_activity.get("sensor_write_active") or sensor_integrity_suspect
+            ):
                 return targeted_action
             return "hmi_stop"
         if incident_type == "raw_water_low_protection":
@@ -9809,13 +9895,15 @@ class AgenticRoleAgent(RoleAgent):
                 "block_sensor_write",
                 "quarantine_signal_source",
             )
-            if targeted_action and attack_activity.get("sensor_write_active"):
+            if targeted_action and (
+                attack_activity.get("sensor_write_active") or sensor_integrity_suspect
+            ):
                 return targeted_action
             if "raw_water_low_should_recover_or_shutdown" in failed_checks:
                 return "hmi_stop"
             return "hmi_stop"
         if incident_type == "telemetry_anomaly":
-            if attack_activity.get("sensor_write_active"):
+            if attack_activity.get("sensor_write_active") or sensor_integrity_suspect:
                 targeted_action = self._allowed_preferred_action(
                     "block_sensor_write",
                     "quarantine_signal_source",
@@ -9863,12 +9951,22 @@ class AgenticRoleAgent(RoleAgent):
             for item in control_logic_checks.get("checks", [])
             if item.get("status") == "failed"
         }
-        attack_activity = self._recent_attack_activity(
-            recent_actions=recent_actions,
-            recent_alerts=recent_alerts,
+        process_physics_only = self._uses_process_physics_defender_only()
+        attack_activity = (
+            {}
+            if process_physics_only
+            else self._recent_attack_activity(
+                recent_actions=recent_actions,
+                recent_alerts=recent_alerts,
+            )
         )
         low_trust_signal_count = int(trust_assessment.get("low_trust_signal_count", 0) or 0)
         active_alarms = set(telemetry_summary.get("active_alarms", []))
+        process_only_signal_pressure = process_physics_only and (
+            low_trust_signal_count >= 1
+            or "sensor_or_process_jump" in telemetry_summary.get("risk_flags", [])
+            or bool(active_alarms)
+        )
 
         if control_logic_checks.get("immediate_attention_required"):
             return True
@@ -9881,6 +9979,14 @@ class AgenticRoleAgent(RoleAgent):
                 "stop_should_halt_pump_and_drive_shutdown",
             }
         ):
+            return True
+        if process_only_signal_pressure and incident_type in {
+            "telemetry_anomaly",
+            "raw_water_low_protection",
+            "raw_water_overflow",
+        }:
+            return True
+        if process_physics_only and incident_type == "process2_manual_dosing" and severity >= 3:
             return True
         if attack_activity.get("recent_attacker_action_count", 0) > 0 and (
             low_trust_signal_count >= 1 or bool(active_alarms) or severity >= 3
@@ -9928,7 +10034,7 @@ class AgenticRoleAgent(RoleAgent):
         tokens.update(telemetry_summary["risk_flags"])
         if observer_alert_count:
             tokens.add("observer_alerted")
-        if attacker_action_count:
+        if attacker_action_count and not self._uses_process_physics_defender_only():
             tokens.add("recent_attacker_action")
         return tokens
 
@@ -10116,7 +10222,12 @@ class AgenticRoleAgent(RoleAgent):
         if "raw_water_high_high_alarm_active" in relationship_notes:
             risks.append("overflow_risk")
         planned_nominal_process2 = "planned_process2_operation" in relationship_notes
-        if "process2_selected" in relationship_notes and not planned_nominal_process2:
+        process_physics_only = self._uses_process_physics_defender_only()
+        if (
+            "process2_selected" in relationship_notes
+            and not planned_nominal_process2
+            and not process_physics_only
+        ):
             risks.append("process2_manual_path_active")
         if (
             "process2_manual_dosing_active" in relationship_notes
@@ -10298,6 +10409,7 @@ class AgenticRoleAgent(RoleAgent):
             remaining_playbook=remaining_playbook,
             now=float(context["time_sec"]),
             playbook_anticipation_sec=self.playbook_anticipation_sec,
+            defender_process_only=self._uses_process_physics_defender_only(),
         )
         if self.role == "defender":
             candidates = self._rank_defender_candidates_with_reasoning(
@@ -13990,6 +14102,20 @@ class AgenticRoleAgent(RoleAgent):
 
         decision_metadata = dict(payload.get("metadata") or {})
         scaffold_mode = str(self.profile.get("scaffold_mode", "")).strip().lower()
+        if self.role == "defender" and self._uses_process_physics_defender_only():
+            decision_metadata.update(
+                {
+                    "defender_observation_contract": "process_physics_only",
+                    "defender_visible_observation_snapshot": context.get("observation"),
+                    "defender_visible_history_roles": sorted(
+                        {
+                            str(item.get("role", ""))
+                            for item in context.get("recent_actions", [])
+                            if isinstance(item, dict)
+                        }
+                    ),
+                }
+            )
         if scaffold_mode in {"pure_react", "react"}:
             decision_metadata.update(
                 {

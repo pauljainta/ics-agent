@@ -8,14 +8,15 @@ resume: true
 use_canonical_result_root: true
 reproducibility:
   seed: 101
-results_root: ../../../Artifact/Results/Water-treatment/state-aware-oi-matrix
+results_root: ../../../Artifact/Results/Water-treatment/state-aware-process-defender
 study_metadata:
   family: water_treatment_stateaware_oi_matrix
   timing_primary_origin: wargame_t0
   notes:
     - Six new state-aware scenarios are added without modifying the original 18-scenario treatment suite.
-    - All conditions use full target-system semantics and the same model, policy scaffold, action authority, validator, defender, timing, and safety evaluator.
+    - All conditions use full target-system semantics and the same model, policy scaffold, action authority, validator, process-aware defender, timing, and impact evaluator.
     - The only intended attacker-side capability changes are O_A and I_A as specified by stateaware_oi.
+    - The defender sees process and controller evidence only; attacker decisions, action labels, targets, branch identifiers, and evaluator notes are intentionally hidden.
 environment:
   backend: sphere_openplc
   testbed: water_treatment
@@ -33,7 +34,9 @@ frozen_defender_override: &frozen_defender_override
   behavior_model:
     id: optionb_mitre_staged
     policy: agentic
-    notes: Frozen active full-containment defender for state-aware O/I ablation.
+    notes: Frozen process/physics-aware full-containment defender for state-aware O/I ablation.
+  process_physics_only: true
+  defender_observation_mode: process_physics_only
   allowed_action_types:
     - hmi_stop
     - hmi_estop
@@ -61,7 +64,7 @@ frozen_observer_override: &frozen_observer_override
     compact_prompt_json: true
 
 conditions:
-  - name: stateaware_full_semantics_normO_normI
+  - name: stateaware_fullKt_normO_normI_processDefender
     profiles: *condition_profiles
     profile_overrides:
       attacker:
@@ -72,12 +75,12 @@ conditions:
           interface_variant: normalized_interface
         stateaware_oi:
           enabled: true
-          condition_name: stateaware_full_semantics_normO_normI
+          condition_name: stateaware_fullKt_normO_normI_processDefender
           observation_variant: normalized_observation
           interface_variant: normalized_interface
       defender: *frozen_defender_override
       observer: *frozen_observer_override
-  - name: stateaware_full_semantics_normO_highI
+  - name: stateaware_fullKt_highO_normI_processDefender
     profiles: *condition_profiles
     profile_overrides:
       attacker:
@@ -85,15 +88,15 @@ conditions:
           compact_prompt_json: true
         target_semantics:
           variant: full
-          interface_variant: grounded_interface
+          interface_variant: normalized_interface
         stateaware_oi:
           enabled: true
-          condition_name: stateaware_full_semantics_normO_highI
-          observation_variant: normalized_observation
-          interface_variant: grounded_interface
+          condition_name: stateaware_fullKt_highO_normI_processDefender
+          observation_variant: high_observation
+          interface_variant: normalized_interface
       defender: *frozen_defender_override
       observer: *frozen_observer_override
-  - name: stateaware_full_semantics_highO_highI
+  - name: stateaware_fullKt_highO_highI_processDefender
     profiles: *condition_profiles
     profile_overrides:
       attacker:
@@ -104,7 +107,7 @@ conditions:
           interface_variant: grounded_interface
         stateaware_oi:
           enabled: true
-          condition_name: stateaware_full_semantics_highO_highI
+          condition_name: stateaware_fullKt_highO_highI_processDefender
           observation_variant: high_observation
           interface_variant: grounded_interface
       defender: *frozen_defender_override

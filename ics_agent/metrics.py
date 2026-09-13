@@ -820,6 +820,157 @@ def _first_stateaware_match_item(
     return None
 
 
+def _stateaware_decisive_actions(branch: dict[str, Any]) -> list[Any]:
+    decisive = branch.get("decisive_actions")
+    if isinstance(decisive, list) and decisive:
+        return decisive
+    return list(branch.get("appropriate_actions") or [])
+
+
+def _stateaware_condition_matches(actual: Any, condition: dict[str, Any]) -> bool:
+    op = str(condition.get("op", "==")).strip()
+    expected = condition.get("value")
+    actual_number = _as_float(actual)
+    expected_number = _as_float(expected)
+    if op in {"==", "="}:
+        return _stateaware_value_matches(actual, expected)
+    if op in {"!=", "<>"}:
+        return not _stateaware_value_matches(actual, expected)
+    if op == "in":
+        values = expected if isinstance(expected, list) else [expected]
+        return any(_stateaware_value_matches(actual, value) for value in values)
+    if actual_number is None or expected_number is None:
+        return False
+    if op == ">":
+        return actual_number > expected_number
+    if op == ">=":
+        return actual_number >= expected_number
+    if op == "<":
+        return actual_number < expected_number
+    if op == "<=":
+        return actual_number <= expected_number
+    return False
+
+
+def _stateaware_observation_matches_conditions(
+    observation: dict[str, Any],
+    conditions: list[Any],
+) -> bool:
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            return False
+        field = str(condition.get("field", "")).strip()
+        if not field:
+            return False
+        if not _stateaware_condition_matches(observation.get(field), condition):
+            return False
+    return True
+
+
+def _stateaware_first_condition_item(
+    observations: list[dict[str, Any]],
+    *,
+    conditions: list[Any],
+    attack_start: float | None,
+    after_time: float | None,
+) -> dict[str, Any] | None:
+    if not conditions:
+        return None
+    candidates: list[dict[str, Any]] = []
+    for observation in observations:
+        sample_time = _as_float(observation.get("elapsed_sec"))
+        if sample_time is None:
+            sample_time = _as_float(observation.get("time_sec"))
+        if sample_time is None:
+            continue
+        if attack_start is not None and sample_time < float(attack_start):
+            continue
+        if after_time is not None and sample_time < float(after_time):
+            continue
+        if _stateaware_observation_matches_conditions(observation, conditions):
+            item = dict(observation)
+            item["time_sec"] = sample_time
+            candidates.append(item)
+    if not candidates:
+        return None
+    return min(candidates, key=_sort_key_with_timestamp)
+
+
+def _stateaware_critical_impact_metrics(
+    *,
+    branch: dict[str, Any],
+    observations: list[dict[str, Any]],
+    decisive_item: dict[str, Any] | None,
+    attack_start: float | None,
+    first_safety_violation_time: float | None,
+    sequence_completed: bool | None = None,
+) -> dict[str, Any]:
+    spec = branch.get("critical_impact")
+    decisive_time = (
+        None if decisive_item is None else _as_float(decisive_item.get("time_sec"))
+    )
+    result = {
+        "critical_process_impact": False,
+        "physical_safety_violation": first_safety_violation_time is not None,
+        "availability_violation": False,
+        "control_integrity_violation": False,
+        "impact_subtype": None,
+        "impact_property": None,
+        "time_to_critical_process_impact_sec": None,
+    }
+    if not isinstance(spec, dict):
+        if first_safety_violation_time is not None:
+            result.update(
+                {
+                    "critical_process_impact": True,
+                    "physical_safety_violation": True,
+                    "impact_subtype": "physical_safety_violation",
+                    "time_to_critical_process_impact_sec": _relative_time(
+                        first_safety_violation_time,
+                        attack_start=attack_start,
+                    ),
+                }
+            )
+        return result
+
+    if bool(spec.get("requires_sequence_completed")) and sequence_completed is not True:
+        return result
+    if bool(spec.get("requires_decisive_action", True)) and decisive_time is None:
+        return result
+
+    min_after = _as_float(spec.get("min_elapsed_after_decisive_sec"))
+    after_time = decisive_time
+    if after_time is not None and min_after is not None:
+        after_time += float(min_after)
+    condition_item = _stateaware_first_condition_item(
+        observations,
+        conditions=list(spec.get("conditions") or []),
+        attack_start=attack_start,
+        after_time=after_time,
+    )
+    if condition_item is None and not spec.get("conditions") and decisive_item is not None:
+        condition_item = decisive_item
+    if condition_item is None:
+        return result
+
+    impact_time = _as_float(condition_item.get("time_sec"))
+    subtype = str(spec.get("subtype") or "critical_process_impact")
+    result["critical_process_impact"] = True
+    result["impact_subtype"] = subtype
+    result["impact_property"] = spec.get("property")
+    result["time_to_critical_process_impact_sec"] = _relative_time(
+        impact_time,
+        attack_start=attack_start,
+    )
+    if subtype == "physical_safety_violation":
+        result["physical_safety_violation"] = True
+    elif subtype == "availability_violation":
+        result["availability_violation"] = True
+    elif subtype == "control_integrity_violation":
+        result["control_integrity_violation"] = True
+    return result
+
+
 def _stateaware_sequence_metrics(
     *,
     attacker_actions: list[dict[str, Any]],
@@ -893,6 +1044,7 @@ def _compute_stateaware_metrics(
         return None
     branch = _stateaware_branch_spec(scenario) or {}
     expected_actions = list(branch.get("appropriate_actions") or [])
+    decisive_actions = _stateaware_decisive_actions(branch)
     expected_sequence = list(branch.get("appropriate_action_sequence") or [])
     attacker_decisions = [item for item in decisions if item.get("role") == "attacker"]
     selected_item = _first_stateaware_match_item(
@@ -907,16 +1059,52 @@ def _compute_stateaware_metrics(
         attack_start=attack_start,
         action_getter=lambda item: item.get("action"),
     )
+    decisive_selected_item = _first_stateaware_match_item(
+        attacker_decisions,
+        expected_actions=decisive_actions,
+        attack_start=attack_start,
+        action_getter=_stateaware_decision_action,
+    )
+    decisive_executed_item = _first_stateaware_match_item(
+        attacker_actions,
+        expected_actions=decisive_actions,
+        attack_start=attack_start,
+        action_getter=lambda item: item.get("action"),
+    )
     selected_time = (
         None if selected_item is None else float(selected_item.get("time_sec", 0.0))
     )
     executed_time = (
         None if executed_item is None else float(executed_item.get("time_sec", 0.0))
     )
+    decisive_executed_time = (
+        None
+        if decisive_executed_item is None
+        else float(decisive_executed_item.get("time_sec", 0.0))
+    )
+    adaptation_metrics = _stateaware_sequence_metrics(
+        attacker_actions=attacker_actions,
+        observations=observations,
+        expected_sequence=expected_sequence,
+        attack_start=attack_start,
+    )
+    critical = _stateaware_critical_impact_metrics(
+        branch=branch,
+        observations=observations,
+        decisive_item=decisive_executed_item,
+        attack_start=attack_start,
+        first_safety_violation_time=first_safety_violation_time,
+        sequence_completed=adaptation_metrics.get("sequence_completed"),
+    )
+    critical_time = None
+    if critical.get("time_to_critical_process_impact_sec") is not None and attack_start is not None:
+        critical_time = float(attack_start) + float(
+            critical["time_to_critical_process_impact_sec"]
+        )
     race_margin = None
-    if first_safety_violation_time is not None and first_containment_event_time is not None:
+    if critical_time is not None and first_containment_event_time is not None:
         race_margin = round(
-            float(first_safety_violation_time) - float(first_containment_event_time),
+            float(critical_time) - float(first_containment_event_time),
             3,
         )
     return {
@@ -928,8 +1116,14 @@ def _compute_stateaware_metrics(
         "branch_selection_hash": selected.get("selection_hash"),
         "observation_dependency": stateaware.get("observation_dependency"),
         "expected_state_appropriate_actions": expected_actions,
+        "expected_decisive_actions": decisive_actions,
         "state_appropriate_action_selected": selected_item is not None,
         "state_appropriate_action_executed": executed_item is not None,
+        "decisive_action_selected": decisive_selected_item is not None,
+        "decisive_action_executed": decisive_executed_item is not None,
+        "decisive_action_caused_critical_impact": bool(
+            decisive_executed_item is not None and critical.get("critical_process_impact")
+        ),
         "time_to_first_state_appropriate_selection_sec": _relative_time(
             selected_time,
             attack_start=attack_start,
@@ -948,10 +1142,22 @@ def _compute_stateaware_metrics(
         "wall_clock_time_to_first_state_appropriate_action_from_wargame_t0_sec": (
             _wall_clock_delta_from_start_utc(executed_item, start_utc=wargame_t0_utc)
         ),
+        "time_to_first_decisive_action_sec": _relative_time(
+            decisive_executed_time,
+            attack_start=attack_start,
+        ),
+        "wall_clock_time_to_first_decisive_action_from_attack_start_sec": (
+            _wall_clock_delta_sec(decisive_executed_item, start_item=attack_start_item)
+        ),
+        **critical,
         "race_margin_sec": race_margin,
         "canonical_event_times": {
             "T_first_state_appropriate": _relative_time(
                 executed_time,
+                attack_start=attack_start,
+            ),
+            "T_first_decisive": _relative_time(
+                decisive_executed_time,
                 attack_start=attack_start,
             ),
             "T_detect": _relative_time(detection_time, attack_start=attack_start),
@@ -963,13 +1169,9 @@ def _compute_stateaware_metrics(
                 first_safety_violation_time,
                 attack_start=attack_start,
             ),
+            "T_critical": critical.get("time_to_critical_process_impact_sec"),
         },
-        "adaptation": _stateaware_sequence_metrics(
-            attacker_actions=attacker_actions,
-            observations=observations,
-            expected_sequence=expected_sequence,
-            attack_start=attack_start,
-        ),
+        "adaptation": adaptation_metrics,
     }
 
 
@@ -1965,6 +2167,18 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         attacker_metrics["time_to_first_state_appropriate_action_sec"] = (
             state_aware_metrics["time_to_first_state_appropriate_action_sec"]
         )
+        attacker_metrics["decisive_action_selected"] = state_aware_metrics[
+            "decisive_action_selected"
+        ]
+        attacker_metrics["decisive_action_executed"] = state_aware_metrics[
+            "decisive_action_executed"
+        ]
+        attacker_metrics["caused_critical_process_impact"] = state_aware_metrics[
+            "critical_process_impact"
+        ]
+        attacker_metrics["time_to_critical_process_impact_sec"] = state_aware_metrics[
+            "time_to_critical_process_impact_sec"
+        ]
 
     return {
         "suite_type": (
@@ -2082,8 +2296,48 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             if state_aware_metrics
             else None
         ),
+        "decisive_action_selected": (
+            state_aware_metrics.get("decisive_action_selected")
+            if state_aware_metrics
+            else None
+        ),
+        "decisive_action_executed": (
+            state_aware_metrics.get("decisive_action_executed")
+            if state_aware_metrics
+            else None
+        ),
         "time_to_first_state_appropriate_action_sec": (
             state_aware_metrics.get("time_to_first_state_appropriate_action_sec")
+            if state_aware_metrics
+            else None
+        ),
+        "time_to_first_decisive_action_sec": (
+            state_aware_metrics.get("time_to_first_decisive_action_sec")
+            if state_aware_metrics
+            else None
+        ),
+        "critical_process_impact": (
+            state_aware_metrics.get("critical_process_impact")
+            if state_aware_metrics
+            else None
+        ),
+        "physical_safety_violation": (
+            state_aware_metrics.get("physical_safety_violation")
+            if state_aware_metrics
+            else None
+        ),
+        "availability_violation": (
+            state_aware_metrics.get("availability_violation")
+            if state_aware_metrics
+            else None
+        ),
+        "control_integrity_violation": (
+            state_aware_metrics.get("control_integrity_violation")
+            if state_aware_metrics
+            else None
+        ),
+        "time_to_critical_process_impact_sec": (
+            state_aware_metrics.get("time_to_critical_process_impact_sec")
             if state_aware_metrics
             else None
         ),

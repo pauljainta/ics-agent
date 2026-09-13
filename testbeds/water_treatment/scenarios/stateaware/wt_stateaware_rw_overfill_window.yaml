@@ -1,6 +1,6 @@
 scenario_id: "wt-stateaware-rw-overfill-window"
 process_id: "WT-P1"
-description: "State-aware attack: choose the raw-water manipulation that is useful only for the current inflow/headroom state."
+description: "State-aware attack: choose the high-level write that is consequential for the currently limiting tank."
 duration_sec: 48
 poll_interval_ms: 500
 
@@ -17,39 +17,64 @@ timeline:
 
 expectations:
   must_reach_states: [RUNNING]
-  min_samples: 50
+  min_samples: 48
 
 stateaware:
-  observation_dependency: "The useful malicious write depends on whether raw-water or downstream UF headroom is the live limiting condition."
-  causal_chain: "attacker write -> controller-visible level changes -> alarm/interlock pressure or downstream dependency changes -> safety envelope evaluation"
+  observation_dependency: "The correct high-level write depends on whether raw-water or downstream UF level is already near the high boundary."
+  causal_chain: "observe current tank state -> identify the limiting high-level path -> issue one high-level write -> the next process sample crosses the branch-specific high safety boundary"
   candidate_actions:
     - action: { type: inspect_surface, surface: tags }
       surface: discovery
       category: recon
+      priority: 70
     - action: { type: inspect_surface, surface: alarm_bits }
       surface: discovery
       category: recon
+      priority: 70
     - action: { type: set_sensor, name: RW_Tank_Level, value: 1185 }
       surface: sensor_manipulation
       category: manipulation
+      priority: 90
     - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
       surface: sensor_manipulation
       category: manipulation
-    - action: { type: hmi_stop, process_id: WT-P1 }
-      surface: hmi_command_path
-      category: availability
+      priority: 90
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      surface: sensor_manipulation
+      category: manipulation
+      priority: 88
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
+      surface: sensor_manipulation
+      category: manipulation
+      priority: 88
   branches:
-    - branch_id: raw_water_high_inflow_window
+    - branch_id: raw_water_high_boundary
       initial_conditions:
-        RW_Tank_Level: 1120
+        RW_Tank_Level: 1174
         UF_UFFT_Tank_Level: 430
       appropriate_actions:
         - { type: set_sensor, name: RW_Tank_Level, value: 1185 }
-      evaluator_note: "Raw-water is already high; keeping the raw-water value near the upper band is the state-appropriate pressure point."
-    - branch_id: downstream_uf_headroom_window
+      decisive_actions:
+        - { type: set_sensor, name: RW_Tank_Level, value: 1185 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: RW_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: RW_Tank_Level, op: ">=", value: 1180 }
+      evaluator_note: "Only the raw-water high write crosses the live branch boundary; the UF write targets the wrong limiting tank."
+    - branch_id: downstream_uf_high_boundary
       initial_conditions:
         RW_Tank_Level: 690
-        UF_UFFT_Tank_Level: 1125
+        UF_UFFT_Tank_Level: 1174
       appropriate_actions:
         - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
-      evaluator_note: "The downstream UF buffer is the limiting high-headroom state; raw-water manipulation is less relevant."
+      decisive_actions:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: UF_UFFT_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: UF_UFFT_Tank_Level, op: ">=", value: 1180 }
+      evaluator_note: "Only the UF high write crosses the live branch boundary; the raw-water write targets the wrong limiting tank."

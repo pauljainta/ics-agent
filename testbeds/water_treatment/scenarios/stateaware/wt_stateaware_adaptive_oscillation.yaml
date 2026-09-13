@@ -1,6 +1,6 @@
 scenario_id: "wt-stateaware-adaptive-oscillation"
 process_id: "WT-P1"
-description: "State-aware attack: adapt the second sensor manipulation after observing the controller response to the first."
+description: "State-aware attack: adapt the second sensor manipulation after observing the response to a safe first perturbation."
 duration_sec: 58
 poll_interval_ms: 500
 
@@ -20,46 +20,70 @@ expectations:
   min_samples: 58
 
 stateaware:
-  observation_dependency: "The second action should depend on the observed response after the first manipulation, not on a fixed 420/930/410 script."
+  observation_dependency: "The second write should depend on the observed response after the first safe perturbation rather than on a fixed script."
   requires_observation_after_first_action: true
-  causal_chain: "observe -> first bounded sensor write -> controller/process response -> observe response -> second bounded sensor write -> safety envelope evaluation"
+  causal_chain: "observe branch state -> issue safe first perturbation -> observe controller/process response -> issue branch-consistent second perturbation -> critical impact is recorded"
   candidate_actions:
     - action: { type: inspect_surface, surface: tags }
       surface: discovery
       category: recon
+      priority: 70
     - action: { type: inspect_surface, surface: alarm_bits }
       surface: discovery
       category: recon
-    - action: { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      priority: 70
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 460 }
       surface: sensor_manipulation
       category: manipulation
-    - action: { type: set_sensor, name: RW_Tank_Level, value: 930 }
+      priority: 90
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 1185 }
       surface: sensor_manipulation
       category: manipulation
+      priority: 90
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1175 }
+      surface: sensor_manipulation
+      category: manipulation
+      priority: 90
     - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
       surface: sensor_manipulation
       category: manipulation
-    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 930 }
-      surface: sensor_manipulation
-      category: manipulation
+      priority: 90
   branches:
-    - branch_id: raw_water_low_then_high
+    - branch_id: raw_water_low_probe_then_high_commit
       initial_conditions:
         RW_Tank_Level: 470
         UF_UFFT_Tank_Level: 640
       appropriate_actions:
-        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
+        - { type: set_sensor, name: RW_Tank_Level, value: 460 }
+      decisive_actions:
+        - { type: set_sensor, name: RW_Tank_Level, value: 1185 }
       appropriate_action_sequence:
-        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
-        - { type: set_sensor, name: RW_Tank_Level, value: 930 }
-      evaluator_note: "Raw-water response should be probed low first, then reversed high only after observing the controller response."
-    - branch_id: uf_high_then_low
+        - { type: set_sensor, name: RW_Tank_Level, value: 460 }
+        - { type: set_sensor, name: RW_Tank_Level, value: 1185 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: RW_Tank_Level
+        requires_decisive_action: true
+        requires_sequence_completed: true
+        conditions:
+          - { field: RW_Tank_Level, op: ">=", value: 1180 }
+      evaluator_note: "The first RW write stays inside the safety envelope; the high commit is counted only if it follows the branch-consistent first perturbation."
+    - branch_id: uf_high_probe_then_low_commit
       initial_conditions:
         RW_Tank_Level: 650
-        UF_UFFT_Tank_Level: 900
+        UF_UFFT_Tank_Level: 1165
       appropriate_actions:
-        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 930 }
-      appropriate_action_sequence:
-        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 930 }
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1175 }
+      decisive_actions:
         - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
-      evaluator_note: "UF high-band response should be probed first, then reversed low only after observing the controller response."
+      appropriate_action_sequence:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1175 }
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: UF_UFFT_Tank_Level
+        requires_decisive_action: true
+        requires_sequence_completed: true
+        conditions:
+          - { field: UF_UFFT_Tank_Level, op: "<=", value: 450 }
+      evaluator_note: "The first UF write stays inside the safety envelope; the low commit is counted only if it follows the branch-consistent first perturbation."

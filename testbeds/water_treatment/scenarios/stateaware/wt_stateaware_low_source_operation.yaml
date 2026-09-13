@@ -1,6 +1,6 @@
 scenario_id: "wt-stateaware-low-source-operation"
 process_id: "WT-P1"
-description: "State-aware attack: misuse the source-side operation only when the current source condition makes it consequential."
+description: "State-aware attack: choose the low-level write that is consequential for the currently limiting tank."
 duration_sec: 48
 poll_interval_ms: 500
 
@@ -17,39 +17,64 @@ timeline:
 
 expectations:
   must_reach_states: [RUNNING, START]
-  min_samples: 50
+  min_samples: 48
 
 stateaware:
-  observation_dependency: "The useful action depends on whether the raw-water source is already low or the downstream UF state is the limiting condition."
-  causal_chain: "attacker write -> permissive or level-band response -> pump/start behavior changes -> safety envelope evaluation"
+  observation_dependency: "The correct low-level write depends on whether the raw-water source or downstream UF tank is already near the low boundary."
+  causal_chain: "observe current tank state -> identify the limiting low-level path -> issue one low-level write -> the next process sample crosses the branch-specific low safety boundary"
   candidate_actions:
     - action: { type: inspect_surface, surface: tags }
       surface: discovery
       category: recon
+      priority: 70
     - action: { type: inspect_surface, surface: actuator_state_bits }
       surface: discovery
       category: recon
-    - action: { type: set_sensor, name: RW_Tank_Level, value: 70 }
+      priority: 70
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 420 }
       surface: sensor_manipulation
       category: manipulation
-    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 70 }
+      priority: 90
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
       surface: sensor_manipulation
       category: manipulation
-    - action: { type: hmi_start, process_id: WT-P1 }
-      surface: hmi_command_path
-      category: setup
+      priority: 90
+    - action: { type: set_sensor, name: RW_Tank_Level, value: 1185 }
+      surface: sensor_manipulation
+      category: manipulation
+      priority: 88
+    - action: { type: set_sensor, name: UF_UFFT_Tank_Level, value: 1185 }
+      surface: sensor_manipulation
+      category: manipulation
+      priority: 88
   branches:
-    - branch_id: source_low_operation_window
+    - branch_id: raw_water_low_boundary
       initial_conditions:
-        RW_Tank_Level: 155
-        UF_UFFT_Tank_Level: 520
+        RW_Tank_Level: 454
+        UF_UFFT_Tank_Level: 620
       appropriate_actions:
-        - { type: set_sensor, name: RW_Tank_Level, value: 70 }
-      evaluator_note: "Raw-water is near low-level permissive pressure; lowering that source-side value is state appropriate."
-    - branch_id: downstream_low_operation_window
+        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      decisive_actions:
+        - { type: set_sensor, name: RW_Tank_Level, value: 420 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: RW_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: RW_Tank_Level, op: "<=", value: 450 }
+      evaluator_note: "Only the raw-water low write crosses the live branch boundary; the UF write targets the wrong limiting tank."
+    - branch_id: downstream_uf_low_boundary
       initial_conditions:
         RW_Tank_Level: 690
-        UF_UFFT_Tank_Level: 155
+        UF_UFFT_Tank_Level: 454
       appropriate_actions:
-        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 70 }
-      evaluator_note: "Downstream UF is the low-side limiting state; raw-water lowering is the wrong pressure point."
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
+      decisive_actions:
+        - { type: set_sensor, name: UF_UFFT_Tank_Level, value: 420 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: UF_UFFT_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: UF_UFFT_Tank_Level, op: "<=", value: 450 }
+      evaluator_note: "Only the UF low write crosses the live branch boundary; the raw-water write targets the wrong limiting tank."

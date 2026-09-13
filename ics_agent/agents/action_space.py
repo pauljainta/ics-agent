@@ -34,6 +34,7 @@ def build_candidate_actions(
     remaining_playbook: list[dict[str, Any]],
     now: float,
     playbook_anticipation_sec: float,
+    defender_process_only: bool = False,
 ) -> list[dict[str, Any]]:
     allowed = set(allowed_action_types)
     testbed_id = _scenario_testbed_id(scenario)
@@ -200,6 +201,7 @@ def build_candidate_actions(
             recent_alerts=recent_alerts,
             recent_actions=recent_actions,
             incident=incident,
+            process_only=defender_process_only,
         )
 
     if "noop" in allowed:
@@ -213,6 +215,9 @@ def build_candidate_actions(
         elif role == "defender" and incident_type != "none":
             summary = (
                 "Hold position while the incident stabilizes and verify that no fresh "
+                "alarms or process-state changes appear."
+                if defender_process_only
+                else "Hold position while the incident stabilizes and verify that no fresh "
                 "alarms, attacker actions, or Process 2 changes appear."
             )
         else:
@@ -239,6 +244,7 @@ def _add_defender_candidates(
     recent_alerts: list[dict[str, Any]],
     recent_actions: list[dict[str, Any]],
     incident: dict[str, Any],
+    process_only: bool = False,
 ) -> None:
     incident_type = str(incident.get("type", "none"))
     incident_status = str(incident.get("status", "none"))
@@ -246,7 +252,7 @@ def _add_defender_candidates(
     recent_observer_alert = any(item.get("role") == "observer" for item in recent_alerts)
     pump_running = _is_active_flag(observation.get("RW_Pump_Sts"))
     planned_refill_response = "planned_refill_response" in relationship_notes
-    recent_attacker_actions = [
+    recent_attacker_actions = [] if process_only else [
         normalize_action(item.get("action"))
         for item in recent_actions
         if item.get("role") == "attacker"
@@ -301,12 +307,30 @@ def _add_defender_candidates(
         or "raw_water_high_high_band" in risk_flags
     )
     sensor_write_pressure = (
-        "set_sensor" in recent_attacker_action_types
-        or "sensor_spoof" in recent_alert_diagnoses
-        or "spoof" in recent_alert_text
+        (
+            not process_only
+            and (
+                "set_sensor" in recent_attacker_action_types
+                or "sensor_spoof" in recent_alert_diagnoses
+                or "spoof" in recent_alert_text
+            )
+        )
+        or (
+            process_only
+            and (
+                "sensor_or_process_jump" in risk_flags
+                or any(str(note).startswith("abrupt_change:") for note in relationship_notes)
+            )
+        )
     )
     hmi_surface_pressure = bool(
         recent_attacker_action_types.intersection({"hmi_start", "hmi_stop", "hmi_estop"})
+    ) or (
+        process_only
+        and (
+            "command_status_divergence" in risk_flags
+            or "HMI_Stop_Active" in active_alarms
+        )
     )
     command_divergence = "command_status_divergence" in risk_flags
     multi_asset_process2 = len(process2_depleting) >= 2
