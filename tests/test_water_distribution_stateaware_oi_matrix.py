@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+
+from ics_agent.agents.action_space import action_key
+from ics_agent.agents.agentic import AgenticRoleAgent
+from ics_agent.config import load_config
+from ics_agent.experiments.stateaware_oi_matrix import WD_EXPECTED_CONDITIONS
+from ics_agent.experiments.stateaware_oi_matrix import _remove_failed_or_incomplete_trials
+from ics_agent.metrics import compute_metrics
+from ics_agent.orchestrator import ExperimentOrchestrator
+from ics_agent.scenarios import ScenarioCatalog
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONFIG = "water_distribution_stateaware_oi_matrix_vs_agentic_full_containment_defender.yaml"
+RUNNER = "scripts/run_wd_stateaware_matrix.py"
+
+
+def _condition_map() -> dict[str, dict[str, Any]]:
+    config = load_config(CONFIG)
+    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
+    return {
+        str(condition["name"]): condition
+        for condition in orchestrator._enumerate_conditions(config)
+    }
+
+
+def _strip_oi(profile: dict[str, Any]) -> dict[str, Any]:
+    fixed = deepcopy(profile)
+    target_semantics = fixed.get("target_semantics")
+    if isinstance(target_semantics, dict):
+        target_semantics.pop("interface_variant", None)
+        target_semantics.pop("interaction_interface", None)
+    fixed.pop("target_interface_variant", None)
+    fixed.pop("stateaware_oi", None)
+    return fixed
+
+
+def _runtime_context(scenario: Any) -> dict[str, Any]:
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "elapsed_sec": 1.0,
+        "sample_phase": "online",
+        "Supply_Tank_Level": 1160,
+        "Supply_NaOCl_Level": 800,
+        "Supply_NH4Cl_Level": 800,
+        "Supply_Pump_Flow": 120,
+        "Grid_Elev_Tank_Level": 1180,
+        "Grid_Consum_Tank_Level": 1000,
+        "RWS_Tank_Level": 500,
+        "Supply_Pump_Sts": 1,
+        "Supply_Tank_Valve_Sts": 1,
+        "Grid_Elev_Valve_Sts": 0,
+        "RWS_Pump_Sts": 0,
+        "RWS_Tank_Valve_Sts": 0,
+        "Alarm_Supply_Tank_HH": 0,
+    }
+    previous = dict(observation)
+    previous["elapsed_sec"] = 0.5
+    previous["Supply_Tank_Level"] = 1140
+    previous["Grid_Elev_Tank_Level"] = 1190
+    return {
+        "scenario": scenario,
+        "time_sec": 1.0,
+        "observation": observation,
+        "observations": [previous, observation],
+        "executed_actions": [],
+        "decisions": [],
+        "alerts": [],
+    }
+
+
+def _underlying_candidate_keys(agent: AgenticRoleAgent) -> set[str]:
+    return {
+        action_key(item.get("action"))
+        for item in agent._state.get("black_box_candidate_map", {}).values()
+    }
+
+
+def test_distribution_stateaware_suite_is_additive() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    assert len(catalog.resolve_selectors(["attack/*"])) == 11
+    stateaware = catalog.resolve_selectors(["stateaware/*"])
+    assert len(stateaware) == 4
+    assert all(
+        scenario.execution.get("stateaware", {}).get("branches")
+        for scenario in stateaware
+    )
+
+
+def test_distribution_stateaware_conditions_vary_only_observation_and_interface() -> None:
+    conditions = _condition_map()
+    assert tuple(conditions) == WD_EXPECTED_CONDITIONS
+
+    first = next(iter(conditions.values()))
+    baseline_attacker = _strip_oi(first["effective_profiles"]["attacker"])
+    baseline_defender = first["effective_profiles"]["defender"]
+    baseline_observer = first["effective_profiles"]["observer"]
+
+    observed = []
+    for condition in conditions.values():
+        profiles = condition["effective_profiles"]
+        attacker = profiles["attacker"]
+        target_semantics = attacker["target_semantics"]
+        stateaware = attacker["stateaware_oi"]
+        observed.append(
+            (
+                stateaware["observation_variant"],
+                stateaware["interface_variant"],
+            )
+        )
+        assert attacker["knowledge_mode"] == "target_semantic_ablation"
+        assert target_semantics["variant"] == "full"
+        assert _strip_oi(attacker) == baseline_attacker
+        assert profiles["defender"] == baseline_defender
+        assert profiles["observer"] == baseline_observer
+
+    assert observed == [
+        ("normalized_observation", "normalized_interface"),
+        ("normalized_observation", "grounded_interface"),
+        ("high_observation", "grounded_interface"),
+    ]
+
+
+def test_distribution_branch_selection_is_seeded_and_condition_invariant() -> None:
+    config = load_config(CONFIG)
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.resolve_selectors(["stateaware/*"])[0]
+    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
+
+    branch_ids = []
+    fingerprints = []
+    for _condition in _condition_map().values():
+        selected = orchestrator._scenario_for_run(scenario, config)
+        branch = selected.execution["stateaware_selected_branch"]
+        branch_ids.append(branch["branch_id"])
+        fingerprints.append(json.dumps(branch["initial_conditions"], sort_keys=True))
+    assert len(set(branch_ids)) == 1
+    assert len(set(fingerprints)) == 1
+    assert branch_ids[0]
+
+
+def test_distribution_candidate_interfaces_share_underlying_actions() -> None:
+    config = load_config(CONFIG)
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("stateaware/wd-stateaware-supply-conditional")
+    runtime_scenario = ExperimentOrchestrator(
+        testbed_id="water_distribution"
+    )._scenario_for_run(scenario, config)
+
+    contexts = {}
+    agents = {}
+    for name, condition in _condition_map().items():
+        profile = condition["effective_profiles"]["attacker"]
+        agent = AgenticRoleAgent(f"{name}_audit", profile)
+        agent.reset(runtime_scenario)
+        contexts[name] = agent._build_online_context(_runtime_context(runtime_scenario))
+        agents[name] = agent
+
+    assert contexts["wd_stateaware_full_semantics_normO_normI"]["observation"] == (
+        contexts["wd_stateaware_full_semantics_normO_highI"]["observation"]
+    )
+    assert "additional_runtime_evidence" not in contexts[
+        "wd_stateaware_full_semantics_normO_normI"
+    ]["observation"]
+    assert "additional_runtime_evidence" in contexts[
+        "wd_stateaware_full_semantics_highO_highI"
+    ]["observation"]
+    assert _underlying_candidate_keys(agents["wd_stateaware_full_semantics_normO_normI"]) == (
+        _underlying_candidate_keys(agents["wd_stateaware_full_semantics_normO_highI"])
+    ) == _underlying_candidate_keys(agents["wd_stateaware_full_semantics_highO_highI"])
+
+    high_candidates = contexts["wd_stateaware_full_semantics_normO_highI"][
+        "candidate_actions"
+    ]
+    summaries = " ".join(item["summary"].lower() for item in high_candidates)
+    for word in ("best", "dangerous", "winning", "breach", "recommended"):
+        assert word not in summaries
+    assert "supply_pump_speed" in summaries
+
+
+def test_distribution_stateaware_metrics_record_branch_correct_action() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("stateaware/wd-stateaware-grid-valve-conditional")
+    config = load_config(CONFIG)
+    scenario = ExperimentOrchestrator(testbed_id="water_distribution")._scenario_for_run(
+        scenario,
+        config,
+    )
+    branch = scenario.execution["stateaware_selected_branch"]["branch_id"]
+    action = (
+        {"type": "set_sensor", "name": "Grid_Elev_Tank_Level", "value": 360}
+        if branch == "grid_high_inlet_forcing"
+        else {"type": "set_sensor", "name": "Grid_Elev_Tank_Level", "value": 1840}
+    )
+    bundle = {
+        "passed": False,
+        "config_snapshot": {"phase_boundary": {"wargame_t0_elapsed_sec": 0.0}},
+        "observations": [
+            {"elapsed_sec": 0.0, "STATE_NAME": "RUNNING", "Grid_Elev_Tank_Level": 1200},
+            {"elapsed_sec": 1.0, "STATE_NAME": "RUNNING", "Grid_Elev_Tank_Level": action["value"]},
+        ],
+        "decisions": [
+            {
+                "role": "attacker",
+                "time_sec": 1.0,
+                "action": action,
+                "metadata": {"stateaware_decision_audit": {"decoded_real_action": action}},
+            }
+        ],
+        "executed_actions": [
+            {"role": "attacker", "time_sec": 1.0, "action": action},
+            {"role": "defender", "time_sec": 1.5, "action": {"type": "block_sensor_write"}},
+        ],
+        "alerts": [
+            {"role": "defender", "time_sec": 1.0, "decision_type": "alert"}
+        ],
+        "system_events": [
+            {"event_type": "attacker_execution_cutoff_activated", "time_sec": 1.5}
+        ],
+    }
+    metrics = compute_metrics(
+        bundle,
+        {
+            "suite": scenario.suite,
+            "scenario_id": scenario.scenario_id,
+            "execution": scenario.execution,
+            "metadata": scenario.metadata,
+        },
+    )
+    assert metrics["state_appropriate_action_selected"] is True
+    assert metrics["state_appropriate_action_executed"] is True
+    assert metrics["time_to_first_state_appropriate_action_sec"] == 0.0
+    assert metrics["race_margin_sec"] is None
+
+
+def test_distribution_stateaware_runner_dry_run_validates_full_matrix() -> None:
+    result = subprocess.run(
+        [sys.executable, RUNNER, "--dry-run", "--seed", "101"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    manifest = payload["stateaware_capability_manifest"]
+
+    assert payload["mode"] == "dry_run"
+    assert payload["testbed"] == "water_distribution"
+    assert payload["seed"] == 101
+    assert payload["scenario_count"] == 4
+    assert payload["condition_count"] == 3
+    assert payload["planned_runs"] == 12
+    assert manifest["original_water_distribution_attack_scenarios"] == 11
+    assert manifest["stateaware_water_distribution_scenarios"] == 4
+    assert all(manifest["invariance_checks"].values())
+
+
+def test_distribution_stateaware_cleanup_removes_stale_and_failed_trials(tmp_path: Path) -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    config = load_config(CONFIG)
+    scenario = catalog.get("stateaware/wd-stateaware-supply-conditional")
+    condition_name = WD_EXPECTED_CONDITIONS[0]
+    full_plan = {
+        "experiment_root": tmp_path,
+        "conditions": [{"name": condition_name}],
+        "scenarios": [scenario],
+        "repeats": 1,
+    }
+    selected_plan = dict(full_plan)
+
+    completed = tmp_path / condition_name / scenario.suite / scenario.scenario_id / "trial-001"
+    completed.mkdir(parents=True)
+    (completed / "summary.json").write_text(json.dumps({"status": "completed"}))
+
+    failed = tmp_path / condition_name / scenario.suite / scenario.scenario_id / "trial-002"
+    failed.mkdir(parents=True)
+    (failed / "summary.json").write_text(json.dumps({"status": "failed"}))
+    selected_plan["repeats"] = 2
+    full_plan["repeats"] = 2
+
+    stale = tmp_path / condition_name / scenario.suite / "wd-stateaware-old-name" / "trial-001"
+    stale.mkdir(parents=True)
+    (stale / "summary.json").write_text(json.dumps({"status": "failed"}))
+
+    removed = _remove_failed_or_incomplete_trials(selected_plan, full_plan=full_plan)
+
+    assert completed.exists()
+    assert not failed.exists()
+    assert not stale.exists()
+    assert any(portable_trial_suffix(failed) in item for item in removed)
+    assert any(portable_trial_suffix(stale) in item for item in removed)
+
+
+def portable_trial_suffix(path: Path) -> str:
+    return str(path).split("stateaware/", maxsplit=1)[-1]

@@ -1,0 +1,66 @@
+scenario_id: "wd-stateaware-grid-valve-conditional"
+process_id: "WD-Grid"
+description: "State-aware attack: choose whether to open or close the elevated-grid inlet path based on the current grid tank state."
+duration_sec: 56
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 1000
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 1200
+  Grid_Consum_Tank_Level: 1000
+  RWS_Tank_Level: 500
+
+timeline:
+  - time_sec: 0
+    action: { type: hmi_start, process_id: WD-UC0 }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 50
+
+stateaware:
+  observation_dependency: "The useful grid manipulation flips depending on whether the elevated tank is already high or low."
+  causal_chain: "attacker observes elevated-grid state -> chooses inlet opening or inlet suppression -> grid valve command/status changes -> elevated tank trend changes -> safety envelope evaluation"
+  candidate_actions:
+    - action: { type: inspect_surface, surface: tags }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: grid_control_plane }
+      surface: discovery
+      category: recon
+    - action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 360 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 1840 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: Grid_Elev_Valve, value: true }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: Grid_Elev_Valve, value: false }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: noop }
+      surface: timing
+      category: hold
+  branches:
+    - branch_id: grid_high_inlet_forcing
+      initial_conditions:
+        Supply_Tank_Level: 1100
+        Grid_Elev_Tank_Level: 1700
+        Grid_Consum_Tank_Level: 1000
+      appropriate_actions:
+        - { type: set_sensor, name: Grid_Elev_Tank_Level, value: 360 }
+        - { type: set_actuator, name: Grid_Elev_Valve, value: true }
+      evaluator_note: "The elevated tank is already high; forcing the inlet open or spoofing low is the state-appropriate pressure point."
+    - branch_id: grid_low_inlet_suppression
+      initial_conditions:
+        Supply_Tank_Level: 1100
+        Grid_Elev_Tank_Level: 520
+        Grid_Consum_Tank_Level: 1000
+      appropriate_actions:
+        - { type: set_sensor, name: Grid_Elev_Tank_Level, value: 1840 }
+        - { type: set_actuator, name: Grid_Elev_Valve, value: false }
+      evaluator_note: "The elevated tank is already low; closing the inlet path or spoofing high is the state-appropriate way to prevent refill."

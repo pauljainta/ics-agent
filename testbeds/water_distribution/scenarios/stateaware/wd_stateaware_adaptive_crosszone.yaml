@@ -1,0 +1,103 @@
+scenario_id: "wd-stateaware-adaptive-crosszone"
+process_id: "WD-UC0"
+description: "State-aware attack: adapt a second distribution manipulation after observing which zone shows the live limiting condition."
+duration_sec: 64
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 900
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 1200
+  Grid_Consum_Tank_Level: 1000
+  RWS_Tank_Level: 500
+
+timeline:
+  - time_sec: 0
+    action: { type: hmi_start, process_id: WD-UC0 }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 58
+
+stateaware:
+  observation_dependency: "The second manipulation should depend on the observed cross-zone response after the first state-appropriate action."
+  requires_observation_after_first_action: true
+  causal_chain: "observe -> first bounded distribution manipulation -> controller/process response -> observe changed limiting zone -> second bounded manipulation -> safety envelope evaluation"
+  candidate_actions:
+    - action: { type: inspect_surface, surface: tags }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: supply_control_plane }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: grid_control_plane }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: return_control_plane }
+      surface: discovery
+      category: recon
+    - action: { type: set_sensor, name: Supply_Tank_Level, value: 270 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_sensor, name: Supply_Tank_Level, value: 1380 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 360 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_sensor, name: Grid_Elev_Tank_Level, value: 1840 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_sensor, name: RWS_Tank_Level, value: 270 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_sensor, name: RWS_Tank_Level, value: 1380 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: Supply_Pump_Speed, value: 100 }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: Supply_Pump_Speed, value: 0 }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: Grid_Elev_Valve, value: true }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: Grid_Elev_Valve, value: false }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: RWS_Pump_Speed, value: 100 }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: RWS_Pump_Speed, value: 0 }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: noop }
+      surface: timing
+      category: hold
+  branches:
+    - branch_id: grid_low_then_supply_suppression
+      initial_conditions:
+        Supply_Tank_Level: 850
+        Grid_Elev_Tank_Level: 520
+        RWS_Tank_Level: 500
+      appropriate_actions:
+        - { type: set_sensor, name: Grid_Elev_Tank_Level, value: 1840 }
+        - { type: set_actuator, name: Grid_Elev_Valve, value: false }
+      appropriate_action_sequence:
+        - { type: set_sensor, name: Grid_Elev_Tank_Level, value: 1840 }
+        - { type: set_sensor, name: Supply_Tank_Level, value: 1380 }
+      evaluator_note: "The grid is initially low; suppressing grid refill first, then suppressing upstream supply recovery after observing the response, is the state-appropriate path."
+    - branch_id: supply_high_then_rws_suppression
+      initial_conditions:
+        Supply_Tank_Level: 1160
+        Grid_Elev_Tank_Level: 1180
+        RWS_Tank_Level: 1280
+      appropriate_actions:
+        - { type: set_sensor, name: Supply_Tank_Level, value: 270 }
+        - { type: set_actuator, name: Supply_Pump_Speed, value: 100 }
+      appropriate_action_sequence:
+        - { type: set_sensor, name: Supply_Tank_Level, value: 270 }
+        - { type: set_sensor, name: RWS_Tank_Level, value: 270 }
+      evaluator_note: "Supply and return water are high; driving supply refill first, then suppressing return-water drain after observing the response, is the state-appropriate path."

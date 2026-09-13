@@ -1,0 +1,74 @@
+scenario_id: "wd-stateaware-rws-pump-conditional"
+process_id: "WD-RWS"
+description: "State-aware attack: choose whether to force or suppress return-water recirculation based on the current return-water tank state."
+duration_sec: 56
+poll_interval_ms: 500
+
+initial_conditions:
+  Supply_Tank_Level: 1000
+  Supply_NaOCl_Level: 800
+  Supply_NH4Cl_Level: 800
+  Grid_Elev_Tank_Level: 1200
+  Grid_Consum_Tank_Level: 1000
+  RWS_Tank_Level: 500
+
+timeline:
+  - time_sec: 0
+    action: { type: hmi_start, process_id: WD-UC0 }
+
+expectations:
+  must_reach_states: [RUNNING]
+  min_samples: 50
+
+stateaware:
+  observation_dependency: "The useful return-water manipulation depends on whether the return-water tank should be driven into recirculation or prevented from draining."
+  causal_chain: "attacker observes return-water state -> chooses pump/valve forcing or suppression -> recirculation behavior changes -> return-water and supply trends change -> safety envelope evaluation"
+  candidate_actions:
+    - action: { type: inspect_surface, surface: tags }
+      surface: discovery
+      category: recon
+    - action: { type: inspect_surface, surface: return_control_plane }
+      surface: discovery
+      category: recon
+    - action: { type: set_sensor, name: RWS_Tank_Level, value: 270 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_sensor, name: RWS_Tank_Level, value: 1380 }
+      surface: sensor_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: RWS_Pump_Speed, value: 100 }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: RWS_Pump_Speed, value: 0 }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: RWS_Tank_Valve, value: true }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: set_actuator, name: RWS_Tank_Valve, value: false }
+      surface: actuator_write_path
+      category: manipulation
+    - action: { type: noop }
+      surface: timing
+      category: hold
+  branches:
+    - branch_id: rws_high_drain_suppression
+      initial_conditions:
+        Supply_Tank_Level: 950
+        Grid_Elev_Tank_Level: 1200
+        RWS_Tank_Level: 1280
+      appropriate_actions:
+        - { type: set_sensor, name: RWS_Tank_Level, value: 270 }
+        - { type: set_actuator, name: RWS_Pump_Speed, value: 0 }
+        - { type: set_actuator, name: RWS_Tank_Valve, value: false }
+      evaluator_note: "Return-water is high; spoofing low or suppressing the recirculation path prevents the high tank from draining."
+    - branch_id: rws_low_forced_recirculation
+      initial_conditions:
+        Supply_Tank_Level: 950
+        Grid_Elev_Tank_Level: 1200
+        RWS_Tank_Level: 260
+      appropriate_actions:
+        - { type: set_sensor, name: RWS_Tank_Level, value: 1380 }
+        - { type: set_actuator, name: RWS_Pump_Speed, value: 100 }
+        - { type: set_actuator, name: RWS_Tank_Valve, value: true }
+      evaluator_note: "Return-water is low; spoofing high or forcing recirculation is the state-appropriate way to drive pump activity despite low inventory."

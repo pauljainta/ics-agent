@@ -22,6 +22,23 @@ EXPECTED_CONDITIONS = (
     "stateaware_full_semantics_normO_highI",
     "stateaware_full_semantics_highO_highI",
 )
+WD_EXPECTED_CONDITIONS = (
+    "wd_stateaware_full_semantics_normO_normI",
+    "wd_stateaware_full_semantics_normO_highI",
+    "wd_stateaware_full_semantics_highO_highI",
+)
+EXPECTED_CONDITIONS_BY_TESTBED = {
+    "water_treatment": EXPECTED_CONDITIONS,
+    "water_distribution": WD_EXPECTED_CONDITIONS,
+}
+EXPECTED_ORIGINAL_ATTACK_COUNTS = {
+    "water_treatment": 18,
+    "water_distribution": 11,
+}
+EXPECTED_STATEAWARE_SCENARIO_COUNTS = {
+    "water_treatment": 6,
+    "water_distribution": 4,
+}
 
 STATEAWARE_METRIC_KEYS = (
     "time_to_first_state_appropriate_action_sec",
@@ -42,7 +59,19 @@ HIGH_INTERFACE_BANNED_WORDS = (
 )
 
 
-def build_parser(*, default_config: str, description: str) -> argparse.ArgumentParser:
+def expected_conditions_for(testbed_id: str) -> tuple[str, ...]:
+    try:
+        return EXPECTED_CONDITIONS_BY_TESTBED[str(testbed_id)]
+    except KeyError as exc:
+        raise RuntimeError(f"unsupported state-aware O/I testbed `{testbed_id}`") from exc
+
+
+def build_parser(
+    *,
+    default_config: str,
+    description: str,
+    expected_conditions: tuple[str, ...] = EXPECTED_CONDITIONS,
+) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "--config",
@@ -67,7 +96,7 @@ def build_parser(*, default_config: str, description: str) -> argparse.ArgumentP
     )
     parser.add_argument(
         "--condition",
-        choices=EXPECTED_CONDITIONS,
+        choices=expected_conditions,
         default=None,
         help="Optional single condition to execute after validating the full matrix.",
     )
@@ -80,6 +109,14 @@ def build_parser(*, default_config: str, description: str) -> argparse.ArgumentP
         "--dry-run",
         action="store_true",
         help="Validate and print the plan without starting the backend.",
+    )
+    parser.add_argument(
+        "--local-runtime",
+        action="store_true",
+        help=(
+            "Use the repo-local OpenPLC runtime in the generated config instead "
+            "of the configured SPHERE profile."
+        ),
     )
     parser.add_argument(
         "--validate-only",
@@ -135,6 +172,7 @@ def _config_for_run(
     scenario: str | None,
     condition: str | None,
     output_dir: str | None,
+    local_runtime: bool = False,
 ) -> Path:
     config_path = resolve_runtime_config_path(config_arg)
     raw_config = load_yaml(config_path)
@@ -155,6 +193,19 @@ def _config_for_run(
     generated_path = generated_dir / ("_".join(stem_parts) + ".yaml")
 
     generated = deepcopy(raw_config)
+    if local_runtime:
+        generated["environment"] = {
+            "backend": "auto",
+            "testbed": generated.get("testbed", "water_treatment"),
+            "start_bridge": False,
+        }
+        study_metadata = dict(generated.get("study_metadata") or {})
+        notes = list(study_metadata.get("notes") or [])
+        notes.append(
+            "Generated with --local-runtime because live SPHERE/XDC execution was not requested or available."
+        )
+        study_metadata["notes"] = notes
+        generated["study_metadata"] = study_metadata
     reproducibility = dict(generated.get("reproducibility") or {})
     reproducibility["seed"] = int(seed)
     generated["reproducibility"] = reproducibility
@@ -241,17 +292,27 @@ def _capability_manifest(
     scenarios: list[Any],
     repeats: int,
     require_full_matrix: bool,
+    expected_conditions: tuple[str, ...],
 ) -> dict[str, Any]:
+    testbed_id = str(config.get("testbed"))
+    expected_original_count = EXPECTED_ORIGINAL_ATTACK_COUNTS.get(testbed_id)
+    expected_stateaware_count = EXPECTED_STATEAWARE_SCENARIO_COUNTS.get(testbed_id)
+    if expected_original_count is None or expected_stateaware_count is None:
+        raise RuntimeError(f"unsupported state-aware O/I testbed `{testbed_id}`")
+
     catalog = ScenarioCatalog(testbed_id=str(config.get("testbed")))
     original_attack_count = len(catalog.resolve_selectors(["attack/*"]))
     stateaware_count = len(catalog.resolve_selectors(["stateaware/*"]))
     condition_names = [str(item.get("name")) for item in conditions]
 
     if require_full_matrix:
-        if tuple(condition_names) != EXPECTED_CONDITIONS:
+        if tuple(condition_names) != expected_conditions:
             raise RuntimeError("state-aware O/I config must define the expected conditions")
-        if len(scenarios) != 6:
-            raise RuntimeError("state-aware O/I matrix must select six scenarios")
+        if len(scenarios) != expected_stateaware_count:
+            raise RuntimeError(
+                "state-aware O/I matrix must select "
+                f"{expected_stateaware_count} scenarios"
+            )
 
     attacker_profiles = [
         condition["effective_profiles"]["attacker"] for condition in conditions
@@ -269,8 +330,10 @@ def _capability_manifest(
         config=config,
     )
     invariant_checks = {
-        "original_attack_scenario_count_unchanged": original_attack_count == 18,
-        "stateaware_scenario_count": stateaware_count == 6,
+        "original_attack_scenario_count_unchanged": (
+            original_attack_count == expected_original_count
+        ),
+        "stateaware_scenario_count": stateaware_count == expected_stateaware_count,
         "attacker_profiles_match_after_removing_only_OI_variants": _all_equal(
             stripped_attackers
         ),
@@ -314,17 +377,35 @@ def _capability_manifest(
             }
         )
 
-    return {
+    varied_conditions: dict[str, dict[str, str]] = {}
+    for index, condition_name in enumerate(expected_conditions):
+        if index == 0:
+            varied_conditions[condition_name] = {
+                "O_A": "normalized_observation",
+                "I_A": "normalized_interface",
+            }
+        elif index == 1:
+            varied_conditions[condition_name] = {
+                "O_A": "normalized_observation",
+                "I_A": "grounded_neutral_interface",
+            }
+        else:
+            varied_conditions[condition_name] = {
+                "O_A": "additional_runtime_evidence",
+                "I_A": "grounded_neutral_interface",
+            }
+
+    manifest = {
         "experiment_name": str(config["experiment_name"]),
         "experiment_id": str(config.get("experiment_id", config["experiment_name"])),
-        "testbed": str(config.get("testbed")),
+        "testbed": testbed_id,
         "seed": (config.get("reproducibility") or {}).get("seed"),
         "scenario_count": len(scenarios),
         "condition_count": len(conditions),
         "repeats": repeats,
         "planned_runs": len(scenarios) * len(conditions) * repeats,
-        "original_water_treatment_attack_scenarios": original_attack_count,
-        "stateaware_water_treatment_scenarios": stateaware_count,
+        "original_attack_scenarios": original_attack_count,
+        "stateaware_scenarios": stateaware_count,
         "fixed_dimensions": {
             "P_A": "post_access_operational_surface",
             "R_A": "same_reachable_interface_for_scenario",
@@ -336,20 +417,7 @@ def _capability_manifest(
             "Delta_A": "same_model_backend_token_budget_cooldowns_duration",
             "D": "same_agentic_full_containment_defender",
         },
-        "varied_conditions": {
-            "stateaware_full_semantics_normO_normI": {
-                "O_A": "normalized_observation",
-                "I_A": "normalized_interface",
-            },
-            "stateaware_full_semantics_normO_highI": {
-                "O_A": "normalized_observation",
-                "I_A": "grounded_neutral_interface",
-            },
-            "stateaware_full_semantics_highO_highI": {
-                "O_A": "additional_runtime_evidence",
-                "I_A": "grounded_neutral_interface",
-            },
-        },
+        "varied_conditions": varied_conditions,
         "branch_selection": branch_ids,
         "conditions": condition_entries,
         "stateaware_metric_keys": list(STATEAWARE_METRIC_KEYS),
@@ -360,12 +428,20 @@ def _capability_manifest(
         },
         "invariance_checks": invariant_checks,
     }
+    if testbed_id == "water_treatment":
+        manifest["original_water_treatment_attack_scenarios"] = original_attack_count
+        manifest["stateaware_water_treatment_scenarios"] = stateaware_count
+    if testbed_id == "water_distribution":
+        manifest["original_water_distribution_attack_scenarios"] = original_attack_count
+        manifest["stateaware_water_distribution_scenarios"] = stateaware_count
+    return manifest
 
 
 def _experiment_plan(
     config_path: str | Path,
     *,
     require_full_matrix: bool,
+    expected_conditions: tuple[str, ...],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     config = load_config(config_path)
     testbed_id = str(config.get("testbed", "water_treatment"))
@@ -381,6 +457,7 @@ def _experiment_plan(
         scenarios=scenarios,
         repeats=repeats,
         require_full_matrix=require_full_matrix,
+        expected_conditions=expected_conditions,
     )
     payload = {
         "validated": True,
@@ -453,28 +530,65 @@ def _read_status(path: Path) -> str | None:
     return str(payload.get("status") or "incomplete")
 
 
-def _remove_failed_or_incomplete_trials(plan: dict[str, object]) -> list[str]:
-    removed: list[str] = []
-    root = plan["experiment_root"]
-    if not isinstance(root, Path) or not root.exists():
-        return removed
+def _planned_trial_keys(plan: dict[str, object]) -> set[tuple[str, str, str, str]]:
+    keys: set[tuple[str, str, str, str]] = set()
     for condition_spec in plan["conditions"]:
         condition_name = str(condition_spec.get("name"))
         for scenario in plan["scenarios"]:
             for repeat in range(1, int(plan["repeats"]) + 1):
-                run_dir = (
-                    root
-                    / condition_name
-                    / scenario.suite
-                    / scenario.scenario_id
-                    / f"trial-{repeat:03d}"
+                keys.add(
+                    (
+                        condition_name,
+                        scenario.suite,
+                        scenario.scenario_id,
+                        f"trial-{repeat:03d}",
+                    )
                 )
-                if not run_dir.exists():
-                    continue
-                if _read_status(run_dir) == "completed":
-                    continue
-                shutil.rmtree(run_dir)
-                removed.append(portable_path(run_dir))
+    return keys
+
+
+def _trial_key(experiment_root: Path, trial_dir: Path) -> tuple[str, str, str, str] | None:
+    try:
+        rel = trial_dir.relative_to(experiment_root)
+    except ValueError:
+        return None
+    if len(rel.parts) != 4:
+        return None
+    return rel.parts[0], rel.parts[1], rel.parts[2], rel.parts[3]
+
+
+def _prune_empty_trial_parents(trial_dir: Path, experiment_root: Path) -> None:
+    for parent in (trial_dir.parent, trial_dir.parent.parent, trial_dir.parent.parent.parent):
+        if parent == experiment_root or experiment_root not in parent.parents:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+
+
+def _remove_failed_or_incomplete_trials(
+    plan: dict[str, object],
+    *,
+    full_plan: dict[str, object] | None = None,
+) -> list[str]:
+    removed: list[str] = []
+    root = plan["experiment_root"]
+    if not isinstance(root, Path) or not root.exists():
+        return removed
+    selected_keys = _planned_trial_keys(plan)
+    valid_keys = _planned_trial_keys(full_plan or plan)
+    for run_dir in _trial_dirs(root):
+        key = _trial_key(root, run_dir)
+        if key is None:
+            continue
+        stale_trial = key not in valid_keys
+        retryable_failed_trial = key in selected_keys and _read_status(run_dir) != "completed"
+        if not (stale_trial or retryable_failed_trial):
+            continue
+        shutil.rmtree(run_dir)
+        _prune_empty_trial_parents(run_dir, root)
+        removed.append(portable_path(run_dir))
     return removed
 
 
@@ -570,10 +684,18 @@ def _trial_dirs(experiment_root: Path) -> list[Path]:
     return sorted(experiment_root.glob("*/stateaware/*/trial-*"))
 
 
-def _postprocess_stateaware_results(experiment_root: Path) -> dict[str, Any]:
+def _postprocess_stateaware_results(
+    experiment_root: Path,
+    *,
+    plan: dict[str, object] | None = None,
+) -> dict[str, Any]:
     run_rows: list[dict[str, Any]] = []
     decision_rows: list[dict[str, Any]] = []
+    valid_keys = _planned_trial_keys(plan) if plan is not None else None
     for trial_dir in _trial_dirs(experiment_root):
+        key = _trial_key(experiment_root, trial_dir)
+        if key is None or (valid_keys is not None and key not in valid_keys):
+            continue
         metrics_path = trial_dir / "metrics.json"
         summary_path = trial_dir / "summary.json"
         if not metrics_path.exists() or not summary_path.exists():
@@ -706,17 +828,26 @@ def _manifest_path(experiment_root: Path, seed: int) -> Path:
     return experiment_root.parent / "_manifests" / f"stateaware_oi_manifest_seed_{seed}.json"
 
 
-def _run_seed(args: argparse.Namespace, *, seed: int, default_config: str, testbed_id: str) -> dict[str, Any]:
+def _run_seed(
+    args: argparse.Namespace,
+    *,
+    seed: int,
+    default_config: str,
+    testbed_id: str,
+    expected_conditions: tuple[str, ...],
+) -> dict[str, Any]:
     base_config_path = _config_for_run(
         args.config or default_config,
         seed=seed,
         scenario=None,
         condition=None,
         output_dir=args.output_dir,
+        local_runtime=bool(args.local_runtime),
     )
     full_payload, full_plan = _experiment_plan(
         base_config_path,
         require_full_matrix=True,
+        expected_conditions=expected_conditions,
     )
     run_config_path = _config_for_run(
         args.config or default_config,
@@ -724,10 +855,12 @@ def _run_seed(args: argparse.Namespace, *, seed: int, default_config: str, testb
         scenario=args.scenario,
         condition=args.condition,
         output_dir=args.output_dir,
+        local_runtime=bool(args.local_runtime),
     )
     run_payload, run_plan = _experiment_plan(
         run_config_path,
         require_full_matrix=False,
+        expected_conditions=expected_conditions,
     )
     manifest_path = _manifest_path(full_plan["experiment_root"], seed)
     write_json(manifest_path, full_plan["stateaware_capability_manifest"])
@@ -759,10 +892,13 @@ def _run_seed(args: argparse.Namespace, *, seed: int, default_config: str, testb
         if not args.skip_mrg_preflight:
             _preflight_mrg_auth(run_plan["config"])
         if not args.keep_failed_artifacts:
-            removed = _remove_failed_or_incomplete_trials(run_plan)
+            removed = _remove_failed_or_incomplete_trials(run_plan, full_plan=full_plan)
         orchestrator = ExperimentOrchestrator(testbed_id=testbed_id)
         summary = orchestrator.run(run_config_path)
-        postprocess = _postprocess_stateaware_results(run_plan["experiment_root"])
+        postprocess = _postprocess_stateaware_results(
+            run_plan["experiment_root"],
+            plan=full_plan,
+        )
         summary["runner_plan"] = run_payload
         summary["stateaware_postprocess"] = postprocess
         write_json(
@@ -796,13 +932,27 @@ def _run_seed(args: argparse.Namespace, *, seed: int, default_config: str, testb
         raise
 
 
-def main_for(*, default_config: str, testbed_id: str, description: str) -> int:
+def main_for(
+    *,
+    default_config: str,
+    testbed_id: str,
+    description: str,
+    expected_conditions: tuple[str, ...] | None = None,
+) -> int:
+    resolved_expected_conditions = expected_conditions or expected_conditions_for(testbed_id)
     args = build_parser(
         default_config=default_config,
         description=description,
+        expected_conditions=resolved_expected_conditions,
     ).parse_args()
     summaries = [
-        _run_seed(args, seed=seed, default_config=default_config, testbed_id=testbed_id)
+        _run_seed(
+            args,
+            seed=seed,
+            default_config=default_config,
+            testbed_id=testbed_id,
+            expected_conditions=resolved_expected_conditions,
+        )
         for seed in _parse_seeds(args)
     ]
     if all(item.get("status") in {"completed", "validated"} for item in summaries):

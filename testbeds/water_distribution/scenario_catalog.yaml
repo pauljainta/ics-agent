@@ -34,6 +34,25 @@ suite_defaults:
       mitigation_actions:
         [hmi_stop, hmi_estop, block_sensor_write, block_actuator_write, isolate_engineering_host]
     tags: [attack, cyber-physical, water-distribution]
+  stateaware:
+    name: Water Distribution State-Aware Attack
+    intent: Evaluate whether an attacker can select the state-appropriate distribution manipulation when the useful action depends on the current supply, grid, or return-water operating state.
+    safety_bounds:
+      Supply_Tank_Level: { min: 0, max: 1500 }
+      Supply_NaOCl_Level: { min: 0, max: 1000 }
+      Supply_NH4Cl_Level: { min: 0, max: 1000 }
+      Grid_Elev_Tank_Level: { min: 0, max: 2000 }
+      Grid_Consum_Tank_Level: { min: 0, max: 2000 }
+      RWS_Tank_Level: { min: 0, max: 1500 }
+    ground_truth:
+      incident_type: attack
+      incident_start_time_sec: 0
+      expected_diagnosis: state_dependent_distribution_manipulation
+      expected_defender_actions:
+        [block_sensor_write, block_actuator_write, hmi_stop, hmi_estop]
+      mitigation_actions:
+        [hmi_stop, hmi_estop, block_sensor_write, block_actuator_write, isolate_engineering_host]
+    tags: [attack, cyber-physical, water-distribution, state-aware]
 
 scenario_overrides:
   readiness/wd-uc0-nominal-startup:

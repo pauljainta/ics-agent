@@ -3110,6 +3110,14 @@ class AgenticRoleAgent(RoleAgent):
             return "stop"
         if action_type == "hmi_estop":
             return "trip"
+        if action_type == "set_actuator":
+            raw_value = action.get("value")
+            if isinstance(raw_value, bool):
+                return "open" if raw_value else "close"
+            numeric_value = AgenticRoleAgent._coerce_number(raw_value)
+            if numeric_value is not None:
+                return "disable" if numeric_value <= 0.0 else "enable"
+            return "set"
         return "toggle"
 
     def _black_box_visible_action(
@@ -3894,6 +3902,11 @@ class AgenticRoleAgent(RoleAgent):
         if action_type == "set_sensor":
             return (
                 f"Write value `{action.get('value')}` to `{action.get('name', 'signal')}`."
+            )
+        if action_type == "set_actuator":
+            return (
+                f"Set actuator `{action.get('name', 'actuator')}` to "
+                f"`{action.get('value')}` through the bounded actuator path."
             )
         if action_type == "select_process":
             setting = "enabled" if action.get("active", True) else "disabled"
@@ -8765,6 +8778,8 @@ class AgenticRoleAgent(RoleAgent):
             return f"set_manual_valve:{normalized.get('chemical', 'unknown')}:{state}"
         if action_type == "set_sensor":
             return f"set_sensor:{normalized.get('name', 'unknown')}:{normalized.get('value')}"
+        if action_type == "set_actuator":
+            return f"set_actuator:{normalized.get('name', 'unknown')}"
         return action_type
 
     def _summarize_telemetry(
