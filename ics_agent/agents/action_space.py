@@ -129,6 +129,7 @@ def build_candidate_actions(
             recent_alerts=recent_alerts,
             recent_actions=recent_actions,
             incident=incident,
+            defender_process_only=defender_process_only,
         )
         if "noop" in allowed:
             add(
@@ -500,6 +501,7 @@ def _add_water_distribution_candidates(
     recent_alerts: list[dict[str, Any]],
     recent_actions: list[dict[str, Any]],
     incident: dict[str, Any],
+    defender_process_only: bool = False,
 ) -> None:
     del relationship_notes, recent_alerts, incident
     process_id = process_id or primary_process_id
@@ -536,6 +538,7 @@ def _add_water_distribution_candidates(
             risk_flags=risk_flags,
             active_alarms=active_alarms,
             recent_actions=recent_actions,
+            process_only=defender_process_only,
         )
 
 
@@ -626,12 +629,15 @@ def _add_water_distribution_defender_candidates(
     risk_flags: list[str],
     active_alarms: list[str],
     recent_actions: list[dict[str, Any]],
+    process_only: bool = False,
 ) -> None:
-    recent_attacker_action_types = {
-        str((item.get("action") or {}).get("type", ""))
-        for item in recent_actions
-        if item.get("role") == "attacker"
-    }
+    recent_attacker_action_types = set()
+    if not process_only:
+        recent_attacker_action_types = {
+            str((item.get("action") or {}).get("type", ""))
+            for item in recent_actions
+            if item.get("role") == "attacker"
+        }
     supply_level = _coerce_number(observation.get("Supply_Tank_Level"))
     grid_level = _coerce_number(observation.get("Grid_Elev_Tank_Level"))
     rws_level = _coerce_number(observation.get("RWS_Tank_Level"))

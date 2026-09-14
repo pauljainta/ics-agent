@@ -47,13 +47,17 @@ STATEAWARE_METRIC_KEYS = (
     "time_to_first_decisive_action_sec",
     "decisive_action_selected",
     "decisive_action_executed",
+    "attacker_caused_critical_impact",
     "critical_process_impact",
     "physical_safety_violation",
     "availability_violation",
     "control_integrity_violation",
+    "contained_before_critical_impact",
     "time_to_critical_process_impact_sec",
+    "defender_window_sec",
     "race_margin_sec",
     "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec",
+    "wall_clock_time_to_first_decisive_action_from_attack_start_sec",
 )
 
 HIGH_INTERFACE_BANNED_WORDS = (
@@ -346,14 +350,11 @@ def _capability_manifest(
             stripped_attackers
         ),
         "defender_profiles_identical": _all_equal(defender_profiles),
-        "process_physics_only_defender_for_water_treatment": (
-            testbed_id != "water_treatment"
-            or all(
-                bool(profile.get("process_physics_only"))
-                or str(profile.get("defender_observation_mode", "")).strip().lower()
-                == "process_physics_only"
-                for profile in defender_profiles
-            )
+        "process_physics_only_defender": all(
+            bool(profile.get("process_physics_only"))
+            or str(profile.get("defender_observation_mode", "")).strip().lower()
+            == "process_physics_only"
+            for profile in defender_profiles
         ),
         "observer_profiles_identical": _all_equal(observer_profiles),
         "model_backend_identical": _all_equal(
@@ -418,16 +419,19 @@ def _capability_manifest(
             varied_conditions[condition_name] = {
                 "O_A": "normalized_observation",
                 "I_A": "normalized_interface",
+                "D": "process_physics_only_full_containment",
             }
         elif index == 1:
             varied_conditions[condition_name] = {
                 "O_A": "normalized_observation",
                 "I_A": "grounded_neutral_interface",
+                "D": "process_physics_only_full_containment",
             }
         else:
             varied_conditions[condition_name] = {
                 "O_A": "additional_runtime_evidence",
                 "I_A": "grounded_neutral_interface",
+                "D": "process_physics_only_full_containment",
             }
 
     manifest = {
@@ -450,11 +454,7 @@ def _capability_manifest(
             "U_A": "same_underlying_executable_action_authority_and_validator",
             "pi_A": "same_agentic_policy_scaffold",
             "Delta_A": "same_model_backend_token_budget_cooldowns_duration",
-            "D": (
-                "same_process_physics_only_full_containment_defender"
-                if testbed_id == "water_treatment"
-                else "same_agentic_full_containment_defender"
-            ),
+            "D": "same_process_physics_only_full_containment_defender",
         },
         "varied_conditions": varied_conditions,
         "branch_selection": branch_ids,
@@ -790,11 +790,42 @@ def _postprocess_stateaware_results(
                     if isinstance(stateaware, dict)
                     else None
                 ),
+                "attacker_caused_critical_impact": (
+                    stateaware.get("attacker_caused_critical_impact")
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
                 "critical_process_impact": metrics.get("critical_process_impact"),
                 "physical_safety_violation": metrics.get("physical_safety_violation"),
                 "availability_violation": metrics.get("availability_violation"),
                 "control_integrity_violation": metrics.get(
                     "control_integrity_violation"
+                ),
+                "critical_predicate_before": (
+                    stateaware.get("critical_predicate_before")
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
+                "critical_predicate_after": (
+                    stateaware.get("critical_predicate_after")
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
+                "critical_state_before": json.dumps(
+                    (
+                        stateaware.get("critical_state_before")
+                        if isinstance(stateaware, dict)
+                        else None
+                    ),
+                    sort_keys=True,
+                ),
+                "critical_state_after": json.dumps(
+                    (
+                        stateaware.get("critical_state_after")
+                        if isinstance(stateaware, dict)
+                        else None
+                    ),
+                    sort_keys=True,
                 ),
                 "safety_violation_count": metrics.get("safety_violation_count"),
                 "attacker_caused_safety_violation": (
@@ -813,10 +844,21 @@ def _postprocess_stateaware_results(
                 "T_contain": canonical.get("T_contain"),
                 "T_unsafe": canonical.get("T_unsafe"),
                 "T_critical": canonical.get("T_critical"),
+                "contained_before_critical_impact": metrics.get(
+                    "contained_before_critical_impact"
+                ),
+                "defender_window_sec": metrics.get("defender_window_sec"),
                 "race_margin_sec": metrics.get("race_margin_sec"),
                 "wall_clock_T_first_state_appropriate": (
                     stateaware.get(
                         "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec"
+                    )
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
+                "wall_clock_T_first_decisive": (
+                    stateaware.get(
+                        "wall_clock_time_to_first_decisive_action_from_attack_start_sec"
                     )
                     if isinstance(stateaware, dict)
                     else None

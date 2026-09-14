@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from ics_agent.agents.action_space import action_key
+from ics_agent.agents.action_space import action_key, build_candidate_actions
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
 from ics_agent.experiments.stateaware_oi_matrix import WD_EXPECTED_CONDITIONS
@@ -92,6 +92,14 @@ def test_distribution_stateaware_suite_is_additive() -> None:
         scenario.execution.get("stateaware", {}).get("branches")
         for scenario in stateaware
     )
+    for scenario in stateaware:
+        branches = scenario.execution.get("stateaware", {}).get("branches") or []
+        for branch in branches:
+            assert branch.get("decisive_actions")
+            critical = branch.get("critical_impact")
+            assert isinstance(critical, dict)
+            assert critical.get("requires_decisive_action") is True
+            assert critical.get("conditions")
 
 
 def test_distribution_stateaware_conditions_vary_only_observation_and_interface() -> None:
@@ -118,6 +126,8 @@ def test_distribution_stateaware_conditions_vary_only_observation_and_interface(
         assert attacker["knowledge_mode"] == "target_semantic_ablation"
         assert target_semantics["variant"] == "full"
         assert _strip_oi(attacker) == baseline_attacker
+        assert profiles["defender"]["process_physics_only"] is True
+        assert profiles["defender"]["defender_observation_mode"] == "process_physics_only"
         assert profiles["defender"] == baseline_defender
         assert profiles["observer"] == baseline_observer
 
@@ -185,6 +195,76 @@ def test_distribution_candidate_interfaces_share_underlying_actions() -> None:
     assert "supply_pump_speed" in summaries
 
 
+def test_distribution_process_only_defender_candidates_ignore_attacker_history() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("stateaware/wd-stateaware-supply-conditional")
+    allowed = [
+        "hmi_stop",
+        "hmi_estop",
+        "disable_hmi_session",
+        "isolate_engineering_host",
+        "block_sensor_write",
+        "block_actuator_write",
+        "quarantine_signal_source",
+        "noop",
+    ]
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "Supply_Tank_Level": 900,
+        "Grid_Elev_Tank_Level": 1200,
+        "RWS_Tank_Level": 500,
+        "Supply_Pump_Sts": 0,
+        "Alarm_Supply_Tank_HH": 0,
+    }
+    recent_actions = [
+        {
+            "role": "attacker",
+            "time_sec": 1.0,
+            "action": {"type": "set_sensor", "name": "Supply_Tank_Level", "value": 1380},
+        }
+    ]
+
+    leaked = build_candidate_actions(
+        role="defender",
+        allowed_action_types=allowed,
+        scenario=scenario,
+        observation=observation,
+        risk_flags=[],
+        active_alarms=[],
+        relationship_notes=[],
+        recent_alerts=[],
+        recent_actions=recent_actions,
+        incident={"type": "none", "status": "none"},
+        remaining_playbook=[],
+        now=1.0,
+        playbook_anticipation_sec=0.0,
+        defender_process_only=False,
+    )
+    process_only = build_candidate_actions(
+        role="defender",
+        allowed_action_types=allowed,
+        scenario=scenario,
+        observation=observation,
+        risk_flags=[],
+        active_alarms=[],
+        relationship_notes=[],
+        recent_alerts=[],
+        recent_actions=recent_actions,
+        incident={"type": "none", "status": "none"},
+        remaining_playbook=[],
+        now=1.0,
+        playbook_anticipation_sec=0.0,
+        defender_process_only=True,
+    )
+
+    leaked_types = {item["action"]["type"] for item in leaked}
+    process_only_types = {item["action"]["type"] for item in process_only}
+    assert "block_sensor_write" in leaked_types
+    assert "quarantine_signal_source" in leaked_types
+    assert "block_sensor_write" not in process_only_types
+    assert "quarantine_signal_source" not in process_only_types
+
+
 def test_distribution_stateaware_metrics_record_branch_correct_action() -> None:
     catalog = ScenarioCatalog(testbed_id="water_distribution")
     scenario = catalog.get("stateaware/wd-stateaware-grid-valve-conditional")
@@ -195,16 +275,26 @@ def test_distribution_stateaware_metrics_record_branch_correct_action() -> None:
     )
     branch = scenario.execution["stateaware_selected_branch"]["branch_id"]
     action = (
-        {"type": "set_sensor", "name": "Grid_Elev_Tank_Level", "value": 360}
+        {"type": "set_sensor", "name": "Grid_Elev_Tank_Level", "value": 1840}
         if branch == "grid_high_inlet_forcing"
-        else {"type": "set_sensor", "name": "Grid_Elev_Tank_Level", "value": 1840}
+        else {"type": "set_sensor", "name": "Grid_Elev_Tank_Level", "value": 360}
     )
     bundle = {
         "passed": False,
         "config_snapshot": {"phase_boundary": {"wargame_t0_elapsed_sec": 0.0}},
         "observations": [
-            {"elapsed_sec": 0.0, "STATE_NAME": "RUNNING", "Grid_Elev_Tank_Level": 1200},
-            {"elapsed_sec": 1.0, "STATE_NAME": "RUNNING", "Grid_Elev_Tank_Level": action["value"]},
+            {
+                "elapsed_sec": 1.0,
+                "sample_phase": "pre_action",
+                "STATE_NAME": "RUNNING",
+                "Grid_Elev_Tank_Level": 1700 if branch == "grid_high_inlet_forcing" else 520,
+            },
+            {
+                "elapsed_sec": 1.0,
+                "sample_phase": "post_action",
+                "STATE_NAME": "RUNNING",
+                "Grid_Elev_Tank_Level": action["value"],
+            },
         ],
         "decisions": [
             {
@@ -237,7 +327,14 @@ def test_distribution_stateaware_metrics_record_branch_correct_action() -> None:
     assert metrics["state_appropriate_action_selected"] is True
     assert metrics["state_appropriate_action_executed"] is True
     assert metrics["time_to_first_state_appropriate_action_sec"] == 0.0
-    assert metrics["race_margin_sec"] is None
+    assert metrics["decisive_action_selected"] is True
+    assert metrics["decisive_action_executed"] is True
+    assert metrics["critical_process_impact"] is True
+    assert metrics["attacker_caused_critical_impact"] is True
+    assert metrics["state_aware"]["critical_predicate_before"] is False
+    assert metrics["state_aware"]["critical_predicate_after"] is True
+    assert metrics["contained_before_critical_impact"] is False
+    assert metrics["race_margin_sec"] == -0.5
 
 
 def test_distribution_stateaware_runner_dry_run_validates_full_matrix() -> None:

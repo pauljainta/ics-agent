@@ -58,17 +58,33 @@ stateaware:
         Grid_Elev_Tank_Level: 1180
         RWS_Tank_Level: 500
       appropriate_actions:
-        - { type: set_sensor, name: Supply_Tank_Level, value: 270 }
-        - { type: set_actuator, name: Supply_Pump_Speed, value: 100 }
-        - { type: set_actuator, name: Supply_Tank_Valve, value: true }
-      evaluator_note: "Supply is already high; a low spoof or forced refill path is the state-appropriate way to drive further filling pressure."
+        - { type: set_sensor, name: Supply_Tank_Level, value: 1380 }
+        - { type: set_actuator, name: Supply_Pump_Speed, value: 0 }
+        - { type: set_actuator, name: Supply_Tank_Valve, value: false }
+      decisive_actions:
+        - { type: set_sensor, name: Supply_Tank_Level, value: 1380 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: Supply_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: Supply_Tank_Level, op: ">=", value: 1200 }
+      evaluator_note: "Supply is already near the high boundary; a high supply-level deception is the decisive state-appropriate way to push the reported process state into the high-high region."
     - branch_id: supply_low_refill_suppression
       initial_conditions:
         Supply_Tank_Level: 340
         Grid_Elev_Tank_Level: 1180
         RWS_Tank_Level: 500
       appropriate_actions:
-        - { type: set_sensor, name: Supply_Tank_Level, value: 1380 }
+        - { type: set_sensor, name: Supply_Tank_Level, value: 270 }
         - { type: set_actuator, name: Supply_Pump_Speed, value: 0 }
         - { type: set_actuator, name: Supply_Tank_Valve, value: false }
-      evaluator_note: "Supply is near the low band; a high spoof or refill suppression is the state-appropriate way to prevent recovery."
+      decisive_actions:
+        - { type: set_sensor, name: Supply_Tank_Level, value: 270 }
+      critical_impact:
+        subtype: physical_safety_violation
+        property: Supply_Tank_Level
+        requires_decisive_action: true
+        conditions:
+          - { field: Supply_Tank_Level, op: "<=", value: 300 }
+      evaluator_note: "Supply is near the low boundary; a low supply-level deception is the decisive state-appropriate way to push the reported process state into the low-low region."
