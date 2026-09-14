@@ -1158,6 +1158,7 @@ def _compute_stateaware_metrics(
     detection_time: float | None,
     first_safety_violation_time: float | None,
     first_containment_event_time: float | None,
+    pre_attack_containment: bool = False,
     wargame_origin: float,
     wargame_t0_utc: str | None,
 ) -> dict[str, Any] | None:
@@ -1261,6 +1262,7 @@ def _compute_stateaware_metrics(
         "decisive_action_caused_critical_impact": bool(
             decisive_executed_item is not None and critical.get("critical_process_impact")
         ),
+        "attacker_execution_cutoff_pre_attack_start": bool(pre_attack_containment),
         "time_to_first_state_appropriate_selection_sec": _relative_time(
             selected_time,
             attack_start=attack_start,
@@ -1287,6 +1289,10 @@ def _compute_stateaware_metrics(
             _wall_clock_delta_sec(decisive_executed_item, start_item=attack_start_item)
         ),
         **critical,
+        "time_to_critical_process_impact_from_wargame_t0_sec": _relative_time(
+            critical_time,
+            attack_start=wargame_origin,
+        ),
         "contained_before_critical_impact": contained_before_critical,
         "defender_window_sec": defender_window,
         "race_margin_sec": race_margin,
@@ -1663,6 +1669,14 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         containment_events,
         lambda _item: True,
     )
+    pre_attack_containment = bool(
+        first_containment_event_time is not None
+        and attack_start is not None
+        and float(first_containment_event_time) < float(attack_start)
+    )
+    valid_first_containment_event_time = (
+        None if pre_attack_containment else first_containment_event_time
+    )
     attack_start_item = _first_event_item(attacker_actions, attack_start=attack_start)
     attacker_effect_capable_actions = [
         item
@@ -1717,9 +1731,9 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         blocked_attacker_events
     )
     attacker_executed_after_containment = any(
-        float(item.get("time_sec", 0.0)) > float(first_containment_event_time)
+        float(item.get("time_sec", 0.0)) > float(valid_first_containment_event_time)
         for item in attacker_actions
-        if first_containment_event_time is not None
+        if valid_first_containment_event_time is not None
     )
     trajectory = _trajectory_sequences(actions)
     attacker_metrics = (
@@ -2243,13 +2257,23 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         ),
         "attacker_execution_cutoff_activated": bool(containment_events),
         "attacker_execution_cutoff_activation_time_sec": _relative_time(
-            first_containment_event_time,
+            valid_first_containment_event_time,
             attack_start=attack_start,
         ),
         "attacker_execution_cutoff_activation_from_wargame_t0_sec": _relative_time(
+            valid_first_containment_event_time,
+            attack_start=wargame_origin,
+        ),
+        "raw_attacker_execution_cutoff_activation_time_sec": _relative_time(
+            first_containment_event_time,
+            attack_start=attack_start,
+        ),
+        "raw_attacker_execution_cutoff_activation_from_wargame_t0_sec": _relative_time(
             first_containment_event_time,
             attack_start=wargame_origin,
         ),
+        "attacker_execution_cutoff_pre_attack_start": pre_attack_containment,
+        "invalid_precontained_run": pre_attack_containment,
         "blocked_attacker_action_count": len(blocked_attacker_events),
         "blocked_attacker_action_types": [
             str(item.get("attempted_action_type", ""))
@@ -2257,7 +2281,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         ],
         "attacker_actions_stopped_after_containment": (
             False
-            if first_containment_event_time is None
+            if valid_first_containment_event_time is None
             else not attacker_executed_after_containment
         ),
         "containment_before_safety_violation": contained_before_violation,
@@ -2292,7 +2316,8 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         attack_start_item=attack_start_item,
         detection_time=detection_time,
         first_safety_violation_time=first_safety_violation_time,
-        first_containment_event_time=first_containment_event_time,
+        first_containment_event_time=valid_first_containment_event_time,
+        pre_attack_containment=pre_attack_containment,
         wargame_origin=wargame_origin,
         wargame_t0_utc=phase_boundary.get("wargame_t0_utc"),
     )
@@ -2388,6 +2413,8 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec": wall_clock_metrics[
             "wall_clock_time_to_effective_containment_cutoff_from_wargame_t0_sec"
         ],
+        "attacker_execution_cutoff_pre_attack_start": pre_attack_containment,
+        "invalid_precontained_run": pre_attack_containment,
         "time_to_first_defender_action_sec": defender_intervention_metrics[
             "time_to_first_action_sec"
         ],
@@ -2497,6 +2524,11 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
         ),
         "time_to_critical_process_impact_sec": (
             state_aware_metrics.get("time_to_critical_process_impact_sec")
+            if state_aware_metrics
+            else None
+        ),
+        "time_to_critical_process_impact_from_wargame_t0_sec": (
+            state_aware_metrics.get("time_to_critical_process_impact_from_wargame_t0_sec")
             if state_aware_metrics
             else None
         ),

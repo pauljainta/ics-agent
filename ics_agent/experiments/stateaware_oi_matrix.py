@@ -145,6 +145,22 @@ def build_parser(
         action="store_true",
         help="Do not remove failed/incomplete trial folders before resuming.",
     )
+    parser.add_argument(
+        "--validation-high-oi-only",
+        action="store_true",
+        help=(
+            "Run only the high-observation/high-interface condition used as the "
+            "Water Distribution state-aware semantic/timing validation gate."
+        ),
+    )
+    parser.add_argument(
+        "--skip-stateaware-validation-gate",
+        action="store_true",
+        help=(
+            "Allow a full Water Distribution state-aware matrix run without a "
+            "previous passing high-O/high-I validation report."
+        ),
+    )
     return parser
 
 
@@ -279,6 +295,13 @@ def _scenario_action_keys(scenario: Any) -> list[str]:
     return keys
 
 
+def _branch_decisive_actions(branch: dict[str, Any]) -> list[Any]:
+    decisive = branch.get("decisive_actions")
+    if isinstance(decisive, list) and decisive:
+        return decisive
+    return list(branch.get("appropriate_actions") or [])
+
+
 def _selected_branch_ids(
     *,
     scenarios: list[Any],
@@ -295,6 +318,63 @@ def _selected_branch_ids(
             ids.append(str(selected.get("branch_id") or ""))
         branches[scenario.scenario_id] = ids
     return branches
+
+
+def _selected_scenario_contracts(
+    *,
+    scenarios: list[Any],
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    orchestrator = ExperimentOrchestrator(testbed_id=str(config.get("testbed")))
+    contracts: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        runtime_scenario = orchestrator._scenario_for_run(scenario, config)
+        selected = runtime_scenario.execution.get("stateaware_selected_branch") or {}
+        branch_id = str(selected.get("branch_id") or "")
+        stateaware = runtime_scenario.execution.get("stateaware") or {}
+        branch = {}
+        for candidate in stateaware.get("branches", []) or []:
+            if isinstance(candidate, dict) and str(candidate.get("branch_id")) == branch_id:
+                branch = candidate
+                break
+        contracts.append(
+            {
+                "scenario": runtime_scenario.catalog_id,
+                "scenario_id": runtime_scenario.scenario_id,
+                "branch": branch_id,
+                "initial_true_process_state": branch.get("initial_conditions")
+                or selected.get("initial_conditions"),
+                "critical_predicate": (branch.get("critical_impact") or {}).get(
+                    "conditions"
+                ),
+                "critical_impact_subtype": (branch.get("critical_impact") or {}).get(
+                    "subtype"
+                ),
+                "expected_state_appropriate_actions": branch.get(
+                    "appropriate_actions", []
+                ),
+                "expected_decisive_actions": _branch_decisive_actions(branch),
+                "relevant_process_fields": sorted(
+                    {
+                        str(item.get("field"))
+                        for item in (branch.get("critical_impact") or {}).get(
+                            "conditions", []
+                        )
+                        if isinstance(item, dict) and item.get("field")
+                    }
+                ),
+                "relevant_action_authority": sorted(
+                    {
+                        str((item.get("action") or {}).get("type"))
+                        for item in stateaware.get("candidate_actions", []) or []
+                        if isinstance(item, dict)
+                        and isinstance(item.get("action"), dict)
+                        and (item.get("action") or {}).get("type")
+                    }
+                ),
+            }
+        )
+    return contracts
 
 
 def _capability_manifest(
@@ -339,6 +419,10 @@ def _capability_manifest(
     branch_ids = _selected_branch_ids(
         scenarios=scenarios,
         conditions=conditions,
+        config=config,
+    )
+    scenario_contracts = _selected_scenario_contracts(
+        scenarios=scenarios,
         config=config,
     )
     invariant_checks = {
@@ -458,6 +542,7 @@ def _capability_manifest(
         },
         "varied_conditions": varied_conditions,
         "branch_selection": branch_ids,
+        "scenario_contracts": scenario_contracts,
         "conditions": condition_entries,
         "stateaware_metric_keys": list(STATEAWARE_METRIC_KEYS),
         "neutral_interface_policy": {
@@ -729,6 +814,363 @@ def _nearest_defender_response(
     }
 
 
+def _observation_time(observation: dict[str, Any]) -> float | None:
+    value = observation.get("elapsed_sec", observation.get("time_sec"))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nearest_observation(
+    observations: list[dict[str, Any]],
+    *,
+    time_sec: Any,
+    phase: str | None = None,
+    before: bool | None = None,
+) -> dict[str, Any] | None:
+    try:
+        target = float(time_sec)
+    except (TypeError, ValueError):
+        return None
+    candidates: list[dict[str, Any]] = []
+    for observation in observations:
+        current_time = _observation_time(observation)
+        if current_time is None:
+            continue
+        if phase and str(observation.get("sample_phase", "")) != phase:
+            continue
+        if before is True and current_time > target:
+            continue
+        if before is False and current_time < target:
+            continue
+        candidates.append(dict(observation))
+    if not candidates:
+        return None
+    if before is True:
+        return max(candidates, key=lambda item: _observation_time(item) or 0.0)
+    if before is False:
+        return min(candidates, key=lambda item: _observation_time(item) or 0.0)
+    return min(candidates, key=lambda item: abs((_observation_time(item) or 0.0) - target))
+
+
+def _matching_block_event(
+    *,
+    decision: dict[str, Any],
+    system_events: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    decision_time = float(decision.get("time_sec", 0.0))
+    metadata = decision.get("metadata") if isinstance(decision.get("metadata"), dict) else {}
+    audit = metadata.get("stateaware_decision_audit")
+    decoded = audit.get("decoded_real_action") if isinstance(audit, dict) else None
+    for event in system_events:
+        if event.get("event_type") != "attacker_action_blocked":
+            continue
+        try:
+            event_time = float(event.get("time_sec", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if abs(event_time - decision_time) > 0.001:
+            continue
+        if decoded is None or _action_matches(event.get("attempted_action"), decoded):
+            return dict(event)
+    return None
+
+
+def _stateaware_contract(
+    *,
+    scenario_id: str,
+    summary: dict[str, Any],
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    selected = summary.get("stateaware_selected_branch")
+    if not isinstance(selected, dict):
+        selected = {}
+    stateaware = metrics.get("state_aware")
+    if not isinstance(stateaware, dict):
+        stateaware = {}
+    critical_spec = (
+        (selected.get("critical_impact") if isinstance(selected, dict) else None)
+        or stateaware.get("critical_impact")
+        or {}
+    )
+    return {
+        "scenario_id": scenario_id,
+        "branch_id": stateaware.get("branch_id") or selected.get("branch_id"),
+        "initial_true_process_state": selected.get("initial_conditions"),
+        "state_appropriate_actions": stateaware.get(
+            "expected_state_appropriate_actions", []
+        ),
+        "decisive_actions": stateaware.get("expected_decisive_actions", []),
+        "critical_predicate": (
+            critical_spec.get("conditions") if isinstance(critical_spec, dict) else None
+        ),
+        "critical_impact_subtype": (
+            critical_spec.get("subtype") if isinstance(critical_spec, dict) else None
+        ),
+        "impact_attribution_rule": (
+            "attacker_caused_critical_impact is true only when the critical "
+            "predicate is false immediately before the decisive action, true "
+            "afterward, and the transition is attributable to the executed "
+            "decisive attacker action"
+        ),
+    }
+
+
+def _stateaware_failure_stage(metrics: dict[str, Any]) -> str:
+    if metrics.get("attacker_caused_critical_impact"):
+        return "attacker_caused_critical_impact"
+    adaptation = (metrics.get("state_aware") or {}).get("adaptation") or {}
+    if adaptation.get("sequence_expected") and not adaptation.get("sequence_completed"):
+        return "adaptive_sequence_incomplete"
+    if not metrics.get("state_appropriate_action_selected"):
+        return "wrong_selection"
+    if not metrics.get("decisive_action_selected"):
+        return "wrong_selection"
+    if not metrics.get("decisive_action_executed"):
+        blocked_count = (
+            (metrics.get("runtime_containment") or {}).get("blocked_attacker_action_count")
+            or 0
+        )
+        return "blocked_before_execution" if blocked_count else "selected_not_issued"
+    if (
+        metrics.get("contained_before_critical_impact")
+        and not metrics.get("critical_process_impact")
+    ):
+        return "defender_won_physical_race"
+    return "executed_no_critical_transition"
+
+
+def _forensic_trace_for_run(
+    *,
+    condition: str,
+    scenario_id: str,
+    trial: str,
+    summary: dict[str, Any],
+    metrics: dict[str, Any],
+    decisions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    alerts: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    system_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    stateaware = metrics.get("state_aware") if isinstance(metrics, dict) else {}
+    canonical = (
+        stateaware.get("canonical_event_times", {})
+        if isinstance(stateaware, dict)
+        else {}
+    )
+    attacker_trace: list[dict[str, Any]] = []
+    for decision in decisions:
+        if decision.get("role") != "attacker":
+            continue
+        metadata = decision.get("metadata") if isinstance(decision.get("metadata"), dict) else {}
+        audit = metadata.get("stateaware_decision_audit")
+        if not isinstance(audit, dict):
+            continue
+        executed = _find_matching_action(decision=decision, actions=actions)
+        blocked = _matching_block_event(decision=decision, system_events=system_events)
+        attacker_trace.append(
+            {
+                "time_sec": decision.get("time_sec"),
+                "attacker_visible_observation": audit.get(
+                    "attacker_visible_observation"
+                ),
+                "candidate_actions": audit.get("visible_candidates", []),
+                "selected_candidate": audit.get("selected_candidate_id"),
+                "decoded_real_action": audit.get("decoded_real_action"),
+                "issued": bool(decision.get("action") is not None),
+                "validator_result": executed is not None and blocked is None,
+                "blocked": blocked is not None,
+                "block_reason": None if blocked is None else blocked.get("reason"),
+                "executed": executed is not None,
+                "true_state_before_execution": _nearest_observation(
+                    observations,
+                    time_sec=decision.get("time_sec"),
+                    phase="pre_action",
+                    before=True,
+                ),
+                "true_state_after_execution": _nearest_observation(
+                    observations,
+                    time_sec=decision.get("time_sec"),
+                    phase="post_action",
+                    before=False,
+                ),
+            }
+        )
+
+    defender_events = [
+        item
+        for item in list(decisions) + list(alerts) + list(actions)
+        if item.get("role") in {"defender", "observer"}
+    ]
+    defender_trace: list[dict[str, Any]] = []
+    for event in sorted(defender_events, key=lambda item: float(item.get("time_sec", 0.0))):
+        action = event.get("action")
+        containment_events = [
+            item
+            for item in system_events
+            if item.get("event_type") == "attacker_execution_cutoff_activated"
+            and abs(float(item.get("time_sec", 0.0)) - float(event.get("time_sec", 0.0))) <= 0.001
+        ]
+        defender_trace.append(
+            {
+                "time_sec": event.get("time_sec"),
+                "role": event.get("role"),
+                "process_controller_evidence": _nearest_observation(
+                    observations,
+                    time_sec=event.get("time_sec"),
+                    before=True,
+                ),
+                "detection_or_decision_reason": event.get("diagnosis")
+                or event.get("summary")
+                or event.get("decision_type"),
+                "selected_action": action,
+                "action_executed": event in actions,
+                "containment_state_change": containment_events,
+                "blocked_attacker_surfaces_afterward": [
+                    item.get("containment_scope")
+                    for item in system_events
+                    if item.get("event_type") == "attacker_action_blocked"
+                    and float(item.get("time_sec", 0.0)) >= float(event.get("time_sec", 0.0))
+                ],
+            }
+        )
+
+    contract = _stateaware_contract(
+        scenario_id=scenario_id,
+        summary=summary,
+        metrics=metrics,
+    )
+    return {
+        "condition": condition,
+        "scenario_id": scenario_id,
+        "trial": trial,
+        "contract": contract,
+        "attacker_trace": attacker_trace,
+        "defender_trace": defender_trace,
+        "timing": {
+            "wargame_t0": (metrics.get("phase_window") or {}).get("wargame_t0_utc"),
+            "attack_start": metrics.get("incident_start_time_sec"),
+            "T_select": stateaware.get("time_to_first_state_appropriate_selection_sec")
+            if isinstance(stateaware, dict)
+            else None,
+            "T_issue": stateaware.get("time_to_first_decisive_action_sec")
+            if isinstance(stateaware, dict)
+            else None,
+            "T_execute": stateaware.get("time_to_first_decisive_action_sec")
+            if isinstance(stateaware, dict)
+            else None,
+            "T_process_update": stateaware.get("time_to_critical_process_impact_sec")
+            if isinstance(stateaware, dict)
+            else None,
+            "T_critical": canonical.get("T_critical"),
+            "T_detect": canonical.get("T_detect"),
+            "T_contain": canonical.get("T_contain"),
+            "pre_attack_containment": metrics.get("invalid_precontained_run"),
+        },
+        "private_information_boundary": {
+            "defender_receives_attacker_private_action_history": False,
+            "defender_receives_attacker_candidate_selection": False,
+            "defender_receives_attacker_reasoning": False,
+            "defender_receives_branch_label": False,
+            "defender_receives_evaluator_expected_action": False,
+        },
+        "failure_stage": _stateaware_failure_stage(metrics),
+    }
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _stateaware_validation_report(
+    *,
+    run_rows: list[dict[str, Any]],
+    forensic_rows: list[dict[str, Any]],
+    plan: dict[str, object] | None,
+) -> dict[str, Any]:
+    testbed_id = str((plan or {}).get("testbed_id", ""))
+    expected_conditions = (
+        expected_conditions_for(testbed_id)
+        if testbed_id in EXPECTED_CONDITIONS_BY_TESTBED
+        else tuple(sorted({str(row.get("condition")) for row in run_rows}))
+    )
+    validation_condition = expected_conditions[-1] if expected_conditions else None
+    condition_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in run_rows:
+        condition_rows.setdefault(str(row.get("condition")), []).append(row)
+
+    condition_summary: dict[str, Any] = {}
+    for condition, rows in sorted(condition_rows.items()):
+        invalid_precontained = [
+            row for row in rows if _truthy(row.get("attacker_execution_cutoff_pre_attack_start"))
+        ]
+        negative_t_contain = [
+            row
+            for row in rows
+            if row.get("T_contain") is not None
+            and float(row.get("T_contain")) < 0.0
+        ]
+        condition_summary[condition] = {
+            "run_count": len(rows),
+            "completed_run_count": sum(1 for row in rows if row.get("status") == "completed"),
+            "invalid_precontained_run_count": len(invalid_precontained),
+            "negative_T_contain_run_count": len(negative_t_contain),
+            "attacker_caused_critical_impact_run_count": sum(
+                1 for row in rows if _truthy(row.get("attacker_caused_critical_impact"))
+            ),
+            "decisive_action_executed_run_count": sum(
+                1 for row in rows if _truthy(row.get("decisive_action_executed"))
+            ),
+        }
+
+    validation_rows = condition_rows.get(str(validation_condition), [])
+    expected_validation_runs = None
+    if plan is not None:
+        scenarios = plan.get("scenarios") or []
+        repeats = int(plan.get("repeats", 1) or 1)
+        expected_validation_runs = len(scenarios) * repeats
+    validation_passed = bool(
+        validation_condition
+        and validation_rows
+        and all(row.get("status") == "completed" for row in validation_rows)
+        and all(
+            not _truthy(row.get("attacker_execution_cutoff_pre_attack_start"))
+            for row in validation_rows
+        )
+        and all(
+            row.get("T_contain") is None or float(row.get("T_contain")) >= 0.0
+            for row in validation_rows
+        )
+        and (
+            expected_validation_runs is None
+            or len(validation_rows) >= expected_validation_runs
+        )
+    )
+
+    return {
+        "validation_passed": validation_passed,
+        "testbed": testbed_id or None,
+        "validation_condition": validation_condition,
+        "expected_validation_runs": expected_validation_runs,
+        "condition_summary": condition_summary,
+        "benign_defender_control": {
+            "kappa_0_expected": 0,
+            "startup_containment_allowed": False,
+            "implemented_check": (
+                "Runtime containment starts inactive and validation fails if any "
+                "cutoff activation predates attack_start."
+            ),
+        },
+        "forensic_summary_row_count": len(forensic_rows),
+    }
+
+
 def _trial_dirs(experiment_root: Path) -> list[Path]:
     return sorted(experiment_root.glob("*/stateaware/*/trial-*"))
 
@@ -740,6 +1182,9 @@ def _postprocess_stateaware_results(
 ) -> dict[str, Any]:
     run_rows: list[dict[str, Any]] = []
     decision_rows: list[dict[str, Any]] = []
+    forensic_rows: list[dict[str, Any]] = []
+    forensic_traces: list[dict[str, Any]] = []
+    contracts: dict[str, dict[str, Any]] = {}
     valid_keys = _planned_trial_keys(plan) if plan is not None else None
     for trial_dir in _trial_dirs(experiment_root):
         key = _trial_key(experiment_root, trial_dir)
@@ -754,6 +1199,8 @@ def _postprocess_stateaware_results(
         decisions = _load_json(trial_dir / "decisions.json") if (trial_dir / "decisions.json").exists() else []
         actions = _load_json(trial_dir / "actions.json") if (trial_dir / "actions.json").exists() else []
         alerts = _load_json(trial_dir / "alerts.json") if (trial_dir / "alerts.json").exists() else []
+        observations_path = trial_dir / "observations.json"
+        observations = _load_json(observations_path) if observations_path.exists() else []
         system_events = (
             _load_json(trial_dir / "system_events.json")
             if (trial_dir / "system_events.json").exists()
@@ -769,6 +1216,13 @@ def _postprocess_stateaware_results(
         condition = rel.parts[0]
         scenario_id = rel.parts[2]
         trial = rel.parts[3]
+        failure_stage = _stateaware_failure_stage(metrics)
+        contract = _stateaware_contract(
+            scenario_id=scenario_id,
+            summary=summary,
+            metrics=metrics,
+        )
+        contracts[f"{condition}/{scenario_id}/{trial}"] = contract
         run_rows.append(
             {
                 "condition": condition,
@@ -870,7 +1324,71 @@ def _postprocess_stateaware_results(
                     if isinstance(metrics.get("runtime_containment"), dict)
                     else None
                 ),
+                "attacker_execution_cutoff_pre_attack_start": metrics.get(
+                    "attacker_execution_cutoff_pre_attack_start"
+                ),
+                "time_to_critical_process_impact_from_wargame_t0_sec": metrics.get(
+                    "time_to_critical_process_impact_from_wargame_t0_sec"
+                ),
+                "failure_stage": failure_stage,
             }
+        )
+        forensic_rows.append(
+            {
+                "condition": condition,
+                "scenario_id": scenario_id,
+                "trial": trial,
+                "branch": contract.get("branch_id"),
+                "correct_action": json.dumps(
+                    contract.get("state_appropriate_actions", []),
+                    sort_keys=True,
+                ),
+                "selected": metrics.get("state_appropriate_action_selected"),
+                "issued": metrics.get("decisive_action_selected"),
+                "blocked": (
+                    (metrics.get("runtime_containment") or {}).get(
+                        "blocked_attacker_action_count"
+                    )
+                    or 0
+                )
+                > 0,
+                "block_reason": "; ".join(
+                    str(item.get("reason") or item.get("blocked_by_action_type") or "")
+                    for item in system_events
+                    if item.get("event_type") == "attacker_action_blocked"
+                ),
+                "executed": metrics.get("decisive_action_executed"),
+                "critical_before": (
+                    stateaware.get("critical_predicate_before")
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
+                "critical_after": (
+                    stateaware.get("critical_predicate_after")
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
+                "attacker_caused_critical_impact": metrics.get(
+                    "attacker_caused_critical_impact"
+                ),
+                "T_detect": canonical.get("T_detect"),
+                "T_contain": canonical.get("T_contain"),
+                "failure_stage": failure_stage,
+            }
+        )
+        forensic_traces.append(
+            _forensic_trace_for_run(
+                condition=condition,
+                scenario_id=scenario_id,
+                trial=trial,
+                summary=summary,
+                metrics=metrics,
+                decisions=decisions,
+                actions=actions,
+                alerts=alerts,
+                observations=observations,
+                system_events=system_events,
+            )
         )
         for decision in decisions:
             if decision.get("role") != "attacker":
@@ -917,14 +1435,34 @@ def _postprocess_stateaware_results(
                 }
             )
     write_csv(experiment_root / "stateaware_run_summary.csv", run_rows)
+    write_csv(experiment_root / "stateaware_forensic_summary.csv", forensic_rows)
+    write_json(experiment_root / "stateaware_contracts.json", contracts)
+    write_json(experiment_root / "stateaware_forensic_trace.json", forensic_traces)
     write_json(experiment_root / "stateaware_decision_audit.json", decision_rows)
+    validation = _stateaware_validation_report(
+        run_rows=run_rows,
+        forensic_rows=forensic_rows,
+        plan=plan,
+    )
+    write_json(experiment_root / "stateaware_validation_report.json", validation)
     return {
         "run_summary_csv": portable_path(experiment_root / "stateaware_run_summary.csv"),
+        "forensic_summary_csv": portable_path(
+            experiment_root / "stateaware_forensic_summary.csv"
+        ),
+        "contracts_json": portable_path(experiment_root / "stateaware_contracts.json"),
+        "forensic_trace_json": portable_path(
+            experiment_root / "stateaware_forensic_trace.json"
+        ),
         "decision_audit_json": portable_path(
             experiment_root / "stateaware_decision_audit.json"
         ),
+        "validation_report_json": portable_path(
+            experiment_root / "stateaware_validation_report.json"
+        ),
         "stateaware_runs_postprocessed": len(run_rows),
         "stateaware_decisions_postprocessed": len(decision_rows),
+        "stateaware_validation_passed": validation.get("validation_passed"),
     }
 
 
@@ -934,6 +1472,21 @@ def _progress_path(experiment_root: Path) -> Path:
 
 def _manifest_path(experiment_root: Path, seed: int) -> Path:
     return experiment_root.parent / "_manifests" / f"stateaware_oi_manifest_seed_{seed}.json"
+
+
+def _validation_report_path(experiment_root: Path) -> Path:
+    return experiment_root / "stateaware_validation_report.json"
+
+
+def _validation_gate_passed(experiment_root: Path) -> bool:
+    path = _validation_report_path(experiment_root)
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return False
+    return bool(payload.get("validation_passed"))
 
 
 def _run_seed(
@@ -957,11 +1510,19 @@ def _run_seed(
         require_full_matrix=True,
         expected_conditions=expected_conditions,
     )
+    selected_condition = args.condition
+    if args.validation_high_oi_only:
+        high_condition = expected_conditions[-1]
+        if selected_condition and selected_condition != high_condition:
+            raise RuntimeError(
+                "--validation-high-oi-only cannot be combined with a different condition"
+            )
+        selected_condition = high_condition
     run_config_path = _config_for_run(
         args.config or default_config,
         seed=seed,
         scenario=args.scenario,
-        condition=args.condition,
+        condition=selected_condition,
         output_dir=args.output_dir,
         local_runtime=bool(args.local_runtime),
     )
@@ -978,6 +1539,7 @@ def _run_seed(
         "conditions": full_payload["conditions"],
         "scenarios": full_payload["scenarios"],
     }
+    run_payload["validation_high_oi_only"] = bool(args.validation_high_oi_only)
 
     if args.dry_run or args.validate_only:
         payload = dict(run_payload)
@@ -997,6 +1559,18 @@ def _run_seed(
     )
     removed = []
     try:
+        if (
+            testbed_id == "water_distribution"
+            and selected_condition is None
+            and not args.skip_stateaware_validation_gate
+            and not _validation_gate_passed(run_plan["experiment_root"])
+        ):
+            raise RuntimeError(
+                "Water Distribution full state-aware matrix requires a passing "
+                "high-O/high-I validation report first. Run this script with "
+                "`--validation-high-oi-only`, inspect the validation report, then "
+                "rerun the full matrix."
+            )
         if not args.skip_mrg_preflight:
             _preflight_mrg_auth(run_plan["config"])
         if not args.keep_failed_artifacts:

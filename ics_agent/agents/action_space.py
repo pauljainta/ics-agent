@@ -643,8 +643,11 @@ def _add_water_distribution_defender_candidates(
     rws_level = _coerce_number(observation.get("RWS_Tank_Level"))
     pump_running = _is_active_flag(observation.get("Supply_Pump_Sts"))
 
+    sensor_risk_flags = {"sensor_or_process_jump"}
+    if not process_only:
+        sensor_risk_flags.update({"supply_low_band", "supply_high_high_band"})
     sensor_pressure = "set_sensor" in recent_attacker_action_types or bool(
-        set(risk_flags).intersection({"sensor_or_process_jump", "supply_low_band", "supply_high_high_band"})
+        set(risk_flags).intersection(sensor_risk_flags)
     )
     actuator_pressure = "set_actuator" in recent_attacker_action_types or (
         "command_status_divergence" in risk_flags

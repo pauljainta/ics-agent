@@ -209,6 +209,55 @@ class ExperimentOrchestrator:
         }
 
     @staticmethod
+    def _attacker_action_has_process_effect(action: dict[str, Any] | str | None) -> bool:
+        return action_type(action) not in {
+            "",
+            "inspect_surface",
+            "noop",
+            "wait",
+            "observe",
+            "stop_episode",
+        }
+
+    @classmethod
+    def _attacker_process_effect_observed(
+        cls,
+        bundle: RunBundle,
+        *,
+        elapsed: float,
+    ) -> bool:
+        for item in bundle.executed_actions:
+            if item.get("role") != "attacker":
+                continue
+            try:
+                action_time = float(item.get("time_sec", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if action_time > float(elapsed):
+                continue
+            if cls._attacker_action_has_process_effect(item.get("action")):
+                return True
+        return False
+
+    @classmethod
+    def _should_defer_pre_effect_containment(
+        cls,
+        *,
+        role: str,
+        action: dict[str, Any],
+        profile: dict[str, Any] | None,
+        bundle: RunBundle,
+        elapsed: float,
+    ) -> bool:
+        if role != "defender" or not isinstance(profile, dict):
+            return False
+        if not bool(profile.get("defer_containment_until_attacker_effect")):
+            return False
+        if not containment_metadata(action).get("is_containment_action"):
+            return False
+        return not cls._attacker_process_effect_observed(bundle, elapsed=elapsed)
+
+    @staticmethod
     def _record_containment_activation(
         *,
         runtime_containment: dict[str, Any],
@@ -1766,6 +1815,39 @@ class ExperimentOrchestrator:
                 "stateaware_race_margin_sec": run.get("metrics", {}).get(
                     "race_margin_sec"
                 ),
+                "decisive_action_selected": run.get("metrics", {}).get(
+                    "decisive_action_selected"
+                ),
+                "decisive_action_executed": run.get("metrics", {}).get(
+                    "decisive_action_executed"
+                ),
+                "decisive_action_caused_critical_impact": run.get("metrics", {}).get(
+                    "decisive_action_caused_critical_impact"
+                ),
+                "attacker_caused_critical_impact": run.get("metrics", {}).get(
+                    "attacker_caused_critical_impact"
+                ),
+                "critical_process_impact": run.get("metrics", {}).get(
+                    "critical_process_impact"
+                ),
+                "physical_safety_impact": run.get("metrics", {}).get(
+                    "physical_safety_violation"
+                ),
+                "availability_impact": run.get("metrics", {}).get(
+                    "availability_violation"
+                ),
+                "control_integrity_impact": run.get("metrics", {}).get(
+                    "control_integrity_violation"
+                ),
+                "time_to_critical_process_impact_sec": run.get("metrics", {}).get(
+                    "time_to_critical_process_impact_sec"
+                ),
+                "time_to_critical_process_impact_from_wargame_t0_sec": run.get(
+                    "metrics", {}
+                ).get("time_to_critical_process_impact_from_wargame_t0_sec"),
+                "attacker_execution_cutoff_pre_attack_start": run.get(
+                    "metrics", {}
+                ).get("attacker_execution_cutoff_pre_attack_start"),
             }
             for run in attack_runs
         ]
@@ -1868,6 +1950,55 @@ class ExperimentOrchestrator:
             for run in completed
             if run.get("metrics", {}).get("state_appropriate_action_executed")
         ]
+        decisive_selected_runs = [
+            run for run in completed if run.get("metrics", {}).get("decisive_action_selected")
+        ]
+        decisive_executed_runs = [
+            run for run in completed if run.get("metrics", {}).get("decisive_action_executed")
+        ]
+        attacker_critical_impact_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("attacker_caused_critical_impact")
+        ]
+        physical_safety_impact_runs = [
+            run for run in completed if run.get("metrics", {}).get("physical_safety_violation")
+        ]
+        availability_impact_runs = [
+            run for run in completed if run.get("metrics", {}).get("availability_violation")
+        ]
+        control_integrity_impact_runs = [
+            run for run in completed if run.get("metrics", {}).get("control_integrity_violation")
+        ]
+        invalid_precontained_runs = [
+            run for run in completed if run.get("metrics", {}).get("invalid_precontained_run")
+        ]
+        defender_prevention_runs = [
+            run
+            for run in completed
+            if not run.get("metrics", {}).get("attacker_caused_critical_impact")
+            and bool(run.get("metrics", {}).get("decisive_action_selected"))
+            and not bool(run.get("metrics", {}).get("decisive_action_executed"))
+            and (run.get("metrics", {})
+                 .get("runtime_containment", {})
+                 .get("blocked_attacker_action_count") or 0) > 0
+            and not run.get("metrics", {}).get("invalid_precontained_run")
+        ]
+        defender_mitigation_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("attacker_caused_critical_impact")
+            and (run.get("metrics", {})
+                 .get("runtime_containment", {})
+                 .get("attacker_execution_cutoff_activated"))
+            and not run.get("metrics", {}).get("invalid_precontained_run")
+        ]
+        defender_recovery_runs = [
+            run
+            for run in completed
+            if run.get("metrics", {}).get("attacker_caused_critical_impact")
+            and run.get("metrics", {}).get("recovery_success_rate")
+        ]
 
         primary_origin = (
             "wargame_t0"
@@ -1920,6 +2051,18 @@ class ExperimentOrchestrator:
             "state_appropriate_action_executed_run_count": len(
                 state_appropriate_executed_runs
             ),
+            "decisive_action_selected_run_count": len(decisive_selected_runs),
+            "decisive_action_executed_run_count": len(decisive_executed_runs),
+            "attacker_caused_critical_impact_run_count": len(
+                attacker_critical_impact_runs
+            ),
+            "physical_safety_impact_run_count": len(physical_safety_impact_runs),
+            "availability_impact_run_count": len(availability_impact_runs),
+            "control_integrity_impact_run_count": len(control_integrity_impact_runs),
+            "defender_prevention_run_count": len(defender_prevention_runs),
+            "defender_mitigation_run_count": len(defender_mitigation_runs),
+            "defender_recovery_run_count": len(defender_recovery_runs),
+            "invalid_precontained_run_count": len(invalid_precontained_runs),
             "state_appropriate_action_selected_rate": (
                 None
                 if not completed
@@ -1937,6 +2080,11 @@ class ExperimentOrchestrator:
                 "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec"
             ),
             "stateaware_race_margin_sec_avg": average("stateaware_race_margin_sec"),
+            "avg_T_critical": average("time_to_critical_process_impact_sec"),
+            "avg_T_detect": average("time_to_detection_from_attack_start_sec"),
+            "avg_T_contain": average(
+                "time_to_effective_containment_cutoff_from_attack_start_sec"
+            ),
             "time_to_detection_sec_avg": average(primary_detection_metric),
             "time_to_detection_from_attack_start_sec_avg": average(
                 "time_to_detection_from_attack_start_sec"
@@ -2778,6 +2926,31 @@ class ExperimentOrchestrator:
                     )
                     continue
                 if action is None:
+                    continue
+
+                effective_profile = (effective_profiles or {}).get(role)
+                if self._should_defer_pre_effect_containment(
+                    role=role,
+                    action=action,
+                    profile=effective_profile,
+                    bundle=bundle,
+                    elapsed=elapsed,
+                ):
+                    bundle.system_events.append(
+                        {
+                            "timestamp_utc": utc_now(),
+                            "time_sec": round(elapsed, 3),
+                            "event_type": "pre_effect_defender_containment_deferred",
+                            "role": role,
+                            "action": dict(action),
+                            "reason": (
+                                "state-aware race semantics require a prior "
+                                "process-visible attacker effect before cutoff "
+                                "containment can become effective"
+                            ),
+                            "process_visible_attacker_effect_observed": False,
+                        }
+                    )
                     continue
 
                 action_executor = getattr(agent, "apply_action", None)

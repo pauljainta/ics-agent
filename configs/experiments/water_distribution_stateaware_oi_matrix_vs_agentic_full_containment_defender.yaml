@@ -36,6 +36,7 @@ frozen_defender_override: &frozen_defender_override
     notes: Frozen process/physics-only active full-containment defender for state-aware O/I ablation.
   process_physics_only: true
   defender_observation_mode: process_physics_only
+  defer_containment_until_attacker_effect: true
   allowed_action_types:
     - hmi_stop
     - hmi_estop

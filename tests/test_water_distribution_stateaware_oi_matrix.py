@@ -5,6 +5,7 @@ import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from ics_agent.agents.action_space import action_key, build_candidate_actions
@@ -263,6 +264,153 @@ def test_distribution_process_only_defender_candidates_ignore_attacker_history()
     assert "quarantine_signal_source" in leaked_types
     assert "block_sensor_write" not in process_only_types
     assert "quarantine_signal_source" not in process_only_types
+
+
+def test_distribution_process_only_defender_does_not_treat_startup_band_as_cyber_evidence() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("stateaware/wd-stateaware-supply-conditional")
+    allowed = [
+        "hmi_stop",
+        "hmi_estop",
+        "disable_hmi_session",
+        "isolate_engineering_host",
+        "block_sensor_write",
+        "block_actuator_write",
+        "quarantine_signal_source",
+        "noop",
+    ]
+    observation = {
+        "STATE_NAME": "RUNNING",
+        "Supply_Tank_Level": 1160,
+        "Grid_Elev_Tank_Level": 1200,
+        "RWS_Tank_Level": 500,
+        "Supply_Pump_Sts": 1,
+        "Alarm_Supply_Tank_HH": 0,
+    }
+
+    process_only = build_candidate_actions(
+        role="defender",
+        allowed_action_types=allowed,
+        scenario=scenario,
+        observation=observation,
+        risk_flags=["supply_high_high_band"],
+        active_alarms=[],
+        relationship_notes=[],
+        recent_alerts=[],
+        recent_actions=[],
+        incident={"type": "none", "status": "none"},
+        remaining_playbook=[],
+        now=0.0,
+        playbook_anticipation_sec=0.0,
+        defender_process_only=True,
+    )
+
+    process_only_types = {item["action"]["type"] for item in process_only}
+    assert "block_sensor_write" not in process_only_types
+    assert "quarantine_signal_source" not in process_only_types
+
+
+def test_distribution_pre_effect_containment_guard_defers_until_attacker_effect() -> None:
+    profile = {"defer_containment_until_attacker_effect": True}
+    bundle = SimpleNamespace(executed_actions=[])
+    action = {"type": "block_sensor_write"}
+
+    assert ExperimentOrchestrator._should_defer_pre_effect_containment(
+        role="defender",
+        action=action,
+        profile=profile,
+        bundle=bundle,
+        elapsed=0.0,
+    )
+
+    bundle.executed_actions.append(
+        {"role": "attacker", "time_sec": 0.5, "action": {"type": "inspect_surface"}}
+    )
+    assert ExperimentOrchestrator._should_defer_pre_effect_containment(
+        role="defender",
+        action=action,
+        profile=profile,
+        bundle=bundle,
+        elapsed=0.5,
+    )
+
+    bundle.executed_actions.append(
+        {
+            "role": "attacker",
+            "time_sec": 1.0,
+            "action": {
+                "type": "set_sensor",
+                "name": "Supply_Tank_Level",
+                "value": 1380,
+            },
+        }
+    )
+    assert not ExperimentOrchestrator._should_defer_pre_effect_containment(
+        role="defender",
+        action=action,
+        profile=profile,
+        bundle=bundle,
+        elapsed=1.0,
+    )
+
+
+def test_distribution_metrics_flag_pre_attack_cutoff_without_negative_t_contain() -> None:
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("stateaware/wd-stateaware-supply-conditional")
+    config = load_config(CONFIG)
+    scenario = ExperimentOrchestrator(testbed_id="water_distribution")._scenario_for_run(
+        scenario,
+        config,
+    )
+    action = {"type": "set_actuator", "name": "Supply_Pump_Speed", "value": 100}
+    bundle = {
+        "passed": False,
+        "config_snapshot": {"phase_boundary": {"wargame_t0_elapsed_sec": 0.0}},
+        "observations": [
+            {
+                "elapsed_sec": 0.0,
+                "sample_phase": "pre_action",
+                "STATE_NAME": "RUNNING",
+                "Supply_Tank_Level": 1160,
+                "Supply_Pump_Speed": 0,
+            },
+            {
+                "elapsed_sec": 1.0,
+                "sample_phase": "post_action",
+                "STATE_NAME": "RUNNING",
+                "Supply_Tank_Level": 1185,
+                "Supply_Pump_Speed": 100,
+            },
+        ],
+        "decisions": [
+            {
+                "role": "attacker",
+                "time_sec": 1.0,
+                "action": action,
+                "metadata": {"stateaware_decision_audit": {"decoded_real_action": action}},
+            }
+        ],
+        "executed_actions": [{"role": "attacker", "time_sec": 1.0, "action": action}],
+        "alerts": [],
+        "system_events": [
+            {"event_type": "attacker_execution_cutoff_activated", "time_sec": 0.0}
+        ],
+    }
+
+    metrics = compute_metrics(
+        bundle,
+        {
+            "suite": scenario.suite,
+            "scenario_id": scenario.scenario_id,
+            "execution": scenario.execution,
+            "metadata": scenario.metadata,
+        },
+    )
+
+    assert metrics["invalid_precontained_run"] is True
+    assert metrics["runtime_containment"]["attacker_execution_cutoff_pre_attack_start"] is True
+    assert metrics["runtime_containment"]["attacker_execution_cutoff_activation_time_sec"] is None
+    assert metrics["state_aware"]["canonical_event_times"]["T_contain"] is None
 
 
 def test_distribution_stateaware_metrics_record_branch_correct_action() -> None:
