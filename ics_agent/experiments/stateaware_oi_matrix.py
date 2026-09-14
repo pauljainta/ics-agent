@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import shlex
 import shutil
 import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -19,7 +22,7 @@ from ics_agent.utils import dump_yaml, load_yaml, utc_now
 
 EXPECTED_CONDITIONS = (
     "stateaware_fullKt_normO_normI_processDefender",
-    "stateaware_fullKt_highO_normI_processDefender",
+    "stateaware_fullKt_normO_highI_processDefender",
     "stateaware_fullKt_highO_highI_processDefender",
 )
 WD_EXPECTED_CONDITIONS = (
@@ -30,6 +33,18 @@ WD_EXPECTED_CONDITIONS = (
 EXPECTED_CONDITIONS_BY_TESTBED = {
     "water_treatment": EXPECTED_CONDITIONS,
     "water_distribution": WD_EXPECTED_CONDITIONS,
+}
+EXPECTED_OI_BY_TESTBED = {
+    "water_treatment": {
+        EXPECTED_CONDITIONS[0]: ("normalized_observation", "normalized_interface"),
+        EXPECTED_CONDITIONS[1]: ("normalized_observation", "grounded_interface"),
+        EXPECTED_CONDITIONS[2]: ("high_observation", "grounded_interface"),
+    },
+    "water_distribution": {
+        WD_EXPECTED_CONDITIONS[0]: ("normalized_observation", "normalized_interface"),
+        WD_EXPECTED_CONDITIONS[1]: ("normalized_observation", "grounded_interface"),
+        WD_EXPECTED_CONDITIONS[2]: ("high_observation", "grounded_interface"),
+    },
 }
 EXPECTED_ORIGINAL_ATTACK_COUNTS = {
     "water_treatment": 18,
@@ -108,9 +123,21 @@ def build_parser(
     )
     parser.add_argument(
         "--condition",
-        choices=expected_conditions,
+        action="append",
         default=None,
-        help="Optional single condition to execute after validating the full matrix.",
+        help=(
+            "Optional condition to execute. Accepts exact condition names or "
+            "aliases such as normO_normI, normO_highI, highO_highI, and "
+            "all-needed. May be repeated."
+        ),
+    )
+    parser.add_argument(
+        "--conditions",
+        default=None,
+        help=(
+            "Optional comma-separated condition list. Uses the same aliases as "
+            "--condition."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -157,8 +184,8 @@ def build_parser(
         "--skip-stateaware-validation-gate",
         action="store_true",
         help=(
-            "Allow a full Water Distribution state-aware matrix run without a "
-            "previous passing high-O/high-I validation report."
+            "Compatibility no-op. The full runner is standalone and no longer "
+            "requires a separate high-O/high-I validation report."
         ),
     )
     return parser
@@ -193,12 +220,79 @@ def _scenario_selector(scenario: str | None) -> str | None:
     return f"stateaware/{text}"
 
 
+def _condition_aliases_for(
+    *,
+    testbed_id: str,
+    expected_conditions: tuple[str, ...],
+) -> dict[str, list[str]]:
+    aliases = {
+        "all": list(expected_conditions),
+        "full-matrix": list(expected_conditions),
+        "full_matrix": list(expected_conditions),
+    }
+    if len(expected_conditions) >= 3:
+        aliases.update(
+            {
+                "normO_normI": [expected_conditions[0]],
+                "normo_normi": [expected_conditions[0]],
+                "normO_highI": [expected_conditions[1]],
+                "normo_highi": [expected_conditions[1]],
+                "highO_highI": [expected_conditions[2]],
+                "higho_highi": [expected_conditions[2]],
+                "all-needed": [expected_conditions[0], expected_conditions[1]],
+                "all_needed": [expected_conditions[0], expected_conditions[1]],
+            }
+        )
+    return aliases
+
+
+def _selected_conditions(
+    args: argparse.Namespace,
+    *,
+    testbed_id: str,
+    expected_conditions: tuple[str, ...],
+) -> list[str] | None:
+    tokens: list[str] = []
+    for value in args.condition or []:
+        tokens.extend(
+            item.strip()
+            for item in str(value).split(",")
+            if item.strip()
+        )
+    if args.conditions:
+        tokens.extend(
+            item.strip()
+            for item in str(args.conditions).split(",")
+            if item.strip()
+        )
+    if not tokens:
+        return None
+
+    aliases = _condition_aliases_for(
+        testbed_id=testbed_id,
+        expected_conditions=expected_conditions,
+    )
+    selected: list[str] = []
+    for token in tokens:
+        if token in expected_conditions:
+            resolved = [token]
+        elif token in aliases:
+            resolved = aliases[token]
+        else:
+            valid = ", ".join([*aliases.keys(), *expected_conditions])
+            raise RuntimeError(f"unknown condition selector `{token}`; valid selectors: {valid}")
+        for condition in resolved:
+            if condition not in selected:
+                selected.append(condition)
+    return selected
+
+
 def _config_for_run(
     config_arg: str | Path,
     *,
     seed: int,
     scenario: str | None,
-    condition: str | None,
+    conditions: list[str] | None,
     output_dir: str | None,
     local_runtime: bool = False,
 ) -> Path:
@@ -216,8 +310,12 @@ def _config_for_run(
     stem_parts = [Path(config_path).stem, f"seed_{int(seed)}"]
     if scenario:
         stem_parts.append(str(scenario).replace("/", "_"))
-    if condition:
-        stem_parts.append(condition)
+    if conditions:
+        if len(conditions) == 1:
+            stem_parts.append(conditions[0])
+        else:
+            stem_parts.append("conditions")
+            stem_parts.extend(conditions)
     generated_path = generated_dir / ("_".join(stem_parts) + ".yaml")
 
     generated = deepcopy(raw_config)
@@ -241,17 +339,20 @@ def _config_for_run(
     selector = _scenario_selector(scenario)
     if selector:
         generated["scenario_selectors"] = [selector]
-    if condition:
-        conditions = generated.get("conditions")
-        if not isinstance(conditions, list):
+    if conditions:
+        condition_specs = generated.get("conditions")
+        if not isinstance(condition_specs, list):
             raise RuntimeError("state-aware config has no conditions list")
-        selected = [
-            item
-            for item in conditions
-            if isinstance(item, dict) and str(item.get("name")) == condition
-        ]
-        if len(selected) != 1:
-            raise RuntimeError(f"condition `{condition}` not found exactly once")
+        selected = []
+        for condition in conditions:
+            matches = [
+                item
+                for item in condition_specs
+                if isinstance(item, dict) and str(item.get("name")) == condition
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(f"condition `{condition}` not found exactly once")
+            selected.extend(matches)
         generated["conditions"] = selected
     dump_yaml(generated_path, generated)
     return generated_path
@@ -467,6 +568,18 @@ def _capability_manifest(
     for condition, attacker in zip(conditions, attacker_profiles):
         stateaware = dict(attacker.get("stateaware_oi") or {})
         target_semantics = dict(attacker.get("target_semantics") or {})
+        expected_oi = EXPECTED_OI_BY_TESTBED.get(testbed_id, {}).get(
+            str(condition.get("name"))
+        )
+        actual_oi = (
+            str(stateaware.get("observation_variant")),
+            str(stateaware.get("interface_variant")),
+        )
+        if expected_oi is not None and actual_oi != expected_oi:
+            raise RuntimeError(
+                "state-aware O/I condition assertion failed for "
+                f"{condition.get('name')}: expected O/I {expected_oi}, got {actual_oi}"
+            )
         condition_entries.append(
             {
                 "condition": str(condition.get("name")),
@@ -489,8 +602,8 @@ def _capability_manifest(
             }
         elif testbed_id == "water_treatment" and index == 1:
             varied_conditions[condition_name] = {
-                "O_A": "additional_runtime_evidence",
-                "I_A": "normalized_interface",
+                "O_A": "normalized_observation",
+                "I_A": "grounded_neutral_interface",
                 "D": "process_physics_only_full_containment",
             }
         elif testbed_id == "water_treatment":
@@ -641,6 +754,82 @@ def _preflight_mrg_auth(config: dict[str, object]) -> None:
             "Run `mrg login`, then rerun this script. "
             f"Details: {detail}"
         )
+    user = (result.stdout or "").strip()
+    xdc = str(environment.get("xdc", "")).strip()
+    target = str(environment.get("controller_host") or "").strip()
+    if not target and str(environment.get("testbed", "")).strip() in {
+        "water_treatment",
+        "water_distribution",
+    }:
+        target = "controller"
+    if not target:
+        target = str(
+            environment.get("access_host") or environment.get("jump_host") or ""
+        ).strip()
+    if not xdc or not target:
+        return
+    if xdc.count(".") == 0 and user:
+        xdc_ref = f"{xdc}.{user}"
+    else:
+        xdc_ref = xdc
+    xdc_command = ["mrg"]
+    if merge_server:
+        xdc_command.extend(["-s", merge_server])
+    xdc_command.extend(["xdc", "ssh", "-x", xdc_ref, target])
+    marker = "__ICS_AGENT_STATEAWARE_XDC_PREFLIGHT_OK__"
+    rc_marker = "__ICS_AGENT_STATEAWARE_XDC_PREFLIGHT_RC__:"
+    remote_input = "\n".join(
+        [
+            "unset PROMPT_COMMAND || true",
+            "export PS1=''",
+            "export PS2=''",
+            f"printf '%s\\n' {shlex.quote(marker)}",
+            "true",
+            "__ics_agent_preflight_rc__=$?",
+            f"printf '%s%s\\n' {shlex.quote(rc_marker)} \"$__ics_agent_preflight_rc__\"",
+            'exit "$__ics_agent_preflight_rc__"',
+        ]
+    ) + "\n"
+    try:
+        xdc_result = subprocess.run(
+            ["script", "-q", "-c", shlex.join(xdc_command), "/dev/null"],
+            input=remote_input,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("`script` is not installed or is not on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("MRG XDC SSH preflight timed out.") from exc
+    transcript = (xdc_result.stdout or "") + (xdc_result.stderr or "")
+    lines = [line.strip() for line in transcript.replace("\r", "\n").splitlines()]
+    remote_rc = None
+    for line in lines:
+        if not line.startswith(rc_marker):
+            continue
+        try:
+            remote_rc = int(line[len(rc_marker) :].strip())
+        except ValueError:
+            remote_rc = -1
+        break
+    if xdc_result.returncode != 0 or marker not in lines or remote_rc != 0:
+        detail = transcript.strip()
+        if "cert has expired" in detail:
+            guidance = (
+                "The XDC SSH certificate is expired. Refresh the MergeTB/XDC "
+                "session, then rerun this script."
+            )
+        else:
+            guidance = (
+                "The configured XDC cannot reach the configured controller/access "
+                "target. Verify the activation and XDC attachment, then rerun."
+            )
+        raise RuntimeError(
+            "MRG XDC preflight failed before launching scenario trials. "
+            f"{guidance} Details: {detail}"
+        )
 
 
 def _read_status(path: Path) -> str | None:
@@ -727,6 +916,40 @@ def _path_from_portable(value: Any) -> Path | None:
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text())
+
+
+def _coerce_csv_value(value: str | None) -> Any:
+    if value is None:
+        return None
+    text = value.strip()
+    if text == "":
+        return None
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        if "." not in text and "e" not in lowered:
+            return int(text)
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _load_observations(trial_dir: Path) -> list[dict[str, Any]]:
+    json_path = trial_dir / "observations.json"
+    if json_path.exists():
+        payload = _load_json(json_path)
+        return payload if isinstance(payload, list) else []
+    csv_path = trial_dir / "observations.csv"
+    if not csv_path.exists():
+        return []
+    with csv_path.open(newline="") as handle:
+        return [
+            {key: _coerce_csv_value(value) for key, value in row.items()}
+            for row in csv.DictReader(handle)
+        ]
 
 
 def _values_match(actual: Any, expected: Any) -> bool:
@@ -1088,6 +1311,152 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes"}
 
 
+def _first_matching_decision(
+    *,
+    decisions: list[dict[str, Any]],
+    metrics: dict[str, Any],
+    decisive: bool,
+) -> dict[str, Any] | None:
+    predicate = _decisive_action if decisive else _state_appropriate
+    for decision in sorted(decisions, key=lambda item: float(item.get("time_sec", 0.0))):
+        if decision.get("role") != "attacker":
+            continue
+        metadata = decision.get("metadata") if isinstance(decision.get("metadata"), dict) else {}
+        audit = metadata.get("stateaware_decision_audit")
+        decoded = audit.get("decoded_real_action") if isinstance(audit, dict) else None
+        if predicate(decoded or decision.get("action"), metrics):
+            return decision
+    return None
+
+
+def _decision_issued_action(decision: dict[str, Any] | None) -> bool:
+    return bool(decision is not None and isinstance(decision.get("action"), dict))
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean(values: list[Any]) -> float | None:
+    numeric = [_float_or_none(value) for value in values]
+    numeric = [value for value in numeric if value is not None]
+    if not numeric:
+        return None
+    return round(sum(numeric) / len(numeric), 3)
+
+
+def _final_classification(row: dict[str, Any]) -> str:
+    if _truthy(row.get("invalid_precontained_run")):
+        return "invalid_precontained_run"
+    if _truthy(row.get("critical_predicate_before")):
+        return "invalid_initial_critical_state"
+    if _truthy(row.get("attacker_caused_critical_impact")):
+        if _truthy(row.get("recovery_success_rate")):
+            return "attacker_impact_plus_defender_recovery"
+        if row.get("T_contain") is not None:
+            return "attacker_impact_plus_defender_mitigation"
+        return "attacker_critical_impact"
+    if _truthy(row.get("contained_before_critical_impact")):
+        return "defender_prevention"
+    failure_stage = str(row.get("failure_stage") or "")
+    if failure_stage == "wrong_selection":
+        return "attacker_policy_failure"
+    if failure_stage in {"selected_not_issued", "blocked_before_execution"}:
+        return "attacker_execution_failure"
+    if failure_stage == "adaptive_sequence_incomplete":
+        return "adaptive_sequence_incomplete"
+    return failure_stage or "attacker_policy_failure"
+
+
+def _stateaware_condition_aggregates(run_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in run_rows:
+        grouped.setdefault(str(row.get("condition")), []).append(row)
+    aggregate_rows: list[dict[str, Any]] = []
+    for condition, rows in sorted(grouped.items()):
+        impact_rows = [
+            row for row in rows if _truthy(row.get("attacker_caused_critical_impact"))
+        ]
+        mitigation_rows = [
+            row
+            for row in impact_rows
+            if row.get("T_contain") is not None
+        ]
+        recovery_rows = [
+            row for row in impact_rows if _truthy(row.get("recovery_success_rate"))
+        ]
+        prevention_rows = [
+            row
+            for row in rows
+            if _truthy(row.get("contained_before_critical_impact"))
+            and not _truthy(row.get("attacker_caused_critical_impact"))
+        ]
+        aggregate_rows.append(
+            {
+                "condition": condition,
+                "attack_run_count": len(rows),
+                "completed_run_count": sum(
+                    1 for row in rows if row.get("status") == "completed"
+                ),
+                "state_appropriate_action_selected_run_count": sum(
+                    1 for row in rows if _truthy(row.get("state_appropriate_action_selected"))
+                ),
+                "state_appropriate_action_executed_run_count": sum(
+                    1 for row in rows if _truthy(row.get("state_appropriate_action_executed"))
+                ),
+                "decisive_action_selected_run_count": sum(
+                    1 for row in rows if _truthy(row.get("decisive_action_selected"))
+                ),
+                "decisive_action_issued_run_count": sum(
+                    1 for row in rows if _truthy(row.get("decisive_action_issued"))
+                ),
+                "decisive_action_executed_run_count": sum(
+                    1 for row in rows if _truthy(row.get("decisive_action_executed"))
+                ),
+                "attacker_caused_critical_impact_run_count": len(impact_rows),
+                "physical_safety_impact_run_count": sum(
+                    1 for row in rows if _truthy(row.get("physical_safety_impact"))
+                ),
+                "availability_impact_run_count": sum(
+                    1 for row in rows if _truthy(row.get("availability_impact"))
+                ),
+                "control_integrity_impact_run_count": sum(
+                    1 for row in rows if _truthy(row.get("control_integrity_impact"))
+                ),
+                "defender_prevention_run_count": len(prevention_rows),
+                "defender_mitigation_run_count": len(mitigation_rows),
+                "defender_recovery_run_count": len(recovery_rows),
+                "invalid_precontained_run_count": sum(
+                    1 for row in rows if _truthy(row.get("invalid_precontained_run"))
+                ),
+                "avg_T_critical": _mean([row.get("T_critical") for row in rows]),
+                "avg_T_detect": _mean([row.get("T_detect") for row in rows]),
+                "avg_T_contain": _mean([row.get("T_contain") for row in rows]),
+                "attacker_action_count_avg": _mean(
+                    [row.get("attacker_action_count") for row in rows]
+                ),
+                "attacker_attempted_action_count_avg": _mean(
+                    [row.get("attacker_attempted_action_count") for row in rows]
+                ),
+                "attacker_effect_capable_action_count_avg": _mean(
+                    [row.get("attacker_effect_capable_action_count") for row in rows]
+                ),
+                "attacker_ineffective_action_count_avg": _mean(
+                    [row.get("attacker_ineffective_action_count") for row in rows]
+                ),
+                "blocked_attacker_action_count_avg": _mean(
+                    [row.get("blocked_attacker_action_count") for row in rows]
+                ),
+            }
+        )
+    return aggregate_rows
+
+
 def _stateaware_validation_report(
     *,
     run_rows: list[dict[str, Any]],
@@ -1199,8 +1568,7 @@ def _postprocess_stateaware_results(
         decisions = _load_json(trial_dir / "decisions.json") if (trial_dir / "decisions.json").exists() else []
         actions = _load_json(trial_dir / "actions.json") if (trial_dir / "actions.json").exists() else []
         alerts = _load_json(trial_dir / "alerts.json") if (trial_dir / "alerts.json").exists() else []
-        observations_path = trial_dir / "observations.json"
-        observations = _load_json(observations_path) if observations_path.exists() else []
+        observations = _load_observations(trial_dir)
         system_events = (
             _load_json(trial_dir / "system_events.json")
             if (trial_dir / "system_events.json").exists()
@@ -1222,117 +1590,158 @@ def _postprocess_stateaware_results(
             summary=summary,
             metrics=metrics,
         )
-        contracts[f"{condition}/{scenario_id}/{trial}"] = contract
-        run_rows.append(
-            {
-                "condition": condition,
-                "scenario_id": scenario_id,
-                "trial": trial,
-                "status": summary.get("status"),
-                "passed": summary.get("passed"),
-                "branch_id": stateaware.get("branch_id") if isinstance(stateaware, dict) else None,
-                "state_appropriate_action_selected": metrics.get(
-                    "state_appropriate_action_selected"
-                ),
-                "state_appropriate_action_executed": metrics.get(
-                    "state_appropriate_action_executed"
-                ),
-                "decisive_action_selected": metrics.get("decisive_action_selected"),
-                "decisive_action_executed": metrics.get("decisive_action_executed"),
-                "decisive_action_caused_critical_impact": (
-                    stateaware.get("decisive_action_caused_critical_impact")
-                    if isinstance(stateaware, dict)
-                    else None
-                ),
-                "attacker_caused_critical_impact": (
-                    stateaware.get("attacker_caused_critical_impact")
-                    if isinstance(stateaware, dict)
-                    else None
-                ),
-                "critical_process_impact": metrics.get("critical_process_impact"),
-                "physical_safety_violation": metrics.get("physical_safety_violation"),
-                "availability_violation": metrics.get("availability_violation"),
-                "control_integrity_violation": metrics.get(
-                    "control_integrity_violation"
-                ),
-                "critical_predicate_before": (
-                    stateaware.get("critical_predicate_before")
-                    if isinstance(stateaware, dict)
-                    else None
-                ),
-                "critical_predicate_after": (
-                    stateaware.get("critical_predicate_after")
-                    if isinstance(stateaware, dict)
-                    else None
-                ),
-                "critical_state_before": json.dumps(
-                    (
-                        stateaware.get("critical_state_before")
-                        if isinstance(stateaware, dict)
-                        else None
-                    ),
-                    sort_keys=True,
-                ),
-                "critical_state_after": json.dumps(
-                    (
-                        stateaware.get("critical_state_after")
-                        if isinstance(stateaware, dict)
-                        else None
-                    ),
-                    sort_keys=True,
-                ),
-                "safety_violation_count": metrics.get("safety_violation_count"),
-                "attacker_caused_safety_violation": (
-                    (metrics.get("attacker") or {}).get("caused_safety_violation")
-                    if isinstance(metrics.get("attacker"), dict)
-                    else None
-                ),
-                "attacker_action_count": metrics.get("attacker_action_count"),
-                "defender_action_count": metrics.get("defender_action_count"),
-                "T_first_state_appropriate": canonical.get("T_first_state_appropriate"),
-                "T_first_decisive": canonical.get("T_first_decisive"),
-                "T_first_useful": metrics.get(
-                    "time_to_first_useful_attacker_action_sec"
-                ),
-                "T_detect": canonical.get("T_detect"),
-                "T_contain": canonical.get("T_contain"),
-                "T_unsafe": canonical.get("T_unsafe"),
-                "T_critical": canonical.get("T_critical"),
-                "contained_before_critical_impact": metrics.get(
-                    "contained_before_critical_impact"
-                ),
-                "defender_window_sec": metrics.get("defender_window_sec"),
-                "race_margin_sec": metrics.get("race_margin_sec"),
-                "wall_clock_T_first_state_appropriate": (
-                    stateaware.get(
-                        "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec"
-                    )
-                    if isinstance(stateaware, dict)
-                    else None
-                ),
-                "wall_clock_T_first_decisive": (
-                    stateaware.get(
-                        "wall_clock_time_to_first_decisive_action_from_attack_start_sec"
-                    )
-                    if isinstance(stateaware, dict)
-                    else None
-                ),
-                "blocked_attacker_action_count": (
-                    metrics.get("runtime_containment", {}).get(
-                        "blocked_attacker_action_count"
-                    )
-                    if isinstance(metrics.get("runtime_containment"), dict)
-                    else None
-                ),
-                "attacker_execution_cutoff_pre_attack_start": metrics.get(
-                    "attacker_execution_cutoff_pre_attack_start"
-                ),
-                "time_to_critical_process_impact_from_wargame_t0_sec": metrics.get(
-                    "time_to_critical_process_impact_from_wargame_t0_sec"
-                ),
-                "failure_stage": failure_stage,
-            }
+        state_appropriate_decision = _first_matching_decision(
+            decisions=decisions,
+            metrics=metrics,
+            decisive=False,
         )
+        decisive_decision = _first_matching_decision(
+            decisions=decisions,
+            metrics=metrics,
+            decisive=True,
+        )
+        invalid_precontained = metrics.get(
+            "attacker_execution_cutoff_pre_attack_start"
+        )
+        contracts[f"{condition}/{scenario_id}/{trial}"] = contract
+        row = {
+            "condition": condition,
+            "scenario_id": scenario_id,
+            "trial": trial,
+            "status": summary.get("status"),
+            "passed": summary.get("passed"),
+            "branch_id": stateaware.get("branch_id") if isinstance(stateaware, dict) else None,
+            "state_appropriate_action_selected": metrics.get(
+                "state_appropriate_action_selected"
+            ),
+            "state_appropriate_action_issued": _decision_issued_action(
+                state_appropriate_decision
+            ),
+            "state_appropriate_action_executed": metrics.get(
+                "state_appropriate_action_executed"
+            ),
+            "decisive_action_selected": metrics.get("decisive_action_selected"),
+            "decisive_action_issued": _decision_issued_action(decisive_decision),
+            "decisive_action_executed": metrics.get("decisive_action_executed"),
+            "decisive_action_caused_critical_impact": (
+                stateaware.get("decisive_action_caused_critical_impact")
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "attacker_caused_critical_impact": (
+                stateaware.get("attacker_caused_critical_impact")
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "critical_process_impact": metrics.get("critical_process_impact"),
+            "physical_safety_impact": metrics.get("physical_safety_violation"),
+            "physical_safety_violation": metrics.get("physical_safety_violation"),
+            "availability_impact": metrics.get("availability_violation"),
+            "availability_violation": metrics.get("availability_violation"),
+            "control_integrity_impact": metrics.get("control_integrity_violation"),
+            "control_integrity_violation": metrics.get("control_integrity_violation"),
+            "critical_predicate_before": (
+                stateaware.get("critical_predicate_before")
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "critical_predicate_after": (
+                stateaware.get("critical_predicate_after")
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "critical_state_before": json.dumps(
+                (
+                    stateaware.get("critical_state_before")
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
+                sort_keys=True,
+            ),
+            "critical_state_after": json.dumps(
+                (
+                    stateaware.get("critical_state_after")
+                    if isinstance(stateaware, dict)
+                    else None
+                ),
+                sort_keys=True,
+            ),
+            "safety_violation_count": metrics.get("safety_violation_count"),
+            "attacker_caused_safety_violation": (
+                (metrics.get("attacker") or {}).get("caused_safety_violation")
+                if isinstance(metrics.get("attacker"), dict)
+                else None
+            ),
+            "attacker_action_count": metrics.get("attacker_action_count"),
+            "attacker_attempted_action_count": metrics.get(
+                "attacker_attempted_action_count"
+            ),
+            "attacker_effect_capable_action_count": metrics.get(
+                "attacker_effect_capable_action_count"
+            ),
+            "attacker_ineffective_action_count": metrics.get(
+                "attacker_ineffective_action_count"
+            ),
+            "defender_action_count": metrics.get("defender_action_count"),
+            "defender_mitigation_action_count": metrics.get("defender_action_count"),
+            "recovery_success_rate": metrics.get("recovery_success_rate"),
+            "T_first_state_appropriate": canonical.get("T_first_state_appropriate"),
+            "T_select": (
+                stateaware.get("time_to_first_state_appropriate_selection_sec")
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "T_issue": (
+                stateaware.get("time_to_first_decisive_action_sec")
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "T_execute": canonical.get("T_first_decisive"),
+            "T_process_update": canonical.get("T_critical"),
+            "T_first_decisive": canonical.get("T_first_decisive"),
+            "T_first_useful": metrics.get(
+                "time_to_first_useful_attacker_action_sec"
+            ),
+            "T_detect": canonical.get("T_detect"),
+            "T_contain": canonical.get("T_contain"),
+            "T_recover": None,
+            "T_unsafe": canonical.get("T_unsafe"),
+            "T_critical": canonical.get("T_critical"),
+            "contained_before_critical_impact": metrics.get(
+                "contained_before_critical_impact"
+            ),
+            "defender_window_sec": metrics.get("defender_window_sec"),
+            "race_margin_sec": metrics.get("race_margin_sec"),
+            "wall_clock_T_first_state_appropriate": (
+                stateaware.get(
+                    "wall_clock_time_to_first_state_appropriate_action_from_attack_start_sec"
+                )
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "wall_clock_T_first_decisive": (
+                stateaware.get(
+                    "wall_clock_time_to_first_decisive_action_from_attack_start_sec"
+                )
+                if isinstance(stateaware, dict)
+                else None
+            ),
+            "blocked_attacker_action_count": (
+                metrics.get("runtime_containment", {}).get(
+                    "blocked_attacker_action_count"
+                )
+                if isinstance(metrics.get("runtime_containment"), dict)
+                else None
+            ),
+            "invalid_precontained_run": invalid_precontained,
+            "attacker_execution_cutoff_pre_attack_start": invalid_precontained,
+            "time_to_critical_process_impact_from_wargame_t0_sec": metrics.get(
+                "time_to_critical_process_impact_from_wargame_t0_sec"
+            ),
+            "failure_stage": failure_stage,
+        }
+        row["final_classification"] = _final_classification(row)
+        run_rows.append(row)
         forensic_rows.append(
             {
                 "condition": condition,
@@ -1436,6 +1845,58 @@ def _postprocess_stateaware_results(
             )
     write_csv(experiment_root / "stateaware_run_summary.csv", run_rows)
     write_csv(experiment_root / "stateaware_forensic_summary.csv", forensic_rows)
+    condition_aggregates = _stateaware_condition_aggregates(run_rows)
+    scenario_table_rows = [
+        {
+            "condition": row.get("condition"),
+            "scenario": row.get("scenario_id"),
+            "branch": row.get("branch_id"),
+            "state_appropriate_selected": row.get(
+                "state_appropriate_action_selected"
+            ),
+            "state_appropriate_executed": row.get(
+                "state_appropriate_action_executed"
+            ),
+            "decisive_selected": row.get("decisive_action_selected"),
+            "decisive_issued": row.get("decisive_action_issued"),
+            "decisive_executed": row.get("decisive_action_executed"),
+            "critical_before": row.get("critical_predicate_before"),
+            "critical_after": row.get("critical_predicate_after"),
+            "attacker_caused_critical_impact": row.get(
+                "attacker_caused_critical_impact"
+            ),
+            "impact_subtype": (
+                contracts.get(
+                    f"{row.get('condition')}/{row.get('scenario_id')}/{row.get('trial')}",
+                    {},
+                ).get("critical_impact_subtype")
+            ),
+            "T_critical": row.get("T_critical"),
+            "T_detect": row.get("T_detect"),
+            "T_contain": row.get("T_contain"),
+            "defender_outcome": (
+                "prevention"
+                if _truthy(row.get("contained_before_critical_impact"))
+                else "mitigation_or_recovery"
+                if row.get("T_contain") is not None
+                else "no_effective_containment"
+            ),
+            "final_classification": row.get("final_classification"),
+        }
+        for row in run_rows
+    ]
+    write_csv(
+        experiment_root / "stateaware_condition_comparison.csv",
+        condition_aggregates,
+    )
+    write_json(
+        experiment_root / "stateaware_condition_comparison.json",
+        condition_aggregates,
+    )
+    write_csv(
+        experiment_root / "stateaware_per_scenario_table.csv",
+        scenario_table_rows,
+    )
     write_json(experiment_root / "stateaware_contracts.json", contracts)
     write_json(experiment_root / "stateaware_forensic_trace.json", forensic_traces)
     write_json(experiment_root / "stateaware_decision_audit.json", decision_rows)
@@ -1449,6 +1910,15 @@ def _postprocess_stateaware_results(
         "run_summary_csv": portable_path(experiment_root / "stateaware_run_summary.csv"),
         "forensic_summary_csv": portable_path(
             experiment_root / "stateaware_forensic_summary.csv"
+        ),
+        "condition_comparison_csv": portable_path(
+            experiment_root / "stateaware_condition_comparison.csv"
+        ),
+        "condition_comparison_json": portable_path(
+            experiment_root / "stateaware_condition_comparison.json"
+        ),
+        "per_scenario_table_csv": portable_path(
+            experiment_root / "stateaware_per_scenario_table.csv"
         ),
         "contracts_json": portable_path(experiment_root / "stateaware_contracts.json"),
         "forensic_trace_json": portable_path(
@@ -1474,21 +1944,6 @@ def _manifest_path(experiment_root: Path, seed: int) -> Path:
     return experiment_root.parent / "_manifests" / f"stateaware_oi_manifest_seed_{seed}.json"
 
 
-def _validation_report_path(experiment_root: Path) -> Path:
-    return experiment_root / "stateaware_validation_report.json"
-
-
-def _validation_gate_passed(experiment_root: Path) -> bool:
-    path = _validation_report_path(experiment_root)
-    if not path.exists():
-        return False
-    try:
-        payload = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return False
-    return bool(payload.get("validation_passed"))
-
-
 def _run_seed(
     args: argparse.Namespace,
     *,
@@ -1501,7 +1956,7 @@ def _run_seed(
         args.config or default_config,
         seed=seed,
         scenario=None,
-        condition=None,
+        conditions=None,
         output_dir=args.output_dir,
         local_runtime=bool(args.local_runtime),
     )
@@ -1510,19 +1965,23 @@ def _run_seed(
         require_full_matrix=True,
         expected_conditions=expected_conditions,
     )
-    selected_condition = args.condition
+    selected_conditions = _selected_conditions(
+        args,
+        testbed_id=testbed_id,
+        expected_conditions=expected_conditions,
+    )
     if args.validation_high_oi_only:
         high_condition = expected_conditions[-1]
-        if selected_condition and selected_condition != high_condition:
+        if selected_conditions and selected_conditions != [high_condition]:
             raise RuntimeError(
                 "--validation-high-oi-only cannot be combined with a different condition"
             )
-        selected_condition = high_condition
+        selected_conditions = [high_condition]
     run_config_path = _config_for_run(
         args.config or default_config,
         seed=seed,
         scenario=args.scenario,
-        condition=selected_condition,
+        conditions=selected_conditions,
         output_dir=args.output_dir,
         local_runtime=bool(args.local_runtime),
     )
@@ -1540,6 +1999,7 @@ def _run_seed(
         "scenarios": full_payload["scenarios"],
     }
     run_payload["validation_high_oi_only"] = bool(args.validation_high_oi_only)
+    run_payload["selected_conditions"] = selected_conditions
 
     if args.dry_run or args.validate_only:
         payload = dict(run_payload)
@@ -1559,22 +2019,15 @@ def _run_seed(
     )
     removed = []
     try:
-        if (
-            testbed_id == "water_distribution"
-            and selected_condition is None
-            and not args.skip_stateaware_validation_gate
-            and not _validation_gate_passed(run_plan["experiment_root"])
-        ):
-            raise RuntimeError(
-                "Water Distribution full state-aware matrix requires a passing "
-                "high-O/high-I validation report first. Run this script with "
-                "`--validation-high-oi-only`, inspect the validation report, then "
-                "rerun the full matrix."
-            )
         if not args.skip_mrg_preflight:
             _preflight_mrg_auth(run_plan["config"])
         if not args.keep_failed_artifacts:
             removed = _remove_failed_or_incomplete_trials(run_plan, full_plan=full_plan)
+        print(
+            json.dumps({"mode": "run_manifest", "plan": run_payload}, indent=2),
+            file=sys.stderr,
+            flush=True,
+        )
         orchestrator = ExperimentOrchestrator(testbed_id=testbed_id)
         summary = orchestrator.run(run_config_path)
         postprocess = _postprocess_stateaware_results(

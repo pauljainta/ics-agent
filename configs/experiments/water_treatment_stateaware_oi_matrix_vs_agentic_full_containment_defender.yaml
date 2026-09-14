@@ -80,7 +80,7 @@ conditions:
           interface_variant: normalized_interface
       defender: *frozen_defender_override
       observer: *frozen_observer_override
-  - name: stateaware_fullKt_highO_normI_processDefender
+  - name: stateaware_fullKt_normO_highI_processDefender
     profiles: *condition_profiles
     profile_overrides:
       attacker:
@@ -88,12 +88,12 @@ conditions:
           compact_prompt_json: true
         target_semantics:
           variant: full
-          interface_variant: normalized_interface
+          interface_variant: grounded_interface
         stateaware_oi:
           enabled: true
-          condition_name: stateaware_fullKt_highO_normI_processDefender
-          observation_variant: high_observation
-          interface_variant: normalized_interface
+          condition_name: stateaware_fullKt_normO_highI_processDefender
+          observation_variant: normalized_observation
+          interface_variant: grounded_interface
       defender: *frozen_defender_override
       observer: *frozen_observer_override
   - name: stateaware_fullKt_highO_highI_processDefender

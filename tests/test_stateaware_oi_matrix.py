@@ -117,7 +117,7 @@ def test_stateaware_conditions_vary_only_observation_and_interface_flags() -> No
 
     assert observed == [
         ("normalized_observation", "normalized_interface"),
-        ("high_observation", "normalized_interface"),
+        ("normalized_observation", "grounded_interface"),
         ("high_observation", "grounded_interface"),
     ]
 
@@ -155,19 +155,22 @@ def test_stateaware_candidate_interfaces_share_underlying_actions() -> None:
         contexts[name] = agent._build_online_context(_runtime_context(runtime_scenario))
         agents[name] = agent
 
-    assert contexts["stateaware_fullKt_normO_normI_processDefender"]["observation"] != (
-        contexts["stateaware_fullKt_highO_normI_processDefender"]["observation"]
+    assert contexts["stateaware_fullKt_normO_normI_processDefender"]["observation"] == (
+        contexts["stateaware_fullKt_normO_highI_processDefender"]["observation"]
     )
     assert "additional_runtime_evidence" not in contexts[
         "stateaware_fullKt_normO_normI_processDefender"
     ]["observation"]
+    assert "additional_runtime_evidence" not in contexts[
+        "stateaware_fullKt_normO_highI_processDefender"
+    ]["observation"]
     assert "additional_runtime_evidence" in contexts[
-        "stateaware_fullKt_highO_normI_processDefender"
+        "stateaware_fullKt_highO_highI_processDefender"
     ]["observation"]
     assert _underlying_candidate_keys(
         agents["stateaware_fullKt_normO_normI_processDefender"]
     ) == _underlying_candidate_keys(
-        agents["stateaware_fullKt_highO_normI_processDefender"]
+        agents["stateaware_fullKt_normO_highI_processDefender"]
     ) == _underlying_candidate_keys(
         agents["stateaware_fullKt_highO_highI_processDefender"]
     )
@@ -394,3 +397,57 @@ def test_stateaware_runner_dry_run_validates_full_matrix() -> None:
     assert manifest["original_water_treatment_attack_scenarios"] == 18
     assert manifest["stateaware_water_treatment_scenarios"] == 6
     assert all(manifest["invariance_checks"].values())
+
+
+def test_stateaware_runner_dry_run_selects_normO_normI_alias() -> None:
+    result = subprocess.run(
+        [sys.executable, RUNNER, "--dry-run", "--seed", "101", "--condition", "normO_normI"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["condition_count"] == 1
+    assert payload["planned_runs"] == 6
+    assert payload["conditions"] == ["stateaware_fullKt_normO_normI_processDefender"]
+    assert payload["selected_conditions"] == [
+        "stateaware_fullKt_normO_normI_processDefender"
+    ]
+
+
+def test_stateaware_runner_dry_run_selects_normO_highI_alias() -> None:
+    result = subprocess.run(
+        [sys.executable, RUNNER, "--dry-run", "--seed", "101", "--condition", "normO_highI"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["condition_count"] == 1
+    assert payload["planned_runs"] == 6
+    assert payload["conditions"] == ["stateaware_fullKt_normO_highI_processDefender"]
+    condition = payload["stateaware_capability_manifest"]["conditions"][0]
+    assert condition["observation_variant"] == "normalized_observation"
+    assert condition["interface_variant"] == "grounded_interface"
+
+
+def test_stateaware_runner_dry_run_all_needed_excludes_highO_highI() -> None:
+    result = subprocess.run(
+        [sys.executable, RUNNER, "--dry-run", "--seed", "101", "--condition", "all-needed"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["condition_count"] == 2
+    assert payload["planned_runs"] == 12
+    assert payload["conditions"] == [
+        "stateaware_fullKt_normO_normI_processDefender",
+        "stateaware_fullKt_normO_highI_processDefender",
+    ]
