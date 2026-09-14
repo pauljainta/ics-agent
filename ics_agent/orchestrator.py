@@ -1515,8 +1515,36 @@ class ExperimentOrchestrator:
         primary_timing_origin: str = "attack_start",
     ) -> dict[str, Any]:
         def is_attack_run(run: dict[str, Any]) -> bool:
-            metrics = run.get("metrics", {})
+            metrics = run.get("metrics") or {}
+            if not isinstance(metrics, dict):
+                metrics = {}
             return run.get("suite") == "attack" or metrics.get("suite_type") == "attack"
+
+        def normalize_run_metrics(run: dict[str, Any]) -> None:
+            metrics = run.get("metrics") or {}
+            if not isinstance(metrics, dict):
+                metrics = {}
+
+            for key in (
+                "attacker",
+                "physical_impact",
+                "observer_detection",
+                "defender_detection",
+                "observer_recognition",
+                "defender_recognition",
+                "state_aware",
+                "defender_intervention",
+                "phase_window",
+                "runtime_containment",
+                "operational_cost",
+            ):
+                if metrics.get(key) is None:
+                    metrics[key] = {}
+
+            run["metrics"] = metrics
+
+        for run in runs:
+            normalize_run_metrics(run)
 
         attack_runs = [run for run in runs if is_attack_run(run)]
         completed = [run for run in attack_runs if run.get("status") == "completed"]

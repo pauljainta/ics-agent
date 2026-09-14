@@ -212,6 +212,81 @@ def test_process2_deselect_no_longer_triggers_global_attacker_cutoff() -> None:
     )
 
 
+def test_aggregate_attack_metrics_handles_none_nested_metric_buckets() -> None:
+    orchestrator = ExperimentOrchestrator()
+    run = {
+        "condition_name": "cond",
+        "scenario": "scenario",
+        "run_id": "run-001",
+        "suite": "attack",
+        "status": "completed",
+        "passed": True,
+        "metrics": {
+            "suite_type": "attack",
+            "phase_window": {
+                "time_to_first_detection_sec": 1.0,
+                "time_to_first_recognition_sec": 2.0,
+                "time_to_first_defender_action_sec": 3.0,
+                "time_to_first_containment_sec": 4.0,
+                "time_to_first_safety_violation_sec": None,
+            },
+            "state_aware": None,
+            "attacker": {
+                "time_to_impact_sec": None,
+                "time_to_physical_impact_sec": None,
+                "execution_success_rate": 0.0,
+                "scenario_expectation_passed": 1.0,
+                "caused_safety_violation": 0.0,
+                "undetected_impact": 0.0,
+            },
+            "physical_impact": {
+                "unsafe_wall_clock_duration_sec": None,
+                "unsafe_logical_duration_sec": None,
+                "violated_field_count": 0,
+                "max_normalized_safety_violation_magnitude": 0.0,
+            },
+            "observer_detection": {
+                "time_to_detection_sec": 1.0,
+                "detection_rate": 1.0,
+                "true_positive_count": 1,
+            },
+            "defender_detection": {
+                "time_to_detection_sec": 1.0,
+                "detection_rate": 1.0,
+                "true_positive_count": 1,
+            },
+            "observer_recognition": {
+                "time_to_recognition_sec": 2.0,
+                "recognition_rate": 1.0,
+            },
+            "defender_recognition": {
+                "time_to_recognition_sec": 2.0,
+                "recognition_rate": 1.0,
+            },
+            "defender_intervention": {
+                "time_to_first_action_sec": 3.0,
+                "time_to_mitigation_sec": 4.0,
+                "time_to_containment_sec": 4.0,
+                "mitigation_action_count": 1,
+                "containment_action_count": 1,
+                "runtime_enforced_containment_action_count": 1,
+                "symbolic_containment_action_count": 0,
+                "contained_before_safety_violation": False,
+            },
+            "runtime_containment": {
+                "attacker_execution_cutoff_activated": False,
+                "attacker_actions_stopped_after_containment": False,
+                "blocked_attacker_action_count": 0,
+            },
+        },
+    }
+
+    result = orchestrator._aggregate_attack_metrics([run])
+    assert result["attack_run_count"] == 1
+    assert result["completed_attack_run_count"] == 1
+    assert result["per_run_metrics"][0]["run_id"] == "run-001"
+
+
 def test_observe_alert_only_defender_emits_alert_without_cutoff_activation() -> None:
     orchestrator = ExperimentOrchestrator()
     env = StubEnvironment()
