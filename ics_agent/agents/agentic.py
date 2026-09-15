@@ -2108,6 +2108,10 @@ class AgenticRoleAgent(RoleAgent):
                 candidate_actions = self._stateaware_oi_candidate_actions(
                     scenario=scenario,
                     observation=observation,
+                    context=history_context,
+                    telemetry_summary=telemetry_summary,
+                    structured_memory=internal_structured_memory,
+                    mitre_context=internal_mitre_context,
                 )
             elif self._uses_target_semantic_legacy_white_interface():
                 candidate_actions = (
@@ -2142,13 +2146,13 @@ class AgenticRoleAgent(RoleAgent):
                     recent_observations=context.get("observations", []),
                     recent_actions=raw_recent_actions,
                 )
+                # Keep the expanded high-O evidence on the current observation only.
+                # Repeating nested traces inside every recent observation causes
+                # prompt growth across long runs without adding new physical
+                # evidence beyond the explicit state_trace above.
                 recent_observations = [
-                    self._stateaware_high_observation(
-                        observation=item,
-                        recent_observations=recent_raw_observations[: index + 1],
-                        recent_actions=raw_recent_actions,
-                    )
-                    for index, item in enumerate(recent_raw_observations)
+                    self._black_box_visible_observation(item)
+                    for item in recent_raw_observations
                 ]
             if semantic_ablation:
                 system_knowledge = self._target_semantic_system_knowledge(
@@ -3868,14 +3872,18 @@ class AgenticRoleAgent(RoleAgent):
         *,
         scenario: Any,
         observation: dict[str, Any],
+        context: dict[str, Any],
+        telemetry_summary: dict[str, Any],
+        structured_memory: dict[str, Any],
+        mitre_context: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
         stateaware = scenario.execution.get("stateaware")
         if not isinstance(stateaware, dict):
             return self._black_box_candidate_actions(
-                context={"observation": observation, "executed_actions": []},
-                telemetry_summary={"risk_flags": []},
-                structured_memory={},
-                mitre_context=None,
+                context=context,
+                telemetry_summary=telemetry_summary,
+                structured_memory=structured_memory,
+                mitre_context=mitre_context,
             )
         allowed = set(self.profile.get("allowed_action_types", []))
         grounded_interface = self._uses_stateaware_grounded_interface()

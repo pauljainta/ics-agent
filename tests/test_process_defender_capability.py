@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
 from ics_agent.experiments.process_defender_capability import (
     _attacker_trace_rows,
@@ -58,6 +59,29 @@ def _condition_map(config_name: str, testbed_id: str) -> dict[str, dict[str, obj
     }
 
 
+def _treatment_observation(**overrides: float | str) -> dict[str, float | str]:
+    observation: dict[str, float | str] = {
+        "STATE_NAME": "RUNNING",
+        "elapsed_sec": 18.0,
+        "RW_Tank_Level": 600.0,
+        "UF_UFFT_Tank_Level": 400.0,
+        "ChemTreat_NaCl_Level": 800.0,
+        "ChemTreat_NaOCl_Level": 800.0,
+        "ChemTreat_HCl_Level": 800.0,
+        "RW_Pump_Sts": 1.0,
+        "RW_Pump_Flow": 100.0,
+        "RW_Tank_PR_Valve_Sts": 0.0,
+        "P2_Selected": 0.0,
+        "ChemTreat_NaCl_Valve_Sts": 0.0,
+        "ChemTreat_NaOCl_Valve_Sts": 0.0,
+        "ChemTreat_HCl_Valve_Sts": 0.0,
+        "Alarm_RW_Tank_LL": 0.0,
+        "Alarm_RW_Tank_HH": 0.0,
+    }
+    observation.update(overrides)
+    return observation
+
+
 def test_generated_wt_kt_config_preserves_attacker_profiles_and_patches_defender() -> None:
     source = (
         "water_treatment_target_semantic_ablation_vs_agentic_full_containment_defender.yaml"
@@ -84,13 +108,101 @@ def test_generated_wt_kt_config_preserves_attacker_profiles_and_patches_defender
         assert defender["defer_containment_until_attacker_effect"] is True
 
 
-def test_validate_only_wt_all_capability_reports_real_legacy_suites_and_missing_observation() -> None:
+def test_generated_wt_observation_config_varies_only_attacker_observation_and_patches_defender() -> None:
+    source = (
+        "water_treatment_target_observation_ablation_vs_agentic_full_containment_defender.yaml"
+    )
+    generated_path = _write_generated_config(
+        source_config=source,
+        testbed_id="water_treatment",
+        suite="observation",
+        seed=101,
+        scenario=None,
+        only_condition=None,
+    )
+    generated_conditions = _condition_map(str(generated_path), "water_treatment")
+    assert sorted(generated_conditions) == [
+        "full_target_semantics_highO_highI__agentic_defender",
+        "full_target_semantics_normO_highI__agentic_defender",
+    ]
+    attacker_profiles = [
+        condition["effective_profiles"]["attacker"]
+        for condition in generated_conditions.values()
+    ]
+    stripped_profiles = []
+    observed_o_variants = set()
+    for profile in attacker_profiles:
+        stateaware_oi = dict(profile["stateaware_oi"])
+        observed_o_variants.add(stateaware_oi["observation_variant"])
+        stateaware_oi.pop("condition_name", None)
+        stateaware_oi.pop("observation_variant", None)
+        stripped = dict(profile)
+        stripped["stateaware_oi"] = stateaware_oi
+        stripped_profiles.append(stripped)
+    assert observed_o_variants == {"normalized_observation", "high_observation"}
+    assert stripped_profiles[0] == stripped_profiles[1]
+    for condition in generated_conditions.values():
+        defender = condition["effective_profiles"]["defender"]
+        assert defender["process_physics_only"] is True
+        assert defender["defender_observation_mode"] == "process_physics_only"
+        assert defender["defer_containment_until_attacker_effect"] is True
+
+
+def test_wt_observation_ablation_high_o_adds_runtime_evidence_on_old_attack_scenario() -> None:
+    source = (
+        "water_treatment_target_observation_ablation_vs_agentic_full_containment_defender.yaml"
+    )
+    generated_path = _write_generated_config(
+        source_config=source,
+        testbed_id="water_treatment",
+        suite="observation",
+        seed=101,
+        scenario=None,
+        only_condition=None,
+    )
+    conditions = _condition_map(str(generated_path), "water_treatment")
+    scenario = ScenarioCatalog(testbed_id="water_treatment").get(
+        "attack/wt-attack-sensor-rw-refill-spoof"
+    )
+    previous_observation = _treatment_observation(elapsed_sec=17.5, RW_Tank_Level=590.0)
+    current_observation = _treatment_observation(elapsed_sec=18.0, RW_Tank_Level=600.0)
+    context = {
+        "scenario": scenario,
+        "observation": current_observation,
+        "observations": [previous_observation, current_observation],
+        "executed_actions": [],
+        "decisions": [],
+        "alerts": [],
+        "remaining_playbook": [],
+        "playbooks": {},
+        "time_sec": 18.0,
+    }
+    built_contexts = {}
+    for name, condition in conditions.items():
+        agent = AgenticRoleAgent(name, condition["effective_profiles"]["attacker"])
+        agent.reset(scenario)
+        built_contexts[name] = agent._build_online_context(context)
+
+    norm_context = built_contexts["full_target_semantics_normO_highI__agentic_defender"]
+    high_context = built_contexts["full_target_semantics_highO_highI__agentic_defender"]
+    assert "additional_runtime_evidence" not in norm_context["observation"]
+    assert "additional_runtime_evidence" in high_context["observation"]
+    assert all(
+        "additional_runtime_evidence" not in recent_observation
+        for recent_observation in high_context["recent_observations"]
+    )
+    assert norm_context["system_knowledge"]["target_semantics"] == (
+        high_context["system_knowledge"]["target_semantics"]
+    )
+
+
+def test_validate_only_wt_all_capability_reports_real_legacy_suites() -> None:
     payload = _run_validate("--testbed", "wt", "--suite", "all-capability", "--seed", "101")
     assert payload["status"] == "completed"
     assert [item["status"] for item in payload["summaries"]] == [
         "validated",
         "validated",
-        "not_discovered",
+        "validated",
     ]
     kt_payload = _run_validate("--testbed", "wt", "--suite", "kt", "--seed", "101")
     assert kt_payload["status"] == "validated"
@@ -99,6 +211,20 @@ def test_validate_only_wt_all_capability_reports_real_legacy_suites_and_missing_
     assert plan["condition_count"] == 8
     assert plan["planned_runs"] == 144
     assert "process-defender-critical-impact-v2" in plan["resolved_experiment_root"]
+    observation_payload = _run_validate(
+        "--testbed",
+        "wt",
+        "--suite",
+        "observation",
+        "--seed",
+        "101",
+    )
+    assert observation_payload["status"] == "validated"
+    observation_plan = observation_payload["plan"]
+    assert observation_plan["scenario_count"] == 18
+    assert observation_plan["condition_count"] == 2
+    assert observation_plan["planned_runs"] == 36
+    assert "target-observation-ablation" in observation_plan["resolved_experiment_root"]
 
 
 def test_dry_run_wt_all_capability_does_not_execute_orchestrator(

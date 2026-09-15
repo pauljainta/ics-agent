@@ -60,6 +60,9 @@ SUITE_CONFIGS = {
     ("water_distribution", "interface"): (
         "water_distribution_target_interface_ablation_vs_agentic_full_containment_defender.yaml"
     ),
+    ("water_treatment", "observation"): (
+        "water_treatment_target_observation_ablation_vs_agentic_full_containment_defender.yaml"
+    ),
 }
 
 SUITE_DIRS = {
@@ -146,6 +149,15 @@ def _target_semantics_without_interface(profile: dict[str, Any]) -> dict[str, An
         target_semantics.pop("interface_variant", None)
         target_semantics.pop("interaction_interface", None)
     comparable.pop("target_interface_variant", None)
+    return comparable
+
+
+def _target_semantics_without_observation(profile: dict[str, Any]) -> dict[str, Any]:
+    comparable = deepcopy(profile)
+    stateaware_oi = comparable.get("stateaware_oi")
+    if isinstance(stateaware_oi, dict):
+        stateaware_oi.pop("condition_name", None)
+        stateaware_oi.pop("observation_variant", None)
     return comparable
 
 
@@ -417,6 +429,8 @@ def _profile_variation_key(profile: dict[str, Any], suite: str) -> dict[str, Any
         return _target_semantics_without_variant(profile)
     if suite == "interface":
         return _target_semantics_without_interface(profile)
+    if suite == "observation":
+        return _target_semantics_without_observation(profile)
     return deepcopy(profile)
 
 
@@ -469,6 +483,10 @@ def _capability_manifest(
             "defender_profile": str(condition.get("profiles", {}).get("defender")),
             "target_semantics": dict(
                 condition["effective_profiles"]["attacker"].get("target_semantics")
+                or {}
+            ),
+            "stateaware_oi": dict(
+                condition["effective_profiles"]["attacker"].get("stateaware_oi")
                 or {}
             ),
             "attacker_allowed_action_types": list(
@@ -560,7 +578,11 @@ def _capability_manifest(
                 if suite == "kt"
                 else "unchanged_from_source_config"
             ),
-            "O_A": "unchanged_from_source_config",
+            "O_A": (
+                "varied_exactly_as_source_config"
+                if suite == "observation"
+                else "unchanged_from_source_config"
+            ),
             "I_A": (
                 "varied_exactly_as_source_config"
                 if suite == "interface"
@@ -2132,8 +2154,8 @@ def _not_discovered_payload(testbed_id: str, seed: int) -> dict[str, Any]:
         "resolved_result_root": portable_path(root),
         "reason": (
             "No standalone legacy observation-only attack-suite ablation config was "
-            "found. The active observation/interface ablation lives in the newer "
-            "stateaware/* suite and is intentionally not part of --suite all-capability."
+            "found for this testbed. The active observation/interface ablation for "
+            "that testbed may live in a newer stateaware/* suite."
         ),
     }
 
@@ -2196,7 +2218,8 @@ def _run_one_suite(
     suite: str,
     emit: bool = True,
 ) -> dict[str, Any]:
-    if suite == "observation":
+    source_config = args.config or _default_config_for(testbed_id, suite)
+    if suite == "observation" and source_config is None:
         payload = _not_discovered_payload(testbed_id, int(args.seed))
         output = _suite_root(testbed_id, suite) / f"seed_{int(args.seed)}"
         write_json(output / "_manifests" / "observation_suite_not_discovered.json", payload)
@@ -2204,7 +2227,6 @@ def _run_one_suite(
             print(json.dumps(payload, indent=2))
         return payload
 
-    source_config = args.config or _default_config_for(testbed_id, suite)
     if source_config is None:
         raise RuntimeError(f"no config registered for {testbed_id}/{suite}")
     source_config_path = resolve_runtime_config_path(source_config)
