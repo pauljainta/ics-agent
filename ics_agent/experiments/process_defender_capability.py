@@ -637,6 +637,24 @@ def _experiment_plan(
         suite=suite,
         require_full_matrix=require_full_matrix,
     )
+    first_defender_profile = (
+        conditions[0]["effective_profiles"]["defender"] if conditions else {}
+    )
+    effective_contract = {
+        "defender_process_physics_only": True,
+        "defender_observation_mode": "process_physics_only",
+        "defer_containment_until_attacker_effect": True,
+        "defender_allowed_action_types": list(
+            first_defender_profile.get("allowed_action_types", [])
+            if isinstance(first_defender_profile, dict)
+            else []
+        ),
+        "containment_active_at_start": False,
+        "defender_profile_source": portable_path(Path(config["_path"])),
+        "defender_mode": "process-aware",
+        "testbed": testbed_id,
+        "suite": suite,
+    }
     payload = {
         "validated": True,
         "config_path": portable_path(Path(config["_path"])),
@@ -664,6 +682,7 @@ def _experiment_plan(
         ),
         "conditions": [str(item.get("name")) for item in conditions],
         "scenarios": [scenario.catalog_id for scenario in scenarios],
+        "effective_defender_contract": effective_contract,
         "process_defender_capability_manifest": manifest,
     }
     plan = {
@@ -686,6 +705,42 @@ def _to_bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _tri_true(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
+def _tri_false(value: Any) -> bool:
+    if value is False:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"0", "false", "no", "n"}
+    return False
+
+
+def _tri_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if _tri_true(value):
+        return True
+    if _tri_false(value):
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
+
+
+def _any_tri_true(values: list[Any]) -> bool | None:
+    if any(_tri_true(value) for value in values):
+        return True
+    if any(value is None for value in values):
+        return None
+    return False
 
 
 def _load_json(path: Path) -> Any:
@@ -795,25 +850,65 @@ def _legacy_critical_audit_row(
         if scenario is not None
         else {}
     )
-    safety_count = int(metrics.get("safety_violation_count") or 0)
-    attacker_safety = bool(attacker_metrics.get("caused_safety_violation"))
-    initial_critical = bool(_safety_violated(_first_observation(observations), safety_bounds))
-    critical_before = bool(_safety_violated(before_state, safety_bounds)) if before_state else initial_critical
-    critical_after = bool(_safety_violated(after_state, safety_bounds)) if after_state else bool(attacker_safety or safety_count > 0)
+    safety_count_raw = metrics.get("safety_violation_count")
+    safety_count = None
+    try:
+        safety_count = None if safety_count_raw is None else int(safety_count_raw)
+    except (TypeError, ValueError):
+        safety_count = None
+    attacker_safety_raw = attacker_metrics.get("caused_safety_violation")
+    attacker_safety = _tri_bool(attacker_safety_raw)
+    if attacker_safety is None and safety_count is not None:
+        attacker_safety = safety_count > 0
+    safety_evaluated = bool(safety_bounds) or safety_count is not None
+    action_impact_evaluated = (decisive_action or first_action) is not None
+    critical_impact_evaluated = (
+        True if safety_evaluated or action_impact_evaluated else None
+    )
+    initial_critical = (
+        bool(_safety_violated(_first_observation(observations), safety_bounds))
+        if safety_evaluated
+        else None
+    )
+    safety_before = (
+        bool(_safety_violated(before_state, safety_bounds))
+        if before_state and safety_evaluated
+        else initial_critical
+    )
+    safety_after = (
+        bool(_safety_violated(after_state, safety_bounds))
+        if after_state and safety_evaluated
+        else (attacker_safety if attacker_safety is not None else None)
+    )
     impact_types = _legacy_impact_types(
         executed_action=(decisive_action or first_action or {}).get("action"),
-        safety_impact=bool(attacker_safety or safety_count > 0),
+        safety_impact=bool(attacker_safety),
+        action_impact_evaluated=action_impact_evaluated,
     )
-    critical = bool(
-        attacker_safety
-        or safety_count > 0
-        or impact_types["availability_impact"]
-        or impact_types["control_integrity_impact"]
+    critical = _any_tri_true(
+        [
+            safety_after,
+            impact_types["availability_impact"],
+            impact_types["control_integrity_impact"],
+        ]
     )
-    attacker_caused_critical = bool(
-        (not critical_before) and critical_after and attacker_safety
-    ) or bool(impact_types["availability_impact"]) or bool(
-        impact_types["control_integrity_impact"]
+    if critical_impact_evaluated is None:
+        critical_before = None
+        critical_after = None
+        attacker_caused_critical = None
+    else:
+        critical_before = bool(safety_before) if safety_before is not None else False
+        critical_after = bool(critical)
+        attacker_caused_critical = bool(
+            (not critical_before) and critical_after and bool(attacker_safety)
+        ) or _tri_true(impact_types["availability_impact"]) or _tri_true(
+            impact_types["control_integrity_impact"]
+        )
+    has_expected_decisive_action = bool(expected_actions)
+    decisive_action_caused_critical = (
+        None
+        if not has_expected_decisive_action or critical_impact_evaluated is None
+        else bool(decisive_action is not None and attacker_caused_critical)
     )
     blocked_count = runtime.get("blocked_attacker_action_count") or 0
     try:
@@ -860,6 +955,7 @@ def _legacy_critical_audit_row(
             else {},
             length=12,
         ),
+        "critical_impact_evaluated": critical_impact_evaluated,
         "critical_impact_contract_status": "legacy_derived_audit",
         "legacy_contract_basis": (
             "scenario timeline, safety_bounds, executed attacker actions, and "
@@ -868,10 +964,8 @@ def _legacy_critical_audit_row(
         "stateaware_branch_id": metrics.get("stateaware_branch_id"),
         "critical_process_impact": critical,
         "attacker_caused_critical_impact": attacker_caused_critical,
-        "decisive_action_caused_critical_impact": bool(
-            decisive_action is not None and critical
-        ),
-        "physical_safety_impact": bool(attacker_safety or safety_count > 0),
+        "decisive_action_caused_critical_impact": decisive_action_caused_critical,
+        "physical_safety_impact": safety_after if safety_evaluated else None,
         "availability_impact": impact_types["availability_impact"],
         "control_integrity_impact": impact_types["control_integrity_impact"],
         "impact_subtype": impact_types["impact_subtype"],
@@ -896,13 +990,24 @@ def _legacy_critical_audit_row(
         "executed_operation": executed_operation,
         "executed_target": _action_target((decisive_action or first_action or {}).get("action")),
         "executed_arguments": json.dumps(executed_args, sort_keys=True),
-        "state_appropriate_action_selected": decisive_selected,
-        "state_appropriate_action_executed": decisive_executed,
-        "decisive_action_selected": decisive_selected,
-        "decisive_action_issued": decisive_selected
-        and bool(decisive_decision.get("action")),
+        "state_appropriate_action_selected": (
+            decisive_selected if has_expected_decisive_action else None
+        ),
+        "state_appropriate_action_executed": (
+            decisive_executed if has_expected_decisive_action else None
+        ),
+        "decisive_action_selected": (
+            decisive_selected if has_expected_decisive_action else None
+        ),
+        "decisive_action_issued": (
+            decisive_selected and bool(decisive_decision.get("action"))
+            if has_expected_decisive_action
+            else None
+        ),
         "decisive_action_blocked": first_block is not None,
-        "decisive_action_executed": decisive_executed,
+        "decisive_action_executed": (
+            decisive_executed if has_expected_decisive_action else None
+        ),
         "block_reason": None if first_block is None else first_block.get("reason"),
         "defender_visible_observation_snapshot": json.dumps(
             defender_observation,
@@ -1194,15 +1299,25 @@ def _legacy_impact_types(
     *,
     executed_action: Any,
     safety_impact: bool,
+    action_impact_evaluated: bool = True,
 ) -> dict[str, Any]:
     action_type = _action_operation(executed_action)
-    availability = action_type in {"hmi_stop", "hmi_estop"}
-    control_integrity = action_type in {
-        "select_process",
-        "set_manual_valve",
-        "set_sensor",
-        "set_actuator",
-    }
+    availability = (
+        None
+        if not action_impact_evaluated
+        else action_type in {"hmi_stop", "hmi_estop"}
+    )
+    control_integrity = (
+        None
+        if not action_impact_evaluated
+        else action_type
+        in {
+            "select_process",
+            "set_manual_valve",
+            "set_sensor",
+            "set_actuator",
+        }
+    )
     subtypes: list[str] = []
     if safety_impact:
         subtypes.append("physical_safety")
@@ -1217,6 +1332,439 @@ def _legacy_impact_types(
     }
 
 
+def _action_key_or_none(action: Any) -> str | None:
+    normalized = normalize_action(action)
+    if normalized is None:
+        return None
+    return action_key(normalized)
+
+
+def _same_time(left: Any, right: Any) -> bool:
+    left_time = _safe_float(left)
+    right_time = _safe_float(right)
+    return (
+        left_time is not None
+        and right_time is not None
+        and abs(left_time - right_time) <= 1e-6
+    )
+
+
+def _matching_action_for_decision(
+    *,
+    decision: dict[str, Any],
+    actions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    decision_key = _action_key_or_none(decision.get("action"))
+    if decision_key is None:
+        return None
+    for action in actions:
+        if action.get("role") != decision.get("role"):
+            continue
+        if not _same_time(action.get("time_sec"), decision.get("time_sec")):
+            continue
+        if _action_key_or_none(action.get("action")) == decision_key:
+            return action
+    return None
+
+
+def _matching_block_for_decision(
+    *,
+    decision: dict[str, Any],
+    system_events: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    decision_key = _action_key_or_none(decision.get("action"))
+    if decision_key is None:
+        return None
+    for event in system_events:
+        if event.get("event_type") != "attacker_action_blocked":
+            continue
+        if not _same_time(event.get("time_sec"), decision.get("time_sec")):
+            continue
+        if _action_key_or_none(event.get("attempted_action")) == decision_key:
+            return event
+    return None
+
+
+def _guardrail_rejection_for_decision(
+    *,
+    decision: dict[str, Any],
+    system_events: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for event in system_events:
+        if event.get("event_type") != "guardrail_rejection":
+            continue
+        if event.get("role") != decision.get("role"):
+            continue
+        if _same_time(event.get("time_sec"), decision.get("time_sec")):
+            return event
+    return None
+
+
+def _candidate_identifiers(decision: dict[str, Any]) -> list[Any]:
+    metadata = decision.get("metadata") if isinstance(decision.get("metadata"), dict) else {}
+    audit = metadata.get("stateaware_decision_audit")
+    if isinstance(audit, dict) and isinstance(audit.get("visible_candidates"), list):
+        return [
+            item.get("id")
+            for item in audit["visible_candidates"]
+            if isinstance(item, dict) and item.get("id") is not None
+        ]
+    candidates = metadata.get("candidate_actions")
+    if isinstance(candidates, list):
+        return [
+            item.get("id")
+            for item in candidates
+            if isinstance(item, dict) and item.get("id") is not None
+        ]
+    return []
+
+
+def _selected_candidate_id(decision: dict[str, Any]) -> Any:
+    metadata = decision.get("metadata") if isinstance(decision.get("metadata"), dict) else {}
+    audit = metadata.get("stateaware_decision_audit")
+    if isinstance(audit, dict):
+        return audit.get("selected_candidate_id")
+    for key in ("selected_candidate_id", "candidate_id"):
+        if key in metadata:
+            return metadata.get(key)
+    return None
+
+
+def _decoded_action_for_decision(decision: dict[str, Any]) -> Any:
+    metadata = decision.get("metadata") if isinstance(decision.get("metadata"), dict) else {}
+    audit = metadata.get("stateaware_decision_audit")
+    if isinstance(audit, dict) and audit.get("decoded_real_action") is not None:
+        return audit.get("decoded_real_action")
+    return decision.get("action")
+
+
+def _surface_for_action(action: Any) -> str | None:
+    normalized = normalize_action(action)
+    if normalized is None:
+        return None
+    return _action_target(normalized) or _action_operation(normalized)
+
+
+def _is_recon_action(action: Any) -> bool | None:
+    action_type_value = _action_operation(action)
+    if action_type_value is None:
+        return None
+    return action_type_value in {"inspect_surface", "noop"}
+
+
+def _is_effect_capable_action(action: Any) -> bool | None:
+    is_recon = _is_recon_action(action)
+    if is_recon is None:
+        return None
+    return not is_recon
+
+
+def _attacker_trace_rows(
+    *,
+    condition: str,
+    scenario_id: str,
+    trial: str,
+    decisions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    system_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    attacker_decisions = [
+        decision
+        for decision in sorted(decisions, key=lambda item: float(item.get("time_sec", 0.0)))
+        if decision.get("role") == "attacker"
+    ]
+    for index, decision in enumerate(attacker_decisions, start=1):
+        decoded = _decoded_action_for_decision(decision)
+        executed = _matching_action_for_decision(decision=decision, actions=actions)
+        blocked = _matching_block_for_decision(
+            decision=decision,
+            system_events=system_events,
+        )
+        guardrail = _guardrail_rejection_for_decision(
+            decision=decision,
+            system_events=system_events,
+        )
+        action_time = decision.get("time_sec")
+        before_state = _nearest_observation(
+            observations,
+            time_sec=action_time,
+            phase="pre_action",
+            before=True,
+        )
+        after_state = _nearest_observation(
+            observations,
+            time_sec=action_time,
+            phase="post_action",
+            before=False,
+        )
+        executed_flag = executed is not None
+        blocked_flag = blocked is not None
+        validation_succeeded = (
+            decoded is not None and guardrail is None and bool(executed or blocked)
+        )
+        effect_capable = _is_effect_capable_action(decoded)
+        rows.append(
+            {
+                "condition": condition,
+                "scenario_id": scenario_id,
+                "trial": trial,
+                "event_index": index,
+                "event_phase": "attacker_decision",
+                "action_index": index,
+                "T_select": action_time,
+                "T_issue": action_time if decoded is not None else None,
+                "T_validate": action_time if decoded is not None else None,
+                "T_execute": executed.get("time_sec") if executed else None,
+                "candidate_count": _candidate_count(decision),
+                "candidate_identifiers": json.dumps(
+                    _candidate_identifiers(decision),
+                    sort_keys=True,
+                ),
+                "selected_candidate_id": _selected_candidate_id(decision),
+                "selected_operation": _action_operation(decoded),
+                "selected_target": _action_target(decoded),
+                "selected_arguments": json.dumps(
+                    _action_arguments(decoded),
+                    sort_keys=True,
+                ),
+                "issued": decoded is not None,
+                "validation_succeeded": validation_succeeded,
+                "validation_failure_reason": (
+                    None if guardrail is None else guardrail.get("detail")
+                ),
+                "blocked": blocked_flag,
+                "block_reason": None if blocked is None else blocked.get("reason"),
+                "executed": executed_flag,
+                "execution_succeeded": executed_flag,
+                "execution_error": None,
+                "action_surface": _surface_for_action(decoded),
+                "recon_action": _is_recon_action(decoded),
+                "effect_capable_action": effect_capable,
+                "ineffective_action": (
+                    None
+                    if effect_capable is None
+                    else bool(not executed_flag or not effect_capable)
+                ),
+                "true_state_before": json.dumps(before_state, sort_keys=True),
+                "true_state_after": json.dumps(after_state, sort_keys=True),
+            }
+        )
+    return rows
+
+
+def _nearest_containment_activation(
+    *,
+    decision: dict[str, Any],
+    system_events: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    decision_time = _safe_float(decision.get("time_sec"))
+    candidates = [
+        event
+        for event in system_events
+        if event.get("event_type") == "attacker_execution_cutoff_activated"
+        and event.get("role") == "defender"
+        and (
+            decision_time is None
+            or (_safe_float(event.get("time_sec")) is not None and _safe_float(event.get("time_sec")) >= decision_time)
+        )
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: _safe_float(item.get("time_sec")) or 0.0)
+
+
+def _later_blocked_count(
+    *,
+    decision: dict[str, Any],
+    system_events: list[dict[str, Any]],
+) -> int:
+    decision_time = _safe_float(decision.get("time_sec"))
+    return sum(
+        1
+        for event in system_events
+        if event.get("event_type") == "attacker_action_blocked"
+        and (
+            decision_time is None
+            or (_safe_float(event.get("time_sec")) is not None and _safe_float(event.get("time_sec")) >= decision_time)
+        )
+    )
+
+
+def _defender_trace_rows(
+    *,
+    condition: str,
+    scenario_id: str,
+    trial: str,
+    decisions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    system_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    defender_decisions = [
+        decision
+        for decision in sorted(decisions, key=lambda item: float(item.get("time_sec", 0.0)))
+        if decision.get("role") == "defender"
+    ]
+    for index, decision in enumerate(defender_decisions, start=1):
+        decoded = _decoded_action_for_decision(decision)
+        executed = _matching_action_for_decision(decision=decision, actions=actions)
+        guardrail = _guardrail_rejection_for_decision(
+            decision=decision,
+            system_events=system_events,
+        )
+        activation = _nearest_containment_activation(
+            decision=decision,
+            system_events=system_events,
+        )
+        observation = _nearest_observation(
+            observations,
+            time_sec=decision.get("time_sec"),
+            before=True,
+        )
+        action_containment = (
+            executed.get("containment")
+            if executed and isinstance(executed.get("containment"), dict)
+            else {}
+        )
+        containment_requested = bool(
+            action_containment.get("is_containment_action")
+            or (activation is not None and _same_time(activation.get("time_sec"), decision.get("time_sec")))
+        )
+        rows.append(
+            {
+                "condition": condition,
+                "scenario_id": scenario_id,
+                "trial": trial,
+                "event_index": index,
+                "event_phase": "defender_decision",
+                "defender_event_id": index,
+                "time_sec": decision.get("time_sec"),
+                "defender_visible_observation_snapshot": json.dumps(
+                    observation,
+                    sort_keys=True,
+                ),
+                "private_attacker_fields_excluded_from_snapshot": True,
+                "detection_flag": decision.get("decision_type") in {"alert", "action"}
+                or bool(decision.get("diagnosis")),
+                "detection_reason": decision.get("diagnosis") or decision.get("summary"),
+                "recognition_flag": bool(decision.get("diagnosis")),
+                "selected_defender_action": json.dumps(decoded, sort_keys=True),
+                "issued": decoded is not None,
+                "executed": executed is not None,
+                "validation_succeeded": decoded is not None and guardrail is None,
+                "validation_failure_reason": (
+                    None if guardrail is None else guardrail.get("detail")
+                ),
+                "containment_requested": containment_requested,
+                "containment_effective": activation is not None,
+                "containment_effective_time_sec": (
+                    None if activation is None else activation.get("time_sec")
+                ),
+                "blocked_attacker_actions_afterward": _later_blocked_count(
+                    decision=decision,
+                    system_events=system_events,
+                ),
+            }
+        )
+    return rows
+
+
+def _event_trace_rows(
+    *,
+    condition: str,
+    scenario_id: str,
+    trial: str,
+    decisions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    system_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    phase_order = {
+        "pre_action": 10,
+        "attacker_decision": 20,
+        "attacker_execute": 30,
+        "post_action": 40,
+        "defender_decision": 50,
+        "defender_execute": 60,
+        "post_defense": 70,
+        "system_event": 80,
+    }
+    raw_rows: list[dict[str, Any]] = []
+    for observation in observations:
+        phase = str(observation.get("sample_phase") or "observation")
+        raw_rows.append(
+            {
+                "time_sec": _observation_time(observation),
+                "event_phase": phase,
+                "event_type": "observation",
+                "role": None,
+                "payload": observation,
+            }
+        )
+    for decision in decisions:
+        role = str(decision.get("role") or "")
+        raw_rows.append(
+            {
+                "time_sec": _safe_float(decision.get("time_sec")),
+                "event_phase": f"{role}_decision",
+                "event_type": "decision",
+                "role": role,
+                "payload": decision,
+            }
+        )
+    for action in actions:
+        role = str(action.get("role") or "")
+        raw_rows.append(
+            {
+                "time_sec": _safe_float(action.get("time_sec")),
+                "event_phase": f"{role}_execute",
+                "event_type": "action",
+                "role": role,
+                "payload": action,
+            }
+        )
+    for event in system_events:
+        raw_rows.append(
+            {
+                "time_sec": _safe_float(event.get("time_sec")),
+                "event_phase": str(event.get("event_type") or "system_event"),
+                "event_type": str(event.get("event_type") or "system_event"),
+                "role": event.get("role"),
+                "payload": event,
+            }
+        )
+
+    def sort_key(row: dict[str, Any]) -> tuple[float, int, str]:
+        time_value = _safe_float(row.get("time_sec"))
+        phase = str(row.get("event_phase") or "")
+        return (
+            -1.0 if time_value is None else time_value,
+            phase_order.get(phase, phase_order.get(row.get("event_type"), 90)),
+            phase,
+        )
+
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(sorted(raw_rows, key=sort_key), start=1):
+        payload = row.get("payload")
+        rows.append(
+            {
+                "condition": condition,
+                "scenario_id": scenario_id,
+                "trial": trial,
+                "event_index": index,
+                "time_sec": row.get("time_sec"),
+                "event_phase": row.get("event_phase"),
+                "event_type": row.get("event_type"),
+                "role": row.get("role"),
+                "payload": json.dumps(payload, sort_keys=True),
+            }
+        )
+    return rows
+
+
 def _condition_aggregate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -1224,12 +1772,43 @@ def _condition_aggregate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     aggregates: list[dict[str, Any]] = []
     for condition, condition_rows in sorted(grouped.items()):
         completed = [row for row in condition_rows if row.get("status") == "completed"]
+        # Three-state semantics for null-safe critical impact evaluation.
+        evaluated = [
+            row for row in completed if row.get("critical_impact_evaluated") is True
+        ]
+        unknown = [
+            row for row in completed if row.get("critical_impact_evaluated") is None
+        ]
+        false_evaluated = [
+            row
+            for row in evaluated
+            if _tri_false(row.get("attacker_caused_critical_impact"))
+        ]
+        true_attacker_caused = [
+            row
+            for row in evaluated
+            if _tri_true(row.get("attacker_caused_critical_impact"))
+        ]
+        evaluated_count = len(evaluated)
+        unknown_count = len(unknown)
+        true_count = len(true_attacker_caused)
+        false_count = len(false_evaluated)
+        attacker_caused_rate = None
+        if evaluated_count:
+            attacker_caused_rate = true_count / evaluated_count
         aggregates.append(
             {
                 "condition": condition,
                 "attack_run_count": len(condition_rows),
                 "completed_run_count": len(completed),
                 "failed_run_count": len(condition_rows) - len(completed),
+                "critical_impact_evaluated_run_count": evaluated_count,
+                "critical_impact_unknown_run_count": unknown_count,
+                "attacker_caused_critical_impact_run_count": len(true_attacker_caused),
+                "attacker_caused_critical_impact_false_run_count": false_count,
+                "attacker_caused_critical_impact_rate": (
+                    None if attacker_caused_rate is None else round(attacker_caused_rate, 4)
+                ),
                 "state_appropriate_selected_run_count": sum(
                     1
                     for row in completed
@@ -1249,11 +1828,18 @@ def _condition_aggregate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
                 "decisive_executed_run_count": sum(
                     1 for row in completed if _to_bool(row.get("decisive_action_executed"))
                 ),
-                "attacker_caused_critical_impact_run_count": sum(
-                    1 for row in completed if _to_bool(row.get("attacker_caused_critical_impact"))
-                ),
                 "physical_safety_impact_run_count": sum(
-                    1 for row in completed if _to_bool(row.get("physical_safety_impact"))
+                    1 for row in completed if _tri_true(row.get("physical_safety_impact"))
+                ),
+                "physical_safety_impact_evaluated_run_count": sum(
+                    1
+                    for row in completed
+                    if row.get("physical_safety_impact") is not None
+                ),
+                "physical_safety_impact_unknown_run_count": sum(
+                    1
+                    for row in completed
+                    if row.get("physical_safety_impact") is None
                 ),
                 "defender_cutoff_activated_run_count": sum(
                     1 for row in completed if _to_bool(row.get("defender_cutoff_activated"))
@@ -1345,6 +1931,9 @@ def _postprocess_results(
     except (TypeError, ValueError):
         seed = None
     audit_rows: list[dict[str, Any]] = []
+    attacker_trace_rows: list[dict[str, Any]] = []
+    defender_trace_rows: list[dict[str, Any]] = []
+    event_trace_rows: list[dict[str, Any]] = []
     for trial_dir in _trial_dirs(experiment_root):
         key = _trial_key(experiment_root, trial_dir)
         if key is None or key not in valid_keys:
@@ -1371,6 +1960,10 @@ def _postprocess_results(
             if (trial_dir / "system_events.json").exists()
             else []
         )
+        decisions_list = decisions if isinstance(decisions, list) else []
+        actions_list = actions if isinstance(actions, list) else []
+        observations = _load_observations(trial_dir)
+        system_events_list = system_events if isinstance(system_events, list) else []
         audit_rows.append(
             _legacy_critical_audit_row(
                 condition=condition,
@@ -1378,14 +1971,47 @@ def _postprocess_results(
                 trial=trial,
                 summary=summary,
                 metrics=metrics,
-                decisions=decisions if isinstance(decisions, list) else [],
-                actions=actions if isinstance(actions, list) else [],
-                observations=_load_observations(trial_dir),
-                system_events=system_events if isinstance(system_events, list) else [],
+                decisions=decisions_list,
+                actions=actions_list,
+                observations=observations,
+                system_events=system_events_list,
                 scenario=scenario_by_id.get(scenario_id),
                 seed=seed,
                 testbed_id=str(plan["testbed_id"]),
                 suite=str(plan["suite"]),
+            )
+        )
+        attacker_trace_rows.extend(
+            _attacker_trace_rows(
+                condition=condition,
+                scenario_id=scenario_id,
+                trial=trial,
+                decisions=decisions_list,
+                actions=actions_list,
+                observations=observations,
+                system_events=system_events_list,
+            )
+        )
+        defender_trace_rows.extend(
+            _defender_trace_rows(
+                condition=condition,
+                scenario_id=scenario_id,
+                trial=trial,
+                decisions=decisions_list,
+                actions=actions_list,
+                observations=observations,
+                system_events=system_events_list,
+            )
+        )
+        event_trace_rows.extend(
+            _event_trace_rows(
+                condition=condition,
+                scenario_id=scenario_id,
+                trial=trial,
+                decisions=decisions_list,
+                actions=actions_list,
+                observations=observations,
+                system_events=system_events_list,
             )
         )
     aggregate_rows = _condition_aggregate_rows(audit_rows)
@@ -1402,6 +2028,30 @@ def _postprocess_results(
         experiment_root / "process_defender_condition_comparison.json",
         aggregate_rows,
     )
+    write_csv(
+        experiment_root / "process_defender_attacker_trace.csv",
+        attacker_trace_rows,
+    )
+    write_json(
+        experiment_root / "process_defender_attacker_trace.json",
+        attacker_trace_rows,
+    )
+    write_csv(
+        experiment_root / "process_defender_defender_trace.csv",
+        defender_trace_rows,
+    )
+    write_json(
+        experiment_root / "process_defender_defender_trace.json",
+        defender_trace_rows,
+    )
+    write_csv(
+        experiment_root / "process_defender_event_trace.csv",
+        event_trace_rows,
+    )
+    write_json(
+        experiment_root / "process_defender_event_trace.json",
+        event_trace_rows,
+    )
     validation = {
         "validation_passed": bool(audit_rows)
         and all(row.get("status") == "completed" for row in audit_rows)
@@ -1409,6 +2059,9 @@ def _postprocess_results(
         "testbed": str(plan["testbed_id"]),
         "suite": str(plan["suite"]),
         "run_count": len(audit_rows),
+        "attacker_trace_event_count": len(attacker_trace_rows),
+        "defender_trace_event_count": len(defender_trace_rows),
+        "event_trace_event_count": len(event_trace_rows),
         "invalid_precontained_run_count": sum(
             1 for row in audit_rows if _to_bool(row.get("invalid_precontained_run"))
         ),
@@ -1431,7 +2084,28 @@ def _postprocess_results(
         "validation_report_json": portable_path(
             experiment_root / "process_defender_validation_report.json"
         ),
+        "attacker_trace_csv": portable_path(
+            experiment_root / "process_defender_attacker_trace.csv"
+        ),
+        "attacker_trace_json": portable_path(
+            experiment_root / "process_defender_attacker_trace.json"
+        ),
+        "defender_trace_csv": portable_path(
+            experiment_root / "process_defender_defender_trace.csv"
+        ),
+        "defender_trace_json": portable_path(
+            experiment_root / "process_defender_defender_trace.json"
+        ),
+        "event_trace_csv": portable_path(
+            experiment_root / "process_defender_event_trace.csv"
+        ),
+        "event_trace_json": portable_path(
+            experiment_root / "process_defender_event_trace.json"
+        ),
         "runs_postprocessed": len(audit_rows),
+        "attacker_trace_events": len(attacker_trace_rows),
+        "defender_trace_events": len(defender_trace_rows),
+        "event_trace_events": len(event_trace_rows),
         "validation_passed": validation["validation_passed"],
     }
 

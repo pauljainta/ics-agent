@@ -10,8 +10,12 @@ import pytest
 
 from ics_agent.config import load_config
 from ics_agent.experiments.process_defender_capability import (
-    _legacy_critical_audit_row,
+    _attacker_trace_rows,
     _condition_aggregate_rows,
+    _defender_trace_rows,
+    _event_trace_rows,
+    _legacy_critical_audit_row,
+    _postprocess_results,
     main as process_defender_capability_main,
     _write_generated_config,
 )
@@ -266,6 +270,7 @@ def test_condition_aggregate_reports_requested_critical_impact_columns() -> None
             "decisive_action_selected": True,
             "decisive_action_issued": True,
             "decisive_action_executed": True,
+            "critical_impact_evaluated": True,
             "attacker_caused_critical_impact": True,
             "physical_safety_impact": True,
             "availability_impact": False,
@@ -296,3 +301,261 @@ def test_condition_aggregate_reports_requested_critical_impact_columns() -> None
     assert aggregate["avg_attempted_actions"] == 2.0
     assert aggregate["avg_effect_capable_actions"] == 1.0
     assert aggregate["avg_blocked_actions"] == 1.0
+
+
+def test_condition_aggregate_null_safe_critical_impact_counts_and_rates() -> None:
+    rows = [
+        {
+            "condition": "c1",
+            "status": "completed",
+            "critical_impact_evaluated": None,
+            "attacker_caused_critical_impact": None,
+            "physical_safety_impact": None,
+            "availability_impact": None,
+            "control_integrity_impact": None,
+        },
+        {
+            "condition": "c1",
+            "status": "completed",
+            "critical_impact_evaluated": True,
+            "attacker_caused_critical_impact": True,
+            "physical_safety_impact": True,
+            "availability_impact": False,
+            "control_integrity_impact": False,
+        },
+    ]
+    aggregate = _condition_aggregate_rows(rows)[0]
+    assert aggregate["critical_impact_evaluated_run_count"] == 1
+    assert aggregate["critical_impact_unknown_run_count"] == 1
+    assert aggregate["attacker_caused_critical_impact_run_count"] == 1
+    assert aggregate["attacker_caused_critical_impact_false_run_count"] == 0
+    assert aggregate["attacker_caused_critical_impact_rate"] == 1.0
+
+
+def test_process_defender_trace_helpers_explain_selected_blocked_and_contained() -> None:
+    decisions = [
+        {
+            "role": "attacker",
+            "time_sec": 1.0,
+            "action": {"type": "set_sensor", "name": "Tank", "value": 11},
+            "metadata": {
+                "candidate_actions": [
+                    {"id": "candidate_01", "action": {"type": "inspect_surface"}},
+                    {
+                        "id": "candidate_02",
+                        "action": {"type": "set_sensor", "name": "Tank", "value": 11},
+                    },
+                ],
+                "selected_candidate_id": "candidate_02",
+            },
+        },
+        {
+            "role": "attacker",
+            "time_sec": 2.0,
+            "action": {"type": "set_sensor", "name": "Tank", "value": 12},
+            "metadata": {"selected_candidate_id": "candidate_03"},
+        },
+        {
+            "role": "defender",
+            "time_sec": 1.5,
+            "action": {"type": "block_sensor_write", "name": "Tank"},
+            "diagnosis": "Tank value exceeded process envelope.",
+        },
+    ]
+    actions = [
+        {
+            "role": "attacker",
+            "time_sec": 1.0,
+            "action": {"type": "set_sensor", "name": "Tank", "value": 11},
+        },
+        {
+            "role": "defender",
+            "time_sec": 1.5,
+            "action": {"type": "block_sensor_write", "name": "Tank"},
+            "containment": {"is_containment_action": True},
+        },
+    ]
+    observations = [
+        {"elapsed_sec": 1.0, "sample_phase": "pre_action", "Tank": 8},
+        {"elapsed_sec": 1.0, "sample_phase": "post_action", "Tank": 11},
+        {"elapsed_sec": 1.5, "sample_phase": "pre_action", "Tank": 11},
+    ]
+    system_events = [
+        {
+            "event_type": "attacker_execution_cutoff_activated",
+            "role": "defender",
+            "time_sec": 1.5,
+        },
+        {
+            "event_type": "attacker_action_blocked",
+            "time_sec": 2.0,
+            "attempted_action": {"type": "set_sensor", "name": "Tank", "value": 12},
+            "reason": "runtime containment cutoff",
+        },
+    ]
+
+    attacker_rows = _attacker_trace_rows(
+        condition="c1",
+        scenario_id="s1",
+        trial="trial-001",
+        decisions=decisions,
+        actions=actions,
+        observations=observations,
+        system_events=system_events,
+    )
+    defender_rows = _defender_trace_rows(
+        condition="c1",
+        scenario_id="s1",
+        trial="trial-001",
+        decisions=decisions,
+        actions=actions,
+        observations=observations,
+        system_events=system_events,
+    )
+    event_rows = _event_trace_rows(
+        condition="c1",
+        scenario_id="s1",
+        trial="trial-001",
+        decisions=decisions,
+        actions=actions,
+        observations=observations,
+        system_events=system_events,
+    )
+
+    assert attacker_rows[0]["selected_candidate_id"] == "candidate_02"
+    assert attacker_rows[0]["issued"] is True
+    assert attacker_rows[0]["executed"] is True
+    assert attacker_rows[0]["effect_capable_action"] is True
+    assert attacker_rows[1]["blocked"] is True
+    assert attacker_rows[1]["block_reason"] == "runtime containment cutoff"
+    assert defender_rows[0]["containment_requested"] is True
+    assert defender_rows[0]["containment_effective"] is True
+    assert defender_rows[0]["containment_effective_time_sec"] == 1.5
+    assert [row["event_index"] for row in event_rows] == list(
+        range(1, len(event_rows) + 1)
+    )
+
+
+def test_process_defender_postprocess_writes_forensic_trace_files(tmp_path: Path) -> None:
+    class Scenario:
+        catalog_id = "attack/s1"
+        scenario_id = "s1"
+        suite = "attack"
+        metadata = {"safety_bounds": {"Tank": {"max": 10}}}
+        execution = {
+            "initial_conditions": {"Tank": 8},
+            "attack": {
+                "steps": [
+                    {"action": {"type": "set_sensor", "name": "Tank", "value": 11}}
+                ]
+            },
+        }
+
+    experiment_root = tmp_path / "experiment"
+    trial_dir = experiment_root / "c1" / "attack" / "s1" / "trial-001"
+    trial_dir.mkdir(parents=True)
+    (trial_dir / "summary.json").write_text(
+        json.dumps({"status": "completed", "run_id": "r1"}) + "\n"
+    )
+    (trial_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "safety_violation_count": 1,
+                "attacker_action_count": 1,
+                "attacker": {"caused_safety_violation": True},
+                "runtime_containment": {
+                    "attacker_execution_cutoff_activated": True,
+                    "blocked_attacker_action_count": 1,
+                },
+                "defender_intervention": {
+                    "contained_before_safety_violation": False,
+                    "time_to_first_action_sec": 1.5,
+                },
+            }
+        )
+        + "\n"
+    )
+    (trial_dir / "decisions.json").write_text(
+        json.dumps(
+            [
+                {
+                    "role": "attacker",
+                    "time_sec": 1.0,
+                    "action": {"type": "set_sensor", "name": "Tank", "value": 11},
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 1.5,
+                    "action": {"type": "block_sensor_write", "name": "Tank"},
+                    "diagnosis": "Tank exceeded bound.",
+                },
+            ]
+        )
+        + "\n"
+    )
+    (trial_dir / "actions.json").write_text(
+        json.dumps(
+            [
+                {
+                    "role": "attacker",
+                    "time_sec": 1.0,
+                    "action": {"type": "set_sensor", "name": "Tank", "value": 11},
+                },
+                {
+                    "role": "defender",
+                    "time_sec": 1.5,
+                    "action": {"type": "block_sensor_write", "name": "Tank"},
+                    "containment": {"is_containment_action": True},
+                },
+            ]
+        )
+        + "\n"
+    )
+    (trial_dir / "system_events.json").write_text(
+        json.dumps(
+            [
+                {
+                    "event_type": "attacker_execution_cutoff_activated",
+                    "role": "defender",
+                    "time_sec": 1.5,
+                }
+            ]
+        )
+        + "\n"
+    )
+    (trial_dir / "observations.json").write_text(
+        json.dumps(
+            [
+                {"elapsed_sec": 1.0, "sample_phase": "pre_action", "Tank": 8},
+                {"elapsed_sec": 1.0, "sample_phase": "post_action", "Tank": 11},
+                {"elapsed_sec": 1.5, "sample_phase": "pre_action", "Tank": 11},
+            ]
+        )
+        + "\n"
+    )
+
+    postprocess = _postprocess_results(
+        experiment_root,
+        plan={
+            "conditions": [{"name": "c1"}],
+            "scenarios": [Scenario()],
+            "repeats": 1,
+            "config": {"reproducibility": {"seed": 101}},
+            "testbed_id": "water_treatment",
+            "suite": "kt",
+        },
+    )
+
+    assert postprocess["runs_postprocessed"] == 1
+    assert postprocess["attacker_trace_events"] == 1
+    assert postprocess["defender_trace_events"] == 1
+    assert postprocess["event_trace_events"] > 1
+    for name in (
+        "process_defender_critical_impact_audit.json",
+        "process_defender_condition_comparison.json",
+        "process_defender_attacker_trace.json",
+        "process_defender_defender_trace.json",
+        "process_defender_event_trace.json",
+        "process_defender_validation_report.json",
+    ):
+        assert (experiment_root / name).exists()
