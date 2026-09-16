@@ -14,7 +14,7 @@ study_metadata:
   timing_primary_origin: wargame_t0
   notes:
     - Water Treatment observation ablation for the legacy 18-scenario attack suite.
-    - Full target semantics and grounded interaction interface are fixed in both conditions.
+    - Full target semantics and the legacy white-box interaction interface are fixed in both conditions.
     - The only intended attacker-side capability difference is stateaware_oi.observation_variant.
     - The harmonized process-defender runner patches the defender to process-only full-containment semantics at execution time.
 environment:
@@ -66,12 +66,12 @@ conditions:
       attacker:
         target_semantics:
           variant: full
-          interface_variant: grounded_interface
+          interface_variant: legacy_white_interface
         stateaware_oi:
           enabled: true
           condition_name: full_target_semantics_normO_highI__agentic_defender
           observation_variant: normalized_observation
-          interface_variant: grounded_interface
+          interface_variant: legacy_white_interface
       defender: *frozen_defender_override
       observer: *frozen_observer_override
   - name: full_target_semantics_highO_highI__agentic_defender
@@ -80,11 +80,11 @@ conditions:
       attacker:
         target_semantics:
           variant: full
-          interface_variant: grounded_interface
+          interface_variant: legacy_white_interface
         stateaware_oi:
           enabled: true
           condition_name: full_target_semantics_highO_highI__agentic_defender
           observation_variant: high_observation
-          interface_variant: grounded_interface
+          interface_variant: legacy_white_interface
       defender: *frozen_defender_override
       observer: *frozen_observer_override

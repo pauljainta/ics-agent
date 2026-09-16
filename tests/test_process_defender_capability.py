@@ -131,15 +131,21 @@ def test_generated_wt_observation_config_varies_only_attacker_observation_and_pa
     ]
     stripped_profiles = []
     observed_o_variants = set()
+    observed_target_interfaces = set()
+    observed_stateaware_interfaces = set()
     for profile in attacker_profiles:
+        observed_target_interfaces.add(profile["target_semantics"]["interface_variant"])
         stateaware_oi = dict(profile["stateaware_oi"])
         observed_o_variants.add(stateaware_oi["observation_variant"])
+        observed_stateaware_interfaces.add(stateaware_oi["interface_variant"])
         stateaware_oi.pop("condition_name", None)
         stateaware_oi.pop("observation_variant", None)
         stripped = dict(profile)
         stripped["stateaware_oi"] = stateaware_oi
         stripped_profiles.append(stripped)
     assert observed_o_variants == {"normalized_observation", "high_observation"}
+    assert observed_target_interfaces == {"legacy_white_interface"}
+    assert observed_stateaware_interfaces == {"legacy_white_interface"}
     assert stripped_profiles[0] == stripped_profiles[1]
     for condition in generated_conditions.values():
         defender = condition["effective_profiles"]["defender"]
@@ -191,6 +197,9 @@ def test_wt_observation_ablation_high_o_adds_runtime_evidence_on_old_attack_scen
         "additional_runtime_evidence" not in recent_observation
         for recent_observation in high_context["recent_observations"]
     )
+    assert {
+        item.get("source") for item in high_context["candidate_actions"]
+    } == {"legacy_white_interface"}
     assert norm_context["system_knowledge"]["target_semantics"] == (
         high_context["system_knowledge"]["target_semantics"]
     )

@@ -3877,6 +3877,13 @@ class AgenticRoleAgent(RoleAgent):
         structured_memory: dict[str, Any],
         mitre_context: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
+        if self._uses_target_semantic_legacy_white_interface():
+            return self._target_semantic_legacy_white_interface_candidates(
+                context=context,
+                telemetry_summary=telemetry_summary,
+                structured_memory=structured_memory,
+                mitre_context=mitre_context,
+            )
         stateaware = scenario.execution.get("stateaware")
         if not isinstance(stateaware, dict):
             return self._black_box_candidate_actions(
