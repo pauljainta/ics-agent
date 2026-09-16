@@ -1,0 +1,75 @@
+experiment_name: water_distribution_target_observation_ablation
+experiment_id: water_distribution_target_observation_ablation_vs_agentic_full_containment_defender
+testbed: water_distribution
+scenario_selectors:
+  - attack/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/water_distribution_openplc/target-observation-ablation
+study_metadata:
+  family: water_distribution_target_observation_ablation
+  timing_primary_origin: wargame_t0
+  notes:
+    - Water Distribution observation ablation for the legacy 11-scenario attack suite.
+    - Full target semantics and the legacy white-box interaction interface are fixed.
+    - The attacker receives the high-observation path on top of the high-interface condition.
+    - The harmonized process-defender runner patches the defender to process-only full-containment semantics at execution time.
+environment:
+  backend: sphere_openplc
+  testbed: water_distribution
+  infrastructure_profile: water_distribution
+
+condition_profiles: &condition_profiles
+  attacker: target_semantic_ablation_attacker
+  defender: agentic_defender
+  observer: scripted_observer
+  planner: scripted_planner
+  operator: scripted_operator
+  offline_analysis: scripted_offline_analyst
+
+frozen_defender_override: &frozen_defender_override
+  behavior_model:
+    id: optionb_mitre_staged
+    policy: agentic
+    notes: Frozen active full-containment defender for target-observation ablation.
+  allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_actuator_write
+    - quarantine_signal_source
+    - noop
+  knowledge_files:
+    - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+    - testbeds/water_distribution/knowledge/defender_manual.md
+  abort_on_backend_error: false
+  action_cooldown_sec: 2.0
+  note_cooldown_sec: 12.0
+  reasoning_cooldown_sec: 12.0
+  reasoning_refresh_sec: 18.0
+  llm:
+    backend: qwen_langchain
+    prompt_file: testbeds/water_distribution/prompts/defender.md
+    use_langgraph: false
+    allow_langchain_fallback: false
+    max_new_tokens: 48
+
+conditions:
+  - name: full_target_semantics_highO_highI__agentic_defender
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        target_semantics:
+          variant: full
+          interface_variant: legacy_white_interface
+        stateaware_oi:
+          enabled: true
+          condition_name: full_target_semantics_highO_highI__agentic_defender
+          observation_variant: high_observation
+          interface_variant: legacy_white_interface
+      defender: *frozen_defender_override

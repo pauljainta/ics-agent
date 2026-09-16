@@ -268,6 +268,7 @@ def test_dry_run_wt_all_capability_does_not_execute_orchestrator(
 def test_wd_dry_run_requires_external_xdc(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ICS_AGENT_WD_PROCESS_DEFENDER_XDC", raising=False)
     monkeypatch.delenv("ICS_AGENT_SPHERE_XDC_OVERRIDE", raising=False)
+    monkeypatch.setenv("ICS_AGENT_DISABLE_LOCAL_ENV", "1")
     with pytest.raises(RuntimeError, match="require an explicit XDC"):
         process_defender_capability_main(
             [
@@ -317,6 +318,67 @@ def test_validate_only_wd_interface_requires_explicit_xdc_and_reports_22_runs() 
     assert plan["scenario_count"] == 11
     assert plan["condition_count"] == 2
     assert plan["planned_runs"] == 22
+
+
+def test_generated_wd_observation_config_uses_high_o_legacy_high_i_and_patches_defender() -> None:
+    source = (
+        "water_distribution_target_observation_ablation_vs_agentic_full_containment_defender.yaml"
+    )
+    generated_path = _write_generated_config(
+        source_config=source,
+        testbed_id="water_distribution",
+        suite="observation",
+        seed=101,
+        scenario=None,
+        only_condition=None,
+    )
+    generated_conditions = _condition_map(str(generated_path), "water_distribution")
+    assert sorted(generated_conditions) == [
+        "full_target_semantics_highO_highI__agentic_defender",
+    ]
+    condition = generated_conditions[
+        "full_target_semantics_highO_highI__agentic_defender"
+    ]
+    attacker = condition["effective_profiles"]["attacker"]
+    assert attacker["target_semantics"]["variant"] == "full"
+    assert attacker["target_semantics"]["interface_variant"] == "legacy_white_interface"
+    assert attacker["stateaware_oi"]["enabled"] is True
+    assert attacker["stateaware_oi"]["observation_variant"] == "high_observation"
+    assert attacker["stateaware_oi"]["interface_variant"] == "legacy_white_interface"
+    defender = condition["effective_profiles"]["defender"]
+    assert defender["process_physics_only"] is True
+    assert defender["defender_observation_mode"] == "process_physics_only"
+    assert defender["defer_containment_until_attacker_effect"] is True
+
+
+def test_validate_only_wd_legacy_capability_reports_ten_pairs() -> None:
+    payload = _run_validate(
+        "--testbed",
+        "wd",
+        "--suite",
+        "legacy-capability",
+        "--seed",
+        "101",
+        "--xdc",
+        "wd-xdc-for-test",
+    )
+    assert payload["status"] == "completed"
+    assert payload["suite"] == "legacy-capability"
+    summaries = payload["summaries"]
+    assert [item["status"] for item in summaries] == [
+        "validated",
+        "validated",
+        "validated",
+    ]
+    assert [item["plan"]["condition_count"] for item in summaries] == [8, 1, 1]
+    assert [item["plan"]["scenario_count"] for item in summaries] == [11, 11, 11]
+    assert [item["plan"]["planned_runs"] for item in summaries] == [88, 11, 11]
+    assert summaries[1]["plan"]["conditions"] == [
+        "full_target_semantics_legacy_white_interface__agentic_defender"
+    ]
+    assert summaries[2]["plan"]["conditions"] == [
+        "full_target_semantics_highO_highI__agentic_defender"
+    ]
 
 
 def test_focused_condition_preserves_full_suite_manifest() -> None:

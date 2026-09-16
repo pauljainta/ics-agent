@@ -45,6 +45,12 @@ SUITE_ALIASES = {
     "all": "all-capability",
     "all-capability": "all-capability",
     "all_capability": "all-capability",
+    "legacy-capability": "legacy-capability",
+    "legacy_capability": "legacy-capability",
+    "legacy-10": "legacy-capability",
+    "legacy_10": "legacy-capability",
+    "wd-legacy-capability": "legacy-capability",
+    "wd_legacy_capability": "legacy-capability",
 }
 
 SUITE_CONFIGS = {
@@ -63,7 +69,22 @@ SUITE_CONFIGS = {
     ("water_treatment", "observation"): (
         "water_treatment_target_observation_ablation_vs_agentic_full_containment_defender.yaml"
     ),
+    ("water_distribution", "observation"): (
+        "water_distribution_target_observation_ablation_vs_agentic_full_containment_defender.yaml"
+    ),
 }
+
+LEGACY_CAPABILITY_SUITE = [
+    ("kt", None),
+    (
+        "interface",
+        "full_target_semantics_legacy_white_interface__agentic_defender",
+    ),
+    (
+        "observation",
+        "full_target_semantics_highO_highI__agentic_defender",
+    ),
+]
 
 SUITE_DIRS = {
     "kt": "target-semantic-ablation",
@@ -2160,9 +2181,33 @@ def _not_discovered_payload(testbed_id: str, seed: int) -> dict[str, Any]:
     }
 
 
+def _load_local_xdc_env_defaults() -> None:
+    if os.environ.get("ICS_AGENT_DISABLE_LOCAL_ENV") == "1":
+        return
+    env_path = REPO_ROOT / ".env"
+    if not env_path.exists():
+        return
+    keys = {
+        "ICS_AGENT_WD_PROCESS_DEFENDER_XDC",
+        "ICS_AGENT_SPHERE_XDC_OVERRIDE",
+    }
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in keys or os.environ.get(key):
+            continue
+        value = value.strip().strip('"').strip("'")
+        if value:
+            os.environ[key] = value
+
+
 def _set_wd_xdc_override(testbed_id: str, xdc: str | None) -> None:
     if testbed_id != "water_distribution":
         return
+    _load_local_xdc_env_defaults()
     requested = str(
         xdc
         or os.environ.get("ICS_AGENT_WD_PROCESS_DEFENDER_XDC")
@@ -2363,7 +2408,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--suite",
         default="all-capability",
-        help="kt, interface, observation, or all-capability",
+        help=(
+            "kt, interface, observation, all-capability, or legacy-capability. "
+            "legacy-capability runs the 8 target-semantic conditions plus "
+            "full-semantics/high-I and full-semantics/high-I/high-O."
+        ),
     )
     parser.add_argument(
         "--defender",
@@ -2442,8 +2491,60 @@ def main(argv: list[str] | None = None) -> int:
     testbed_id = _canonical_testbed(args.testbed)
     suite = _canonical_suite(args.suite)
     _set_wd_xdc_override(testbed_id, args.xdc)
-    if args.config and suite == "all-capability":
-        raise RuntimeError("--config cannot be combined with --suite all-capability")
+    if args.config and suite in {"all-capability", "legacy-capability"}:
+        raise RuntimeError(
+            f"--config cannot be combined with --suite {suite}"
+        )
+    if suite == "legacy-capability":
+        if testbed_id != "water_distribution":
+            raise RuntimeError(
+                "--suite legacy-capability is currently defined for the "
+                "Water Distribution legacy 11-scenario suite."
+            )
+        if args.only_condition:
+            raise RuntimeError(
+                "--only-condition cannot be combined with --suite legacy-capability; "
+                "the legacy-capability suite already pins the focused conditions."
+            )
+        summaries = []
+        for current_suite, current_condition in LEGACY_CAPABILITY_SUITE:
+            suite_args = argparse.Namespace(**vars(args))
+            suite_args.only_condition = current_condition
+            summaries.append(
+                _run_one_suite(
+                    suite_args,
+                    testbed_id=testbed_id,
+                    suite=current_suite,
+                    emit=False,
+                )
+            )
+        print(
+            json.dumps(
+                {
+                    "status": (
+                        "completed"
+                        if all(
+                            item.get("status")
+                            in {"completed", "validated", "not_discovered"}
+                            for item in summaries
+                        )
+                        else "failed"
+                    ),
+                    "testbed": testbed_id,
+                    "suite": suite,
+                    "seed": int(args.seed),
+                    "summaries": summaries,
+                },
+                indent=2,
+            )
+        )
+        if all(
+            item.get("status") in {"completed", "validated", "not_discovered"}
+            for item in summaries
+        ):
+            return 0
+        return 1
+
     suites = ["kt", "interface", "observation"] if suite == "all-capability" else [suite]
     summaries = [
         _run_one_suite(
