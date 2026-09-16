@@ -1138,6 +1138,13 @@ def _event_time(item: dict[str, Any] | None) -> float | None:
     return _safe_float(item.get("time_sec"))
 
 
+def _event_sort_key(item: dict[str, Any] | None) -> tuple[int, float]:
+    time_value = _event_time(item)
+    if time_value is None:
+        return (1, float("inf"))
+    return (0, time_value)
+
+
 def _observation_time(item: dict[str, Any] | None) -> float | None:
     if not isinstance(item, dict):
         return None
@@ -1152,7 +1159,7 @@ def _first_role_decision(
     decisions: list[dict[str, Any]],
     role: str,
 ) -> dict[str, Any] | None:
-    for item in sorted(decisions, key=lambda row: float(row.get("time_sec", 0.0))):
+    for item in sorted(decisions, key=_event_sort_key):
         if item.get("role") == role:
             return item
     return None
@@ -1162,14 +1169,14 @@ def _first_role_action(
     actions: list[dict[str, Any]],
     role: str,
 ) -> dict[str, Any] | None:
-    for item in sorted(actions, key=lambda row: float(row.get("time_sec", 0.0))):
+    for item in sorted(actions, key=_event_sort_key):
         if item.get("role") == role:
             return item
     return None
 
 
 def _first_block_event(system_events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for item in sorted(system_events, key=lambda row: float(row.get("time_sec", 0.0))):
+    for item in sorted(system_events, key=_event_sort_key):
         if item.get("event_type") == "attacker_action_blocked":
             return item
     return None
@@ -1207,7 +1214,7 @@ def _first_matching_decision(
 ) -> dict[str, Any] | None:
     if not expected_actions:
         return None
-    for item in sorted(decisions, key=lambda row: float(row.get("time_sec", 0.0))):
+    for item in sorted(decisions, key=_event_sort_key):
         if item.get("role") != "attacker":
             continue
         if any(_action_matches(item.get("action"), expected) for expected in expected_actions):
@@ -1221,7 +1228,7 @@ def _first_matching_action(
 ) -> dict[str, Any] | None:
     if not expected_actions:
         return None
-    for item in sorted(actions, key=lambda row: float(row.get("time_sec", 0.0))):
+    for item in sorted(actions, key=_event_sort_key):
         if item.get("role") != "attacker":
             continue
         if any(_action_matches(item.get("action"), expected) for expected in expected_actions):
@@ -1515,7 +1522,7 @@ def _attacker_trace_rows(
     rows: list[dict[str, Any]] = []
     attacker_decisions = [
         decision
-        for decision in sorted(decisions, key=lambda item: float(item.get("time_sec", 0.0)))
+        for decision in sorted(decisions, key=_event_sort_key)
         if decision.get("role") == "attacker"
     ]
     for index, decision in enumerate(attacker_decisions, start=1):
@@ -1648,7 +1655,7 @@ def _defender_trace_rows(
     rows: list[dict[str, Any]] = []
     defender_decisions = [
         decision
-        for decision in sorted(decisions, key=lambda item: float(item.get("time_sec", 0.0)))
+        for decision in sorted(decisions, key=_event_sort_key)
         if decision.get("role") == "defender"
     ]
     for index, decision in enumerate(defender_decisions, start=1):

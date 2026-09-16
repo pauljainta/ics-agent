@@ -457,6 +457,53 @@ def test_legacy_critical_audit_marks_control_integrity_without_safety_oracle() -
     assert row["decisive_action_executed"] is True
 
 
+def test_legacy_critical_audit_tolerates_untimed_block_events() -> None:
+    scenario = ScenarioCatalog(testbed_id="water_distribution").get(
+        "attack/wd-attack-grid-valve-force-open"
+    )
+    row = _legacy_critical_audit_row(
+        condition="full_target_semantics__agentic_defender",
+        scenario_id="wd-attack-grid-valve-force-open",
+        trial="trial-001",
+        summary={
+            "status": "completed",
+            "run_id": "attack-wd-attack-grid-valve-force-open-trial-001",
+        },
+        metrics={
+            "safety_violation_count": 0,
+            "attacker_action_count": 1,
+            "attacker": {"caused_safety_violation": False},
+            "runtime_containment": {"blocked_attacker_action_count": 1},
+        },
+        decisions=[
+            {
+                "role": "attacker",
+                "time_sec": 1.0,
+                "action": {
+                    "type": "set_actuator",
+                    "name": "Grid_Elev_Valve",
+                    "value": True,
+                },
+            }
+        ],
+        actions=[],
+        observations=[],
+        system_events=[
+            {
+                "event_type": "attacker_action_blocked",
+                "time_sec": None,
+                "reason": "runtime containment active",
+            }
+        ],
+        scenario=scenario,
+        seed=101,
+        testbed_id="water_distribution",
+        suite="interface",
+    )
+    assert row["decisive_action_blocked"] is True
+    assert row["block_reason"] == "runtime containment active"
+
+
 def test_condition_aggregate_reports_requested_critical_impact_columns() -> None:
     rows = [
         {
