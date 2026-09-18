@@ -75,6 +75,19 @@ STATEAWARE_METRIC_KEYS = (
     "wall_clock_time_to_first_decisive_action_from_attack_start_sec",
 )
 
+MECHANISM_METRIC_KEYS = (
+    "candidate_count_before_action",
+    "selected_candidate_rank",
+    "predicted_effect_direction",
+    "branch_consistency_check_result",
+    "higher_rank_inconsistent_candidate_count",
+    "supporting_actions_before_decisive_action",
+    "replanning_cycles",
+    "post_action_observations_consumed",
+    "subgoal_count",
+    "subgoals_completed",
+)
+
 HIGH_INTERFACE_BANNED_WORDS = (
     "best",
     "dangerous",
@@ -658,6 +671,7 @@ def _capability_manifest(
         "scenario_contracts": scenario_contracts,
         "conditions": condition_entries,
         "stateaware_metric_keys": list(STATEAWARE_METRIC_KEYS),
+        "mechanism_metric_keys": list(MECHANISM_METRIC_KEYS),
         "neutral_interface_policy": {
             "banned_recommendation_words": list(HIGH_INTERFACE_BANNED_WORDS),
             "branch_ids_visible_to_attacker": False,
@@ -672,6 +686,73 @@ def _capability_manifest(
         manifest["original_water_distribution_attack_scenarios"] = original_attack_count
         manifest["stateaware_water_distribution_scenarios"] = stateaware_count
     return manifest
+
+
+def _capability_invariance_audit_markdown(manifest: dict[str, Any]) -> str:
+    conditions = [str(item.get("condition")) for item in manifest.get("conditions", [])]
+    varied = manifest.get("varied_conditions", {})
+    labels = ["Pair A", "Pair B", "Pair C"]
+    if len(conditions) != 3:
+        labels = [f"Pair {index + 1}" for index in range(len(conditions))]
+
+    def value_for(index: int, key: str) -> str:
+        if index >= len(conditions):
+            return ""
+        condition = varied.get(conditions[index], {})
+        if key == "I_A":
+            value = str(condition.get("I_A") or "")
+            return "high" if "grounded" in value else "norm"
+        if key == "O_A":
+            value = str(condition.get("O_A") or "")
+            return "high" if "additional" in value else "norm"
+        return "same"
+
+    rows = [
+        ("Scenario initial condition", "same"),
+        ("K_T", "same"),
+        ("U_A", "same"),
+        ("Attacker model", "same"),
+        ("Attacker planner/scaffold", "same"),
+        ("Action budget", "same"),
+        ("Defender", "same"),
+        ("Critical predicate", "same"),
+        ("Controller/process model", "same"),
+        ("Seed", "same"),
+        ("I_A / grounding", "I_A"),
+        ("O_A", "O_A"),
+    ]
+    table_lines = [
+        "| Field | " + " | ".join(labels) + " |",
+        "| --- | " + " | ".join(["---"] * len(labels)) + " |",
+    ]
+    for field, key in rows:
+        values = [
+            value_for(index, key) if key in {"I_A", "O_A"} else key
+            for index in range(len(labels))
+        ]
+        table_lines.append("| " + " | ".join([field, *values]) + " |")
+
+    checks = manifest.get("invariance_checks", {})
+    failed = [name for name, ok in checks.items() if not ok]
+    status = "PASS" if not failed else "FAIL"
+    return "\n".join(
+        [
+            "# State-Aware Capability-Invariance Audit",
+            "",
+            f"Validation status: **{status}**",
+            "",
+            *table_lines,
+            "",
+            "Invariant checks:",
+            "",
+            *[
+                f"- `{name}`: {'PASS' if ok else 'FAIL'}"
+                for name, ok in sorted(checks.items())
+            ],
+            "",
+            "This audit intentionally treats `I_A / grounding` and `O_A` as the only varied dimensions.",
+        ]
+    ) + "\n"
 
 
 def _experiment_plan(
@@ -757,10 +838,12 @@ def _preflight_mrg_auth(config: dict[str, object]) -> None:
     user = (result.stdout or "").strip()
     xdc = str(environment.get("xdc", "")).strip()
     target = str(environment.get("controller_host") or "").strip()
-    if not target and str(environment.get("testbed", "")).strip() in {
-        "water_treatment",
-        "water_distribution",
-    }:
+    testbed = str(environment.get("testbed", "")).strip()
+    if not target and testbed == "water_distribution":
+        target = str(
+            environment.get("access_host") or environment.get("jump_host") or "access"
+        ).strip()
+    if not target and testbed == "water_treatment":
         target = "controller"
     if not target:
         target = str(
@@ -1311,6 +1394,195 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes"}
 
 
+def _effect_capable(action: Any) -> bool:
+    normalized = normalize_action(action)
+    if normalized is None:
+        return False
+    return str(normalized.get("type", "")).strip() not in {
+        "",
+        "inspect_surface",
+        "noop",
+    }
+
+
+def _decision_branch_consistency(
+    *,
+    action: Any,
+    metrics: dict[str, Any],
+) -> str:
+    if action is None:
+        return "no_action"
+    if _decisive_action(action, metrics):
+        return "decisive_match"
+    if _state_appropriate(action, metrics):
+        return "state_appropriate_match"
+    if _effect_capable(action):
+        return "effect_capable_not_branch_consistent"
+    return "recon_or_hold"
+
+
+def _mechanism_entry_direction(entry: dict[str, Any]) -> Any:
+    value = entry.get("effect_direction")
+    if value is not None:
+        return value
+    action = normalize_action(entry.get("underlying_action"))
+    if action is None:
+        return None
+    action_type = str(action.get("type", "")).strip()
+    if action_type == "set_sensor":
+        return "write_numeric"
+    if action_type == "set_actuator":
+        raw_value = action.get("value")
+        if isinstance(raw_value, bool):
+            return "enable_or_open" if raw_value else "disable_or_close"
+        try:
+            return "decrease_or_disable" if float(raw_value) <= 0.0 else "increase_or_enable"
+        except (TypeError, ValueError):
+            return "actuate"
+    if action_type == "inspect_surface":
+        return "recon"
+    if action_type == "noop":
+        return "hold"
+    return action_type or None
+
+
+def _mechanism_metrics_for_decision(
+    *,
+    audit: dict[str, Any],
+    decoded: Any,
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    candidate_entries = [
+        item
+        for item in audit.get("candidate_mechanism_audit", []) or []
+        if isinstance(item, dict)
+    ]
+    selected_id = str(audit.get("selected_candidate_id") or "")
+    selected_entry = next(
+        (item for item in candidate_entries if str(item.get("id") or "") == selected_id),
+        None,
+    )
+    selected_rank = audit.get("selected_candidate_rank")
+    try:
+        selected_rank_int = int(selected_rank) if selected_rank is not None else None
+    except (TypeError, ValueError):
+        selected_rank_int = None
+    higher_rank_inconsistent = 0
+    if selected_rank_int is not None:
+        for item in candidate_entries:
+            try:
+                rank = int(item.get("rank"))
+            except (TypeError, ValueError):
+                continue
+            if rank >= selected_rank_int or not _truthy(item.get("effect_capable")):
+                continue
+            if _decision_branch_consistency(
+                action=item.get("underlying_action"),
+                metrics=metrics,
+            ) == "effect_capable_not_branch_consistent":
+                higher_rank_inconsistent += 1
+    return {
+        "candidate_count_before_action": audit.get("candidate_count_before_action"),
+        "selected_candidate_rank": selected_rank_int,
+        "predicted_effect_direction": (
+            _mechanism_entry_direction(selected_entry)
+            if selected_entry is not None
+            else None
+        ),
+        "branch_consistency_check_result": _decision_branch_consistency(
+            action=decoded,
+            metrics=metrics,
+        ),
+        "higher_rank_inconsistent_candidate_count": higher_rank_inconsistent,
+    }
+
+
+def _decision_audits(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    audits: list[dict[str, Any]] = []
+    for decision in decisions:
+        if decision.get("role") != "attacker":
+            continue
+        metadata = decision.get("metadata") if isinstance(decision.get("metadata"), dict) else {}
+        audit = metadata.get("stateaware_decision_audit")
+        if isinstance(audit, dict):
+            audits.append(audit)
+    return audits
+
+
+def _supporting_actions_before_decisive(
+    *,
+    actions: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> int:
+    decisive_times = [
+        float(item.get("time_sec", 0.0))
+        for item in actions
+        if item.get("role") == "attacker" and _decisive_action(item.get("action"), metrics)
+    ]
+    decisive_time = min(decisive_times) if decisive_times else None
+    supporting = 0
+    for item in actions:
+        if item.get("role") != "attacker":
+            continue
+        action = item.get("action")
+        if not _effect_capable(action) or _decisive_action(action, metrics):
+            continue
+        if decisive_time is not None:
+            try:
+                if float(item.get("time_sec", 0.0)) >= float(decisive_time):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        supporting += 1
+    return supporting
+
+
+def _replanning_cycles(
+    *,
+    decisions: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+) -> int:
+    attacker_action_times = [
+        float(item.get("time_sec", 0.0))
+        for item in actions
+        if item.get("role") == "attacker" and _effect_capable(item.get("action"))
+    ]
+    if not attacker_action_times:
+        return 0
+    first_effect_time = min(attacker_action_times)
+    return sum(
+        1
+        for item in decisions
+        if item.get("role") == "attacker"
+        and float(item.get("time_sec", 0.0)) > first_effect_time
+    )
+
+
+def _post_action_observations_consumed(decisions: list[dict[str, Any]]) -> int:
+    count = 0
+    for audit in _decision_audits(decisions):
+        observation = audit.get("attacker_visible_observation")
+        if not isinstance(observation, dict):
+            continue
+        evidence = observation.get("additional_runtime_evidence")
+        if not isinstance(evidence, dict):
+            continue
+        if evidence.get("recent_action_outcomes"):
+            count += 1
+    return count
+
+
+def _subgoal_metrics(metrics: dict[str, Any]) -> tuple[int, int]:
+    adaptation = ((metrics.get("state_aware") or {}).get("adaptation") or {})
+    if adaptation.get("sequence_expected"):
+        completed = adaptation.get("sequence_prefix_executed_count")
+        try:
+            return 2, int(completed)
+        except (TypeError, ValueError):
+            return 2, 0
+    return 1, 1 if _truthy(metrics.get("state_appropriate_action_executed")) else 0
+
+
 def _first_matching_decision(
     *,
     decisions: list[dict[str, Any]],
@@ -1434,6 +1706,9 @@ def _stateaware_condition_aggregates(run_rows: list[dict[str, Any]]) -> list[dic
                 "invalid_precontained_run_count": sum(
                     1 for row in rows if _truthy(row.get("invalid_precontained_run"))
                 ),
+                "invalid_precritical_run_count": sum(
+                    1 for row in rows if _truthy(row.get("invalid_precritical_run"))
+                ),
                 "avg_T_critical": _mean([row.get("T_critical") for row in rows]),
                 "avg_T_detect": _mean([row.get("T_detect") for row in rows]),
                 "avg_T_contain": _mean([row.get("T_contain") for row in rows]),
@@ -1451,6 +1726,26 @@ def _stateaware_condition_aggregates(run_rows: list[dict[str, Any]]) -> list[dic
                 ),
                 "blocked_attacker_action_count_avg": _mean(
                     [row.get("blocked_attacker_action_count") for row in rows]
+                ),
+                "avg_candidate_count_before_action": _mean(
+                    [row.get("avg_candidate_count_before_action") for row in rows]
+                ),
+                "avg_selected_candidate_rank": _mean(
+                    [row.get("avg_selected_candidate_rank") for row in rows]
+                ),
+                "higher_rank_inconsistent_candidate_count": sum(
+                    int(row.get("higher_rank_inconsistent_candidate_count") or 0)
+                    for row in rows
+                ),
+                "supporting_actions_before_decisive_action_avg": _mean(
+                    [row.get("supporting_actions_before_decisive_action") for row in rows]
+                ),
+                "replanning_cycles_avg": _mean([row.get("replanning_cycles") for row in rows]),
+                "post_action_observations_consumed_avg": _mean(
+                    [row.get("post_action_observations_consumed") for row in rows]
+                ),
+                "subgoals_completed_avg": _mean(
+                    [row.get("subgoals_completed") for row in rows]
                 ),
             }
         )
@@ -1600,6 +1895,16 @@ def _postprocess_stateaware_results(
             metrics=metrics,
             decisive=True,
         )
+        decision_audits = _decision_audits(decisions)
+        decision_mechanisms = [
+            _mechanism_metrics_for_decision(
+                audit=audit,
+                decoded=audit.get("decoded_real_action"),
+                metrics=metrics,
+            )
+            for audit in decision_audits
+        ]
+        subgoal_count, subgoals_completed = _subgoal_metrics(metrics)
         invalid_precontained = metrics.get(
             "attacker_execution_cutoff_pre_attack_start"
         )
@@ -1734,10 +2039,38 @@ def _postprocess_stateaware_results(
                 else None
             ),
             "invalid_precontained_run": invalid_precontained,
+            "invalid_precritical_run": (
+                stateaware.get("critical_predicate_before")
+                if isinstance(stateaware, dict)
+                else None
+            ),
             "attacker_execution_cutoff_pre_attack_start": invalid_precontained,
             "time_to_critical_process_impact_from_wargame_t0_sec": metrics.get(
                 "time_to_critical_process_impact_from_wargame_t0_sec"
             ),
+            "avg_candidate_count_before_action": _mean(
+                [item.get("candidate_count_before_action") for item in decision_mechanisms]
+            ),
+            "avg_selected_candidate_rank": _mean(
+                [item.get("selected_candidate_rank") for item in decision_mechanisms]
+            ),
+            "higher_rank_inconsistent_candidate_count": sum(
+                int(item.get("higher_rank_inconsistent_candidate_count") or 0)
+                for item in decision_mechanisms
+            ),
+            "supporting_actions_before_decisive_action": _supporting_actions_before_decisive(
+                actions=actions,
+                metrics=metrics,
+            ),
+            "replanning_cycles": _replanning_cycles(
+                decisions=decisions,
+                actions=actions,
+            ),
+            "post_action_observations_consumed": _post_action_observations_consumed(
+                decisions
+            ),
+            "subgoal_count": subgoal_count,
+            "subgoals_completed": subgoals_completed,
             "failure_stage": failure_stage,
         }
         row["final_classification"] = _final_classification(row)
@@ -1824,6 +2157,11 @@ def _postprocess_stateaware_results(
                     ),
                     "selected_policy_candidate": audit.get("selected_candidate_id"),
                     "decoded_real_action": json.dumps(decoded, sort_keys=True),
+                    **_mechanism_metrics_for_decision(
+                        audit=audit,
+                        decoded=decoded,
+                        metrics=metrics,
+                    ),
                     "validation_result": executed is not None,
                     "process_state_after": json.dumps(
                         None if executed is None else executed.get("state_after"),
@@ -1992,7 +2330,18 @@ def _run_seed(
     )
     manifest_path = _manifest_path(full_plan["experiment_root"], seed)
     write_json(manifest_path, full_plan["stateaware_capability_manifest"])
+    audit_path = manifest_path.with_name(
+        f"stateaware_capability_invariance_audit_seed_{seed}.md"
+    )
+    audit_path.write_text(
+        _capability_invariance_audit_markdown(
+            full_plan["stateaware_capability_manifest"]
+        )
+    )
     run_payload["stateaware_capability_manifest_path"] = portable_path(manifest_path)
+    run_payload["stateaware_capability_invariance_audit_path"] = portable_path(
+        audit_path
+    )
     run_payload["full_matrix_plan"] = {
         "planned_runs": full_payload["planned_runs"],
         "conditions": full_payload["conditions"],

@@ -191,6 +191,12 @@ def test_distribution_candidate_interfaces_share_underlying_actions() -> None:
     assert _underlying_candidate_keys(agents["wd_stateaware_full_semantics_normO_normI"]) == (
         _underlying_candidate_keys(agents["wd_stateaware_full_semantics_normO_highI"])
     ) == _underlying_candidate_keys(agents["wd_stateaware_full_semantics_highO_highI"])
+    assert contexts["wd_stateaware_full_semantics_normO_normI"]["policy_scaffold"] == (
+        contexts["wd_stateaware_full_semantics_normO_highI"]["policy_scaffold"]
+    ) == contexts["wd_stateaware_full_semantics_highO_highI"]["policy_scaffold"]
+    assert contexts["wd_stateaware_full_semantics_normO_normI"]["policy_scaffold"][
+        "version"
+    ] == "stateaware_generic_policy_v1"
 
     high_candidates = contexts["wd_stateaware_full_semantics_normO_highI"][
         "candidate_actions"
@@ -199,6 +205,25 @@ def test_distribution_candidate_interfaces_share_underlying_actions() -> None:
     for word in ("best", "dangerous", "winning", "breach", "recommended"):
         assert word not in summaries
     assert "supply_pump_speed" in summaries
+    assert all("mechanism" in item for item in high_candidates)
+
+
+def test_distribution_stateaware_prompt_does_not_embed_winning_values() -> None:
+    config = load_config(CONFIG)
+    catalog = ScenarioCatalog(testbed_id="water_distribution")
+    scenario = catalog.get("stateaware/wd-stateaware-adaptive-crosszone")
+    runtime_scenario = ExperimentOrchestrator(
+        testbed_id="water_distribution"
+    )._scenario_for_run(scenario, config)
+    condition = _condition_map()["wd_stateaware_full_semantics_highO_highI"]
+    agent = AgenticRoleAgent("wd_stateaware_prompt_audit", condition["effective_profiles"]["attacker"])
+    agent.reset(runtime_scenario)
+
+    context = agent._build_online_context(_runtime_context(runtime_scenario))
+    scaffold_text = json.dumps(context["policy_scaffold"], sort_keys=True)
+
+    for forbidden in ("270", "360", "1380", "1840", "branch_id", "grid_low"):
+        assert forbidden not in scaffold_text
 
 
 def test_distribution_process_only_defender_candidates_ignore_attacker_history() -> None:
@@ -510,6 +535,9 @@ def test_distribution_stateaware_runner_dry_run_validates_full_matrix() -> None:
     assert manifest["original_water_distribution_attack_scenarios"] == 11
     assert manifest["stateaware_water_distribution_scenarios"] == 4
     assert all(manifest["invariance_checks"].values())
+    assert payload["stateaware_capability_invariance_audit_path"].endswith(
+        "stateaware_capability_invariance_audit_seed_101.md"
+    )
 
 
 def test_distribution_stateaware_full_runner_is_not_gated_by_validation_report(
@@ -587,6 +615,42 @@ def test_distribution_stateaware_preflight_detects_expired_xdc_certificate(
 
     assert calls[0][-1] == "whoami"
     assert "xdc ssh" in " ".join(calls[1])
+
+
+def test_distribution_stateaware_preflight_uses_access_node_when_controller_host_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[-1] == "whoami":
+            return subprocess.CompletedProcess(command, 0, stdout="test-user\n", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                "__ICS_AGENT_STATEAWARE_XDC_PREFLIGHT_OK__\n"
+                "__ICS_AGENT_STATEAWARE_XDC_PREFLIGHT_RC__:0\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(stateaware.subprocess, "run", fake_run)
+
+    _preflight_mrg_auth(
+        {
+            "environment": {
+                "backend": "sphere_openplc",
+                "testbed": "water_distribution",
+                "merge_server": "merge-test-host",
+                "xdc": "distribution-xdc",
+                "access_host": "access",
+            }
+        }
+    )
+
+    assert " access" in " ".join(calls[1])
 
 
 def test_distribution_stateaware_postprocess_loads_csv_observations(
