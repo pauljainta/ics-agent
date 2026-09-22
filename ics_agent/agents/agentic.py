@@ -2221,16 +2221,6 @@ class AgenticRoleAgent(RoleAgent):
                     structured_memory=internal_structured_memory,
                     mitre_context=internal_mitre_context,
                 )
-            elif (
-                self._uses_distribution_scripted_black_box_profile()
-                and self._is_water_distribution_scenario(scenario)
-            ):
-                candidate_actions = (
-                    self._scripted_black_box_distribution_candidate_actions(
-                        context=history_context,
-                        telemetry_summary=telemetry_summary,
-                    )
-                )
             elif self._uses_stateaware_oi_experiment():
                 candidate_actions = self._stateaware_oi_candidate_actions(
                     scenario=scenario,
@@ -2247,6 +2237,13 @@ class AgenticRoleAgent(RoleAgent):
                         telemetry_summary=telemetry_summary,
                         structured_memory=internal_structured_memory,
                         mitre_context=internal_mitre_context,
+                    )
+                )
+            elif self._is_water_distribution_scenario(scenario):
+                candidate_actions = (
+                    self._scripted_black_box_distribution_candidate_actions(
+                        context=history_context,
+                        telemetry_summary=telemetry_summary,
                     )
                 )
             else:
@@ -3721,6 +3718,23 @@ class AgenticRoleAgent(RoleAgent):
         del structured_memory, mitre_context
         allowed = set(self.profile.get("allowed_action_types", []))
         observation = dict(context.get("observation") or {})
+        scenario = context.get("scenario")
+        is_distribution = bool(
+            scenario is not None and self._is_water_distribution_scenario(scenario)
+        )
+        if not is_distribution:
+            is_distribution = (
+                str(self._state.get("testbed_id", "")).strip() == "water_distribution"
+                or any(
+                    key in observation
+                    for key in (
+                        "Supply_Tank_Level",
+                        "Grid_Elev_Tank_Level",
+                        "RWS_Tank_Level",
+                    )
+                )
+            )
+        primary_process_id = "WD-UC0" if is_distribution else "WT-P1"
         state_name = str(observation.get("STATE_NAME", "")).strip().upper()
         plant_running = state_name in {"RUNNING", "START", "STARTING"}
         recent_actions = list(context.get("executed_actions", []))
@@ -3804,8 +3818,19 @@ class AgenticRoleAgent(RoleAgent):
             }
 
         if "inspect_surface" in allowed:
-            for index, surface in enumerate(
+            surfaces = (
                 [
+                    "tags",
+                    "registers",
+                    "io_image",
+                    "alarm_bits",
+                    "actuator_state_bits",
+                    "supply_control_plane",
+                    "grid_control_plane",
+                    "return_control_plane",
+                ]
+                if is_distribution
+                else [
                     "tags",
                     "registers",
                     "io_image",
@@ -3813,7 +3838,8 @@ class AgenticRoleAgent(RoleAgent):
                     "process2_control_plane",
                     "actuator_state_bits",
                 ]
-            ):
+            )
+            for index, surface in enumerate(surfaces):
                 if recon_count >= min_recon and surface in inspected_surfaces:
                     continue
                 add_candidate(
@@ -3885,33 +3911,51 @@ class AgenticRoleAgent(RoleAgent):
 
         if "hmi_start" in allowed and not plant_running:
             add_candidate(
-                {"type": "hmi_start", "process_id": "WT-P1"},
+                {"type": "hmi_start", "process_id": primary_process_id},
                 category="setup",
                 priority=124,
                 surface="io_image",
             )
         if "hmi_stop" in allowed and plant_running:
             add_candidate(
-                {"type": "hmi_stop", "process_id": "WT-P1"},
+                {"type": "hmi_stop", "process_id": primary_process_id},
                 category="impact_test",
                 priority=116,
                 surface="io_image",
             )
         if "hmi_estop" in allowed and plant_running:
             add_candidate(
-                {"type": "hmi_estop", "process_id": "WT-P1"},
+                {"type": "hmi_estop", "process_id": primary_process_id},
                 category="impact_test",
                 priority=118,
                 surface="io_image",
             )
-        if "select_process" in allowed:
+        if is_distribution and "set_actuator" in allowed:
+            actuator_priority = 120
+            if visible_risk_flags.intersection(
+                {"control_divergence", "state_disruption"}
+            ):
+                actuator_priority += 8
+            for actuator_action in self._scripted_black_box_distribution_actuator_actions():
+                add_candidate(
+                    actuator_action,
+                    category=(
+                        "impact_test"
+                        if actuator_action.get("value") in {True, 100}
+                        else "hypothesis_test"
+                    ),
+                    priority=actuator_priority,
+                    surface="actuator_write_path",
+                )
+                actuator_priority -= 1
+        if not is_distribution and "select_process" in allowed:
             add_candidate(
                 {"type": "select_process", "process_id": "WT-P2", "active": True},
                 category="hypothesis_test",
                 priority=112,
                 surface="process2_control_plane",
             )
-        if "set_manual_valve" in allowed:
+        if not is_distribution and "set_manual_valve" in allowed:
             valve_priority = 108
             for chemical in self._available_chemicals(observation)[:3]:
                 add_candidate(

@@ -370,6 +370,75 @@ def test_target_semantic_ablation_resolves_opaque_candidate_id_to_real_action(
     }
 
 
+def test_water_distribution_target_semantic_ablation_uses_distribution_actions() -> None:
+    conditions = _condition_map("water_distribution")
+    scenario = _scenario("water_distribution")
+    for variant in EXPECTED_VARIANTS:
+        condition_name = (
+            "full_target_semantics__agentic_defender"
+            if variant == "full"
+            else f"{variant}__agentic_defender"
+        )
+        profile = conditions[condition_name]["effective_profiles"]["attacker"]
+        agent = AgenticRoleAgent("wd_target_semantic_interface_audit", profile)
+        agent.reset(scenario)
+        context = agent._build_online_context(
+            _runtime_context("water_distribution", manipulation_ready=True)
+        )
+
+        mapped_actions = {
+            candidate_id: normalize_action(entry["action"])
+            for candidate_id, entry in agent._state["black_box_candidate_map"].items()
+        }
+        serialized_map = json.dumps(mapped_actions, sort_keys=True)
+        serialized_visible = json.dumps(context["candidate_actions"], sort_keys=True)
+
+        for treatment_token in (
+            "WT-P1",
+            "WT-P2",
+            "process2_control_plane",
+            "RW_Tank_Level",
+            "ChemTreat",
+            "UF_UFFT",
+        ):
+            assert treatment_token not in serialized_map, variant
+            assert treatment_token not in serialized_visible, variant
+
+        process_ids = {
+            action.get("process_id")
+            for action in mapped_actions.values()
+            if action.get("type") in {"hmi_start", "hmi_stop", "hmi_estop"}
+        }
+        writable_fields = {
+            str(action.get("name"))
+            for action in mapped_actions.values()
+            if action.get("type") in {"set_sensor", "set_actuator"}
+        }
+        inspected_surfaces = {
+            str(action.get("surface"))
+            for action in mapped_actions.values()
+            if action.get("type") == "inspect_surface"
+        }
+
+        assert process_ids
+        assert process_ids <= {"WD-UC0"}
+        assert writable_fields.intersection(
+            {
+                "Supply_Tank_Level",
+                "Grid_Elev_Tank_Level",
+                "RWS_Tank_Level",
+                "Supply_Pump_Speed",
+                "Supply_Tank_Valve",
+                "Grid_Elev_Valve",
+                "RWS_Pump_Speed",
+                "RWS_Tank_Valve",
+            }
+        )
+        assert {"sensor_write_path", "actuator_write_path"}.issubset(
+            inspected_surfaces
+        )
+
+
 def test_water_distribution_target_semantic_ablation_runner_validate_only() -> None:
     result = subprocess.run(
         [sys.executable, WD_RUNNER, "--validate-only"],
@@ -464,6 +533,22 @@ def _interface_context(testbed_id: str, interface_variant: str) -> tuple[Any, di
     return agent, context
 
 
+def _semantic_payload_without_interface_handles(payload: dict[str, Any]) -> dict[str, Any]:
+    fixed = deepcopy(payload)
+    surface = fixed.get("surface")
+    if isinstance(surface, dict):
+        preferred = surface.get("preferred_surface_order")
+        if isinstance(preferred, list):
+            surface["preferred_surface_order"] = [
+                {
+                    key: ("<interface-bound>" if key == "opaque_surface" else value)
+                    for key, value in dict(item).items()
+                }
+                for item in preferred
+            ]
+    return fixed
+
+
 @pytest.mark.parametrize("testbed_id", sorted(INTERFACE_CONFIGS))
 def test_target_interface_ablation_changes_candidate_presentation_only(
     testbed_id: str,
@@ -481,7 +566,9 @@ def test_target_interface_ablation_changes_candidate_presentation_only(
     assert normalized_context["recent_observations"] == legacy_context[
         "recent_observations"
     ]
-    assert normalized_context["system_knowledge"]["target_semantics"] == (
+    assert _semantic_payload_without_interface_handles(
+        normalized_context["system_knowledge"]["target_semantics"]
+    ) == _semantic_payload_without_interface_handles(
         legacy_context["system_knowledge"]["target_semantics"]
     )
     assert normalized_context["system_knowledge"]["variant"] == "full"
