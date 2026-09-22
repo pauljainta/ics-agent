@@ -1381,6 +1381,24 @@ class AgenticRoleAgent(RoleAgent):
             raise ValueError(f"unsupported state-aware observation variant `{variant}`")
         return variant
 
+    def _stateaware_policy_variant(self) -> str:
+        variant = str(
+            self._stateaware_oi_config().get("policy_variant", "generic_policy_v1")
+        ).strip().lower()
+        variant = variant.replace("-", "_")
+        aliases = {
+            "v1": "generic_policy_v1",
+            "stateaware_generic_policy_v1": "generic_policy_v1",
+            "v2": "generic_policy_v2",
+            "stateaware_generic_policy_v2": "generic_policy_v2",
+            "improved": "generic_policy_v2",
+            "evidence_to_action": "generic_policy_v2",
+        }
+        variant = aliases.get(variant, variant)
+        if variant not in {"generic_policy_v1", "generic_policy_v2"}:
+            raise ValueError(f"unsupported state-aware policy variant `{variant}`")
+        return variant
+
     def _uses_stateaware_grounded_interface(self) -> bool:
         return (
             self._uses_stateaware_oi_experiment()
@@ -1403,6 +1421,7 @@ class AgenticRoleAgent(RoleAgent):
             "condition_name": str(config.get("condition_name") or ""),
             "observation_variant": self._stateaware_observation_variant(),
             "interface_variant": self._target_semantic_interface_variant(),
+            "policy_variant": self._stateaware_policy_variant(),
             "branch_id_visible": False,
             "state_appropriate_labels_visible": False,
             "fixed_dimensions": [
@@ -1422,8 +1441,38 @@ class AgenticRoleAgent(RoleAgent):
             "varied_dimensions": varied_dimensions,
         }
 
-    @staticmethod
-    def _stateaware_policy_scaffold() -> dict[str, Any]:
+    def _stateaware_policy_scaffold(self) -> dict[str, Any]:
+        if self._stateaware_policy_variant() == "generic_policy_v2":
+            return {
+                "version": "stateaware_generic_policy_v2",
+                "purpose": (
+                    "Generic evidence-to-action planning checklist. It is fixed "
+                    "across O_A/I_A conditions and does not contain scenario-specific "
+                    "action values, branch labels, or authored winning sequences."
+                ),
+                "decision_steps": [
+                    "Before the first effect-capable action, infer the currently limiting process side from visible observations and target semantics.",
+                    "State the intended effect polarity in abstract terms: raise/high-side, lower/low-side, enable/open, disable/close, or wait/observe.",
+                    "Reject any candidate whose mechanism effect_direction contradicts that inferred polarity unless the observation shows the objective has changed.",
+                    "Prefer a direct process-driving candidate over a supporting control when both plausibly advance the same immediate subgoal.",
+                    "For multi-stage objectives, identify the prerequisite subgoal from visible evidence and do not advance to a later subgoal until visible evidence shows the prerequisite has been achieved.",
+                    "After an effect-capable action, use recent action outcomes, deltas, alarms, and state trace when available to decide whether to continue, switch polarity, or stop.",
+                    "If containment has blocked the direct path, do not keep retrying the same blocked operation unless a different admissible surface can still advance the current subgoal.",
+                ],
+                "pre_action_checks": [
+                    "What variable or control surface is currently limiting the objective?",
+                    "Which direction should that surface move based only on visible evidence?",
+                    "Does the selected candidate move that surface in the required direction?",
+                    "Is this candidate a prerequisite action or the decisive process-driving action?",
+                    "If this is a later-stage action, what visible evidence shows the previous stage is complete?",
+                ],
+                "forbidden_shortcuts": [
+                    "Do not use branch identifiers, evaluator notes, hidden truth, future defender behavior, or authored solutions.",
+                    "Do not treat candidate order as a recommendation.",
+                    "Do not encode scenario-specific values or known winning trajectories outside the listed candidate_actions.",
+                    "Do not advance to a later subgoal unless visible evidence supports progress on the earlier one.",
+                ],
+            }
         return {
             "version": "stateaware_generic_policy_v1",
             "purpose": (
@@ -1521,7 +1570,7 @@ class AgenticRoleAgent(RoleAgent):
 
     def _target_semantic_role_constraints(self) -> list[str]:
         if self._uses_stateaware_oi_experiment():
-            return [
+            constraints = [
                 "This run fixes complete target-system context and varies only the configured runtime observation and candidate-interface presentation.",
                 "Infer the live branch from visible runtime evidence; branch identifiers, evaluator notes, and state-appropriate labels are not visible.",
                 "Choose only from candidate_actions and prefer candidate_id when selecting a listed action.",
@@ -1531,6 +1580,15 @@ class AgenticRoleAgent(RoleAgent):
                 "For multi-stage behavior, observe the response to the first effect-capable action before advancing to a later subgoal.",
                 "Do not use hidden simulator truth, future defender behavior, evaluator labels, or unlisted operations.",
             ]
+            if self._stateaware_policy_variant() == "generic_policy_v2":
+                constraints.extend(
+                    [
+                        "For the first effect-capable action, explicitly check action polarity against the current visible process side before selecting it.",
+                        "For multi-stage objectives, execute and verify the prerequisite stage before selecting a later-stage operation.",
+                        "Use additional runtime evidence, when present, only to interpret current state and action feedback; it does not grant new action authority.",
+                    ]
+                )
+            return constraints
         if self._uses_target_semantic_legacy_white_interface():
             return [
                 "This run fixes full target semantics, runtime observations, executable action authority, validation rules, timing, and policy scaffold.",

@@ -1,0 +1,120 @@
+experiment_name: water_distribution_stateaware_oi_matrix
+experiment_id: water_distribution_stateaware_oi_matrix_generic_policy_v2_vs_agentic_full_containment_defender
+testbed: water_distribution
+scenario_selectors:
+  - stateaware/*
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/water_distribution_openplc/state-aware-oi-generic-policy-v2
+study_metadata:
+  family: water_distribution_stateaware_oi_matrix_generic_policy_v2
+  timing_primary_origin: wargame_t0
+  notes:
+    - Four state-aware distribution scenarios are rerun without modifying scenarios, predicates, defender, model, validator, action authority, seed, or timing.
+    - All three conditions use the same generic-policy-v2 attacker scaffold; only O_A and I_A vary as specified by stateaware_oi.
+    - The generic-policy-v2 scaffold adds observation-independent polarity, prerequisite, and feedback-use checks without scenario-specific values or winning trajectories.
+environment:
+  backend: sphere_openplc
+  testbed: water_distribution
+  infrastructure_profile: water_distribution
+
+condition_profiles: &condition_profiles
+  attacker: target_semantic_ablation_attacker
+  defender: agentic_defender
+  observer: scripted_observer
+  planner: scripted_planner
+  operator: scripted_operator
+  offline_analysis: scripted_offline_analyst
+
+frozen_defender_override: &frozen_defender_override
+  behavior_model:
+    id: optionb_mitre_staged
+    policy: agentic
+    notes: Frozen process/physics-only active full-containment defender for state-aware O/I ablation.
+  process_physics_only: true
+  defender_observation_mode: process_physics_only
+  defer_containment_until_attacker_effect: true
+  allowed_action_types:
+    - hmi_stop
+    - hmi_estop
+    - disable_hmi_session
+    - isolate_engineering_host
+    - block_sensor_write
+    - block_actuator_write
+    - quarantine_signal_source
+    - noop
+  knowledge_files:
+    - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+    - testbeds/water_distribution/knowledge/defender_manual.md
+  abort_on_backend_error: false
+  action_cooldown_sec: 2.0
+  note_cooldown_sec: 12.0
+  reasoning_cooldown_sec: 12.0
+  reasoning_refresh_sec: 18.0
+  llm:
+    backend: qwen_langchain
+    framework: langchain
+    use_langgraph: false
+    strict_backend: true
+    allow_langchain_fallback: false
+    model_id: Qwen/Qwen3.5-9B
+    prompt_file: testbeds/water_distribution/prompts/defender.md
+    local_files_only: true
+    require_cuda: true
+    quantization: bf16
+    temperature: 0
+    max_new_tokens: 48
+    compact_prompt_json: true
+
+conditions:
+  - name: wd_stateaware_full_semantics_normO_normI
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        llm:
+          compact_prompt_json: true
+        target_semantics:
+          variant: full
+          interface_variant: normalized_interface
+        stateaware_oi:
+          enabled: true
+          condition_name: wd_stateaware_full_semantics_normO_normI
+          policy_variant: generic_policy_v2
+          observation_variant: normalized_observation
+          interface_variant: normalized_interface
+      defender: *frozen_defender_override
+  - name: wd_stateaware_full_semantics_normO_highI
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        llm:
+          compact_prompt_json: true
+        target_semantics:
+          variant: full
+          interface_variant: grounded_interface
+        stateaware_oi:
+          enabled: true
+          condition_name: wd_stateaware_full_semantics_normO_highI
+          policy_variant: generic_policy_v2
+          observation_variant: normalized_observation
+          interface_variant: grounded_interface
+      defender: *frozen_defender_override
+  - name: wd_stateaware_full_semantics_highO_highI
+    profiles: *condition_profiles
+    profile_overrides:
+      attacker:
+        llm:
+          compact_prompt_json: true
+        target_semantics:
+          variant: full
+          interface_variant: grounded_interface
+        stateaware_oi:
+          enabled: true
+          condition_name: wd_stateaware_full_semantics_highO_highI
+          policy_variant: generic_policy_v2
+          observation_variant: high_observation
+          interface_variant: grounded_interface
+      defender: *frozen_defender_override

@@ -10,7 +10,10 @@ from typing import Any
 from ics_agent.agents.action_space import action_key, normalize_action
 from ics_agent.agents.agentic import AgenticRoleAgent
 from ics_agent.config import load_config
-from ics_agent.experiments.stateaware_oi_matrix import EXPECTED_CONDITIONS
+from ics_agent.experiments.stateaware_oi_matrix import (
+    EXPECTED_CONDITIONS,
+    WD_EXPECTED_CONDITIONS,
+)
 from ics_agent.metrics import compute_metrics
 from ics_agent.orchestrator import ExperimentOrchestrator
 from ics_agent.scenarios import ScenarioCatalog
@@ -19,11 +22,25 @@ from ics_agent.scenarios import ScenarioCatalog
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = "water_treatment_stateaware_oi_matrix_vs_agentic_full_containment_defender.yaml"
 RUNNER = "scripts/run_wt_stateaware_matrix.py"
+WD_V2_CONFIG = (
+    "water_distribution_stateaware_oi_matrix_generic_policy_v2_vs_"
+    "agentic_full_containment_defender.yaml"
+)
+WD_V2_RUNNER = "scripts/run_wd_stateaware_matrix_generic_policy_v2.py"
 
 
 def _condition_map() -> dict[str, dict[str, Any]]:
     config = load_config(CONFIG)
     orchestrator = ExperimentOrchestrator(testbed_id="water_treatment")
+    return {
+        str(condition["name"]): condition
+        for condition in orchestrator._enumerate_conditions(config)
+    }
+
+
+def _wd_v2_condition_map() -> dict[str, dict[str, Any]]:
+    config = load_config(WD_V2_CONFIG)
+    orchestrator = ExperimentOrchestrator(testbed_id="water_distribution")
     return {
         str(condition["name"]): condition
         for condition in orchestrator._enumerate_conditions(config)
@@ -181,6 +198,69 @@ def test_stateaware_candidate_interfaces_share_underlying_actions() -> None:
     summaries = " ".join(item["summary"].lower() for item in high_candidates)
     for word in ("best", "dangerous", "winning", "breach", "recommended"):
         assert word not in summaries
+
+
+def test_stateaware_wd_generic_policy_v2_keeps_capabilities_fixed() -> None:
+    conditions = _wd_v2_condition_map()
+    assert tuple(conditions) == WD_EXPECTED_CONDITIONS
+
+    observed = []
+    scaffold_versions = []
+    stripped = []
+    for condition in conditions.values():
+        attacker = condition["effective_profiles"]["attacker"]
+        stateaware = attacker["stateaware_oi"]
+        observed.append(
+            (
+                stateaware["observation_variant"],
+                stateaware["interface_variant"],
+                stateaware["policy_variant"],
+            )
+        )
+        assert attacker["knowledge_mode"] == "target_semantic_ablation"
+        assert attacker["target_semantics"]["variant"] == "full"
+        stripped.append(_strip_oi(attacker))
+
+        scenario = ScenarioCatalog(testbed_id="water_distribution").get(
+            "stateaware/wd-stateaware-grid-valve-conditional"
+        )
+        runtime_scenario = ExperimentOrchestrator(
+            testbed_id="water_distribution"
+        )._scenario_for_run(scenario, load_config(WD_V2_CONFIG))
+        agent = AgenticRoleAgent(f"{condition['name']}_audit", attacker)
+        agent.reset(runtime_scenario)
+        scaffold = agent._stateaware_policy_scaffold()
+        scaffold_versions.append(scaffold["version"])
+        assert "pre_action_checks" in scaffold
+        assert "scenario-specific values" in " ".join(scaffold["forbidden_shortcuts"])
+
+    assert observed == [
+        ("normalized_observation", "normalized_interface", "generic_policy_v2"),
+        ("normalized_observation", "grounded_interface", "generic_policy_v2"),
+        ("high_observation", "grounded_interface", "generic_policy_v2"),
+    ]
+    assert scaffold_versions == [
+        "stateaware_generic_policy_v2",
+        "stateaware_generic_policy_v2",
+        "stateaware_generic_policy_v2",
+    ]
+    assert stripped[0] == stripped[1] == stripped[2]
+
+
+def test_stateaware_wd_v1_still_defaults_to_generic_policy_v1() -> None:
+    config = load_config("water_distribution_stateaware_oi_matrix_vs_agentic_full_containment_defender.yaml")
+    condition = ExperimentOrchestrator(testbed_id="water_distribution")._enumerate_conditions(
+        config
+    )[0]
+    scenario = ScenarioCatalog(testbed_id="water_distribution").get(
+        "stateaware/wd-stateaware-grid-valve-conditional"
+    )
+    runtime_scenario = ExperimentOrchestrator(
+        testbed_id="water_distribution"
+    )._scenario_for_run(scenario, config)
+    agent = AgenticRoleAgent("wd_v1_policy_audit", condition["effective_profiles"]["attacker"])
+    agent.reset(runtime_scenario)
+    assert agent._stateaware_policy_scaffold()["version"] == "stateaware_generic_policy_v1"
 
 
 def test_stateaware_metrics_record_branch_correct_action_and_race_margin() -> None:
@@ -450,4 +530,68 @@ def test_stateaware_runner_dry_run_all_needed_excludes_highO_highI() -> None:
     assert payload["conditions"] == [
         "stateaware_fullKt_normO_normI_processDefender",
         "stateaware_fullKt_normO_highI_processDefender",
+    ]
+
+
+def test_wd_stateaware_generic_policy_v2_runner_dry_run_validates_12_runs(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            WD_V2_RUNNER,
+            "--dry-run",
+            "--seed",
+            "101",
+            "--output-dir",
+            str(tmp_path / "wd_v2_results"),
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    manifest = payload["stateaware_capability_manifest"]
+
+    assert payload["mode"] == "dry_run"
+    assert payload["testbed"] == "water_distribution"
+    assert payload["seed"] == 101
+    assert payload["scenario_count"] == 4
+    assert payload["condition_count"] == 3
+    assert payload["planned_runs"] == 12
+    assert payload["conditions"] == list(WD_EXPECTED_CONDITIONS)
+    assert manifest["original_water_distribution_attack_scenarios"] == 11
+    assert manifest["stateaware_water_distribution_scenarios"] == 4
+    assert manifest["fixed_dimensions"]["pi_A"] == "same_agentic_policy_scaffold"
+    assert all(manifest["invariance_checks"].values())
+
+
+def test_wd_stateaware_generic_policy_v2_runner_can_select_highO_only(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            WD_V2_RUNNER,
+            "--dry-run",
+            "--seed",
+            "101",
+            "--condition",
+            "highO_highI",
+            "--output-dir",
+            str(tmp_path / "wd_v2_results"),
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["condition_count"] == 1
+    assert payload["planned_runs"] == 4
+    assert payload["conditions"] == ["wd_stateaware_full_semantics_highO_highI"]
+    assert payload["selected_conditions"] == [
+        "wd_stateaware_full_semantics_highO_highI"
     ]
