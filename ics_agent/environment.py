@@ -1581,9 +1581,10 @@ class _SphereOpenPLCBackend:
             # consistently, while `infranetAddr` stays stable within the attached
             # materialization network. Fall back to the node ID when no explicit
             # infranet address is exposed.
-            hostnames[node_id] = (
-                str(node_entry.get("infranetAddr") or "").strip() or node_id
-            )
+            infranet_addr = str(node_entry.get("infranetAddr") or "").strip()
+            if "/" in infranet_addr:
+                infranet_addr = infranet_addr.split("/", 1)[0]
+            hostnames[node_id] = infranet_addr or node_id
         return hostnames
 
     @staticmethod
