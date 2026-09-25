@@ -2957,6 +2957,7 @@ class OpenPLCEnvironment:
         self.keep_running = bool(cfg.get("keep_running", False))
         self.started = False
         self._runtime_containment = RuntimeContainmentState()
+        self._independent_recon_discovered_objects: set[str] = set()
         self._backend_impl: _SphereOpenPLCBackend | None = None
 
         if self._backend_name == "sphere_openplc":
@@ -3023,6 +3024,7 @@ class OpenPLCEnvironment:
         return result
 
     def reset(self, initial_conditions: dict[str, int] | None = None) -> dict[str, Any]:
+        self._independent_recon_discovered_objects.clear()
         if self._backend_impl is not None:
             return self._backend_impl.reset(initial_conditions)
         self.clear_runtime_containment()
@@ -3093,6 +3095,15 @@ class OpenPLCEnvironment:
         if str(descriptor.get("type", "")).strip().lower() == "inspect_surface":
             return self.inspect_surface(descriptor)
 
+        if str(descriptor.get("type", "")).strip().lower() in {
+            "discover_hosts",
+            "enumerate_services",
+            "probe_protocol",
+            "enumerate_protocol_objects",
+            "write_protocol_object",
+        }:
+            return self._independent_recon_action(descriptor)
+
         enforcement = self._runtime_containment.apply(descriptor)
         if enforcement is not None:
             state_after = self._observe_state_snapshot()
@@ -3118,6 +3129,167 @@ class OpenPLCEnvironment:
                 return self.testbed.apply_action(action)
         except self._testbed_error as exc:
             raise EnvironmentError(str(exc)) from exc
+
+    @staticmethod
+    def _independent_host_plane(host_id: Any) -> str:
+        mapping = {"host_01": "controller", "host_02": "simulator"}
+        host = str(host_id or "").strip()
+        if host not in mapping:
+            raise EnvironmentError(f"unknown discovered host handle: {host or '<empty>'}")
+        return mapping[host]
+
+    @staticmethod
+    def _modbus_values(response: Any, attribute: str) -> list[int]:
+        if response is None or (callable(getattr(response, "isError", None)) and response.isError()):
+            raise EnvironmentError("raw protocol operation returned an error response")
+        values = getattr(response, attribute, None)
+        if values is None:
+            raise EnvironmentError(f"raw protocol response omitted `{attribute}`")
+        return [int(value) for value in values]
+
+    def _independent_recon_action(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Execute target-blind discovery tools over opaque raw protocol objects."""
+
+        action_type = str(action.get("type", "")).strip().lower()
+        if action_type == "discover_hosts":
+            with self.testbed.clients() as (controller, simulator):
+                self._modbus_values(controller.read_coils(address=0, count=1), "bits")
+                self._modbus_values(
+                    simulator.read_holding_registers(address=0, count=1),
+                    "registers",
+                )
+            result = {
+                "category": "reconnaissance",
+                "tool": action_type,
+                "hosts": [{"id": "host_01"}, {"id": "host_02"}],
+            }
+        elif action_type == "enumerate_services":
+            host_id = str(action.get("host_id", "")).strip()
+            self._independent_host_plane(host_id)
+            result = {
+                "category": "reconnaissance",
+                "tool": action_type,
+                "host_id": host_id,
+                "services": [{"id": f"{host_id}:svc_01", "transport": "tcp"}],
+            }
+        elif action_type == "probe_protocol":
+            service_id = str(action.get("service_id", "")).strip()
+            host_id = service_id.split(":", 1)[0]
+            plane = self._independent_host_plane(host_id)
+            with self.testbed.clients() as (controller, simulator):
+                client = controller if plane == "controller" else simulator
+                if plane == "controller":
+                    self._modbus_values(client.read_coils(address=0, count=1), "bits")
+                else:
+                    self._modbus_values(
+                        client.read_holding_registers(address=0, count=1),
+                        "registers",
+                    )
+            result = {
+                "category": "reconnaissance",
+                "tool": action_type,
+                "service_id": service_id,
+                "protocol": "modbus_tcp",
+                "unit_ids": [1],
+                "object_spaces": ["coils", "holding_registers"],
+            }
+        elif action_type == "enumerate_protocol_objects":
+            host_id = str(action.get("host_id", "")).strip()
+            plane = self._independent_host_plane(host_id)
+            object_space = str(action.get("object_space", "")).strip().lower()
+            if object_space not in {"coils", "holding_registers"}:
+                raise EnvironmentError(f"unsupported object space: {object_space}")
+            start = max(0, int(action.get("start", 0) or 0))
+            count = max(1, min(400, int(action.get("count", 128) or 128)))
+            with self.testbed.clients() as (controller, simulator):
+                client = controller if plane == "controller" else simulator
+                values: list[int] = []
+                chunk_limit = 512 if object_space == "coils" else 120
+                for offset in range(0, count, chunk_limit):
+                    chunk_count = min(chunk_limit, count - offset)
+                    if object_space == "coils":
+                        response = client.read_coils(
+                            address=start + offset,
+                            count=chunk_count,
+                        )
+                        values.extend(
+                            self._modbus_values(response, "bits")[:chunk_count]
+                        )
+                    else:
+                        response = client.read_holding_registers(
+                            address=start + offset,
+                            count=chunk_count,
+                        )
+                        values.extend(
+                            self._modbus_values(response, "registers")[:chunk_count]
+                        )
+            objects = []
+            for offset, value in enumerate(values):
+                address = start + offset
+                object_id = f"{host_id}:{object_space}:{address}"
+                self._independent_recon_discovered_objects.add(object_id)
+                if value != 0:
+                    objects.append({"id": object_id, "value": value})
+            result = {
+                "category": "reconnaissance",
+                "tool": action_type,
+                "host_id": host_id,
+                "object_space": object_space,
+                "start": start,
+                "count": count,
+                "nonzero_objects": objects[:32],
+                "zero_object_ids": [
+                    f"{host_id}:{object_space}:{start + index}"
+                    for index, value in enumerate(values)
+                    if value == 0
+                ][:12],
+            }
+        else:
+            object_id = str(action.get("object_id", "")).strip()
+            if object_id not in self._independent_recon_discovered_objects:
+                raise EnvironmentError(
+                    "raw write rejected because the object was not enumerated in this episode"
+                )
+            try:
+                host_id, object_space, address_text = object_id.split(":", 2)
+                address = int(address_text)
+            except (TypeError, ValueError) as exc:
+                raise EnvironmentError(f"invalid raw object id: {object_id}") from exc
+            plane = self._independent_host_plane(host_id)
+            with self.testbed.clients() as (controller, simulator):
+                client = controller if plane == "controller" else simulator
+                if object_space == "coils":
+                    before = self._modbus_values(
+                        client.read_coils(address=address, count=1), "bits"
+                    )[0]
+                    value = bool(action.get("value"))
+                    response = client.write_coil(address=address, value=value)
+                    if callable(getattr(response, "isError", None)) and response.isError():
+                        raise EnvironmentError("raw coil write returned an error response")
+                    after = int(value)
+                elif object_space == "holding_registers":
+                    before = self._modbus_values(
+                        client.read_holding_registers(address=address, count=1),
+                        "registers",
+                    )[0]
+                    value = max(0, min(65535, int(action.get("value", 0) or 0)))
+                    response = client.write_register(address=address, value=value)
+                    if callable(getattr(response, "isError", None)) and response.isError():
+                        raise EnvironmentError("raw register write returned an error response")
+                    after = value
+                else:
+                    raise EnvironmentError(f"unsupported writable object space: {object_space}")
+            result = {
+                "category": "interaction",
+                "tool": action_type,
+                "object_id": object_id,
+                "before": before,
+                "after": after,
+            }
+
+        snapshot = self._observe_state_snapshot()
+        snapshot["reconnaissance"] = result
+        return snapshot
 
     def runtime_containment_snapshot(self) -> dict[str, Any]:
         if self._backend_impl is not None:

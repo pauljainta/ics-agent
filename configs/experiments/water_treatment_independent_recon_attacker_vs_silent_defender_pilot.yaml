@@ -1,0 +1,47 @@
+experiment_name: water_treatment_independent_recon_attacker_vs_silent_defender_pilot
+experiment_id: water_treatment_independent_recon_attacker_vs_silent_defender_pilot
+testbed: water_treatment
+scenario_selectors:
+  - attack/wt-attack-sensor-rw-hh-alarm
+  - attack/wt-attack-p2-naocl-drain
+repeats: 1
+resume: true
+use_canonical_result_root: true
+reproducibility:
+  seed: 101
+results_root: ../../../Artifact/Results/Water-treatment/Independent-Recon/Pilot
+study_metadata:
+  family: water_treatment_independent_recon_attacker_vs_silent_defender_pilot
+  timing_primary_origin: wargame_t0
+  notes:
+    - Two representative scenarios test whether a generic-knowledge attacker can discover and manipulate an opaque raw protocol interface.
+    - Scenario identity, authored objective, tag semantics, topology, safety thresholds, and precomputed attack candidates are hidden from the attacker.
+    - The defender and observer are silent so this pilot measures independent attacker discovery and execution rather than the defensive race.
+    - Infrastructure coordinates must come from ignored local environment or infrastructure configuration.
+environment:
+  backend: sphere_openplc
+  testbed: water_treatment
+  infrastructure_profile: water_treatment
+environment_runtime:
+  io_timeout_sec: 8
+conditions:
+  - name: independent_recon_attacker__silent_defender
+    profiles:
+      attacker: independent_recon_attacker
+      defender: silent_defender
+      observer: silent_observer
+      planner: scripted_planner
+      operator: scripted_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        max_llm_decisions_per_episode: 20
+        llm:
+          model_id: Qwen/Qwen3.5-9B
+          prompt_file: testbeds/water_treatment/prompts/independent_recon_attacker.md
+          quantization: 4bit
+          max_new_tokens: 128
+        action_cooldown_sec: 0.5
+        note_cooldown_sec: 1.0
+        reasoning_cooldown_sec: 0.0
+        reasoning_refresh_sec: 0.0

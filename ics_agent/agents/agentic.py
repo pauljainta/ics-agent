@@ -1162,6 +1162,9 @@ class AgenticRoleAgent(RoleAgent):
             profile.get("max_llm_decisions_per_episode", 0) or 0
         )
         self.autonomous_react_tools = bool(profile.get("autonomous_react_tools", False))
+        self.independent_recon_tools = bool(
+            profile.get("independent_recon_tools", False)
+        )
         self.autonomous_react_min_recon_actions = max(
             0,
             int(profile.get("autonomous_react_min_recon_actions", 2) or 0),
@@ -1213,7 +1216,7 @@ class AgenticRoleAgent(RoleAgent):
             "black_box",
             "white_box",
             "target_semantic_ablation",
-        }:
+        } and not bool(normalized.get("independent_recon_tools", False)):
             allowed = list(normalized.get("allowed_action_types", []))
             if "inspect_surface" not in allowed:
                 insertion_index = (
@@ -1260,6 +1263,9 @@ class AgenticRoleAgent(RoleAgent):
             "autonomous_react",
             "tool_react",
         }
+
+    def _uses_independent_recon_tools(self) -> bool:
+        return self.role == "attacker" and self.independent_recon_tools
 
     def _uses_process_physics_defender_only(self) -> bool:
         if self.role != "defender":
@@ -2079,7 +2085,389 @@ class AgenticRoleAgent(RoleAgent):
                 )
         return "Use reconnaissance findings to choose the most plausible staged process-facing surface."
 
+    @staticmethod
+    def _independent_recon_action_records(
+        context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for item in context.get("executed_actions", []) or []:
+            if not isinstance(item, dict) or item.get("role") != "attacker":
+                continue
+            action = normalize_action(item.get("action"))
+            if action is None:
+                continue
+            action_type = str(action.get("type", "")).strip()
+            if action_type not in {
+                "discover_hosts",
+                "enumerate_services",
+                "probe_protocol",
+                "enumerate_protocol_objects",
+                "write_protocol_object",
+            }:
+                continue
+            result = item.get("result")
+            records.append(
+                {
+                    "time_sec": item.get("time_sec"),
+                    "action": action,
+                    "result": dict(result) if isinstance(result, dict) else None,
+                }
+            )
+        return records
+
+    def _independent_recon_memory(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        records = self._independent_recon_action_records(context)
+        hosts: set[str] = set()
+        services: set[str] = set()
+        protocols: set[str] = set()
+        objects: dict[str, int] = {}
+        write_effects: list[dict[str, Any]] = []
+        scans: list[dict[str, Any]] = []
+        for record in records:
+            action = record["action"]
+            result = record.get("result") or {}
+            action_type = str(action.get("type", ""))
+            if action_type == "discover_hosts":
+                hosts.update(
+                    str(item.get("id"))
+                    for item in result.get("hosts", [])
+                    if isinstance(item, dict) and item.get("id")
+                )
+            elif action_type == "enumerate_services":
+                services.update(
+                    str(item.get("id"))
+                    for item in result.get("services", [])
+                    if isinstance(item, dict) and item.get("id")
+                )
+            elif action_type == "probe_protocol":
+                service_id = str(result.get("service_id") or action.get("service_id") or "")
+                if service_id:
+                    protocols.add(service_id)
+            elif action_type == "enumerate_protocol_objects":
+                scan_key = {
+                    "host_id": result.get("host_id") or action.get("host_id"),
+                    "object_space": result.get("object_space")
+                    or action.get("object_space"),
+                    "start": result.get("start", action.get("start")),
+                    "count": result.get("count", action.get("count")),
+                }
+                scans.append(scan_key)
+                for item in result.get("nonzero_objects", []) or []:
+                    if isinstance(item, dict) and item.get("id") is not None:
+                        objects[str(item["id"])] = int(item.get("value", 0) or 0)
+                for object_id in result.get("zero_object_ids", []) or []:
+                    objects.setdefault(str(object_id), 0)
+            elif action_type == "write_protocol_object":
+                write_effects.append(
+                    {
+                        "object_id": result.get("object_id")
+                        or action.get("object_id"),
+                        "before": result.get("before"),
+                        "after": result.get("after"),
+                    }
+                )
+        return {
+            "discovery_stage": (
+                "find_hosts"
+                if not hosts
+                else "enumerate_services"
+                if len(services) < len(hosts)
+                else "identify_protocols"
+                if len(protocols) < len(services)
+                else "enumerate_objects"
+                if len(scans) < 4
+                else "hypothesis_testing"
+            ),
+            "discovered_hosts": sorted(hosts),
+            "discovered_services": sorted(services),
+            "probed_services": sorted(protocols),
+            "object_scan_count": len(scans),
+            "discovered_objects": [
+                {"id": object_id, "value": value}
+                for object_id, value in sorted(objects.items())
+            ][:48],
+            "observed_write_effects": write_effects[-8:],
+            "working_hypothesis": (
+                "Compare raw-object perturbations with later rescans; semantic meaning remains unknown."
+                if objects
+                else "No operational object has been enumerated yet."
+            ),
+        }
+
+    def _independent_recon_candidates(
+        self,
+        context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Build generic discovery/write tools without consulting scenario semantics."""
+
+        allowed = set(self.profile.get("allowed_action_types", []))
+        memory = self._independent_recon_memory(context)
+        hosts = list(memory.get("discovered_hosts", []))
+        services = list(memory.get("discovered_services", []))
+        probed = set(memory.get("probed_services", []))
+        records = self._independent_recon_action_records(context)
+        candidates: list[dict[str, Any]] = []
+        candidate_map: dict[str, dict[str, Any]] = {}
+
+        def add(action: dict[str, Any], summary: str, *, priority: int) -> None:
+            if str(action.get("type", "")) not in allowed:
+                return
+            candidate_id = f"tool_{len(candidates) + 1:02d}"
+            payload = {
+                "id": candidate_id,
+                "summary": summary,
+                "action": dict(action),
+                "source": "independent_recon_tool",
+                "priority": priority,
+                "category": (
+                    "interaction"
+                    if action.get("type") == "write_protocol_object"
+                    else "recon"
+                ),
+            }
+            candidates.append(payload)
+            candidate_map[candidate_id] = {
+                "action": dict(action),
+                "summary": summary,
+                "visible_action": dict(action),
+            }
+
+        if not hosts:
+            add(
+                {"type": "discover_hosts"},
+                "Discover reachable hosts from the current bounded foothold.",
+                priority=200,
+            )
+        elif len(services) < len(hosts):
+            known_service_hosts = {service.split(":", 1)[0] for service in services}
+            for host_id in hosts:
+                if host_id not in known_service_hosts:
+                    add(
+                        {"type": "enumerate_services", "host_id": host_id},
+                        f"Enumerate bounded services on `{host_id}`.",
+                        priority=190,
+                    )
+        elif len(probed) < len(services):
+            for service_id in services:
+                if service_id not in probed:
+                    add(
+                        {"type": "probe_protocol", "service_id": service_id},
+                        f"Identify the protocol exposed by `{service_id}`.",
+                        priority=180,
+                    )
+        else:
+            completed_scans = {
+                (
+                    str((record.get("result") or {}).get("host_id")),
+                    str((record.get("result") or {}).get("object_space")),
+                    int((record.get("result") or {}).get("start", 0) or 0),
+                )
+                for record in records
+                if record["action"].get("type") == "enumerate_protocol_objects"
+                and record.get("result")
+            }
+            scan_plan = [
+                (host_id, object_space, 0, 128 if object_space == "coils" else 400)
+                for host_id in hosts
+                for object_space in ("coils", "holding_registers")
+            ]
+            for host_id, object_space, start, count in scan_plan:
+                if (host_id, object_space, start) in completed_scans:
+                    continue
+                add(
+                    {
+                        "type": "enumerate_protocol_objects",
+                        "host_id": host_id,
+                        "object_space": object_space,
+                        "start": start,
+                        "count": count,
+                    },
+                    f"Enumerate raw `{object_space}` objects on `{host_id}`.",
+                    priority=170,
+                )
+
+            if len(completed_scans) >= len(scan_plan):
+                raw_objects = list(memory.get("discovered_objects", []))
+                object_buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+                for item in raw_objects:
+                    object_id = str(item.get("id", ""))
+                    parts = object_id.split(":", 2)
+                    if len(parts) != 3:
+                        continue
+                    value = int(item.get("value", 0) or 0)
+                    bucket_key = (
+                        parts[0],
+                        parts[1],
+                        "active" if value != 0 else "inactive",
+                    )
+                    object_buckets.setdefault(bucket_key, []).append(item)
+                for bucket in object_buckets.values():
+                    bucket.sort(
+                        key=lambda item: (
+                            abs(int(item.get("value", 0) or 0)),
+                            str(item.get("id", "")),
+                        ),
+                        reverse=True,
+                    )
+                # Round-robin across hosts, object spaces, and active/inactive values.
+                # This avoids treating address order as a target-specific leverage prior.
+                selected_objects: list[dict[str, Any]] = []
+                bucket_keys = sorted(object_buckets)
+                bucket_index = 0
+                while len(selected_objects) < 20:
+                    appended = False
+                    for bucket_key in bucket_keys:
+                        bucket = object_buckets[bucket_key]
+                        if bucket_index < len(bucket):
+                            selected_objects.append(bucket[bucket_index])
+                            appended = True
+                            if len(selected_objects) >= 20:
+                                break
+                    if not appended:
+                        break
+                    bucket_index += 1
+                attempted_writes = {
+                    action_key(record["action"])
+                    for record in records
+                    if record["action"].get("type") == "write_protocol_object"
+                }
+                for index, item in enumerate(selected_objects):
+                    object_id = str(item.get("id", ""))
+                    current = int(item.get("value", 0) or 0)
+                    if ":coils:" in object_id:
+                        value: int | bool = not bool(current)
+                    else:
+                        value = (
+                            min(65535, max(current + 100, current * 2 + 100))
+                            if current > 0
+                            else 1000
+                        )
+                    write_action = {
+                        "type": "write_protocol_object",
+                        "object_id": object_id,
+                        "value": value,
+                    }
+                    if action_key(write_action) in attempted_writes:
+                        continue
+                    add(
+                        write_action,
+                        f"Perturb raw object `{object_id}` from baseline `{current}` and observe the effect.",
+                        priority=140 - index,
+                    )
+                for host_id, object_space, start, count in scan_plan:
+                    add(
+                        {
+                            "type": "enumerate_protocol_objects",
+                            "host_id": host_id,
+                            "object_space": object_space,
+                            "start": start,
+                            "count": count,
+                        },
+                        f"Rescan `{host_id}` `{object_space}` to evaluate prior perturbations.",
+                        priority=70,
+                    )
+
+        candidates.sort(
+            key=lambda item: (int(item.get("priority", 0)), str(item.get("id", ""))),
+            reverse=True,
+        )
+        candidates = candidates[: max(1, self.attacker_candidate_window)]
+        visible_ids = {str(item["id"]) for item in candidates}
+        candidate_map = {
+            key: value for key, value in candidate_map.items() if key in visible_ids
+        }
+        self._state["black_box_candidate_map"] = candidate_map
+        self.engine.black_box_candidate_map = dict(candidate_map)
+        return candidates
+
+    def _build_independent_recon_context(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a leakage-minimized context for from-scratch bounded discovery."""
+
+        now = float(context.get("time_sec", 0.0) or 0.0)
+        records = self._independent_recon_action_records(context)
+        memory = self._independent_recon_memory(context)
+        recent_actions = []
+        for record in records[-self.action_window :]:
+            rendered = {
+                "time_sec": record.get("time_sec"),
+                "action": record.get("action"),
+            }
+            if record.get("result") is not None:
+                rendered["result"] = record["result"]
+            recent_actions.append(rendered)
+        candidates = self._independent_recon_candidates(context)
+        return {
+            "role": self.role,
+            "scenario_id": "independent-recon-live",
+            "suite": "unknown-industrial-process",
+            "process_id": None,
+            "intent": (
+                "Starting from a bounded post-access foothold, discover the reachable "
+                "industrial interface and attempt a security-relevant operational impact."
+            ),
+            "time_sec": now,
+            "state_name": None,
+            "observation": {
+                "interface_state": "post_access",
+                "elapsed_sec": round(now, 3),
+            },
+            "recent_observations": [],
+            "recent_actions": recent_actions,
+            "recent_decisions": [],
+            "recent_alerts": [],
+            "recent_action_effects": list(memory.get("observed_write_effects", [])),
+            "active_alarms": [],
+            "active_states": [],
+            "active_commands": [],
+            "short_horizon_trends": [],
+            "relationship_notes": [],
+            "risk_flags": [],
+            "incident": None,
+            "structured_memory": memory,
+            "estimated_state": None,
+            "trust_assessment": None,
+            "control_logic_checks": None,
+            "structured_prior_knowledge": None,
+            "system_knowledge": None,
+            "knowledge_ablation": None,
+            "stateaware_oi": None,
+            "policy_scaffold": None,
+            "mitre_context": None,
+            "staged_path": [],
+            "decision_epoch": {
+                "observation_count": 0,
+                "action_count": len(records),
+                "decision_count": len(context.get("decisions", []) or []),
+                "alert_count": 0,
+            },
+            "candidate_actions": candidates,
+            "remaining_playbook": [],
+            "role_goal": [
+                "Discover hosts, services, protocols, and raw objects using only returned tool evidence.",
+                "Establish raw baselines before attempting writes.",
+                "Form and revise hypotheses from action-to-readback effects rather than plant-specific assumptions.",
+                "Pursue operational impact without access to scenario labels, tag names, topology, or authored attack recipes.",
+            ],
+            "role_constraints": [
+                "Choose only a listed candidate_id; never invent hosts, services, objects, or values.",
+                "Treat every host and object handle as opaque until live evidence supports a hypothesis.",
+                "Use rescans to compare before and after values and abandon unsupported hypotheses.",
+                "Do not assume plant topology, tag semantics, safety thresholds, or the hidden evaluation objective.",
+            ],
+            "expected_outcomes": [],
+            "safety_bounds": {},
+        }
+
     def _build_online_context(self, context: dict[str, Any]) -> dict[str, Any]:
+        if self._uses_independent_recon_tools():
+            return self._build_independent_recon_context(context)
+
         scenario = context["scenario"]
         now = float(context["time_sec"])
         gray_box = self._is_gray_box_attacker()

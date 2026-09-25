@@ -82,6 +82,50 @@ profiles:
       id: optionb_mitre_staged
       policy: agentic
       notes: Bounded tool-using ReAct black-box attacker with opaque discovery and probe actions.
+  independent_recon_attacker:
+    role: attacker
+    family: agentic
+    mode: online
+    knowledge_mode: black_box
+    scaffold_mode: pure_react
+    independent_recon_tools: true
+    allowed_action_types:
+    - discover_hosts
+    - enumerate_services
+    - probe_protocol
+    - enumerate_protocol_objects
+    - write_protocol_object
+    abort_on_backend_error: true
+    knowledge_files:
+    - configs/knowledge/shared/high_cyber_ics_methodology_manual.md
+    llm:
+      backend: qwen_langgraph
+      framework: langchain
+      use_langgraph: true
+      strict_backend: true
+      allow_langchain_fallback: true
+      model_id: Qwen/Qwen3.5-9B
+      prompt_file: testbeds/water_treatment/prompts/independent_recon_attacker.md
+      local_files_only: true
+      require_cuda: true
+      quantization: bf16
+      temperature: 0
+      max_new_tokens: 160
+    memory:
+      observation_window: 0
+      decision_window: 0
+      action_window: 24
+      alert_window: 0
+      summary_window: 8
+      attacker_candidate_window: 24
+    action_cooldown_sec: 0.5
+    note_cooldown_sec: 1.0
+    reasoning_cooldown_sec: 0.0
+    reasoning_refresh_sec: 0.0
+    behavior_model:
+      id: independent_post_access_recon
+      policy: agentic
+      notes: Generic-knowledge attacker that must discover opaque hosts and raw protocol objects from a bounded foothold.
   gray_box_attacker:
     role: attacker
     family: agentic

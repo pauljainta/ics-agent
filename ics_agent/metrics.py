@@ -127,6 +127,10 @@ def _event_type(item: dict[str, Any]) -> str:
 NON_EFFECT_CAPABLE_ATTACKER_ACTION_TYPES = {
     "",
     "inspect_surface",
+    "discover_hosts",
+    "enumerate_services",
+    "probe_protocol",
+    "enumerate_protocol_objects",
     "noop",
     "wait",
     "observe",
@@ -142,6 +146,20 @@ def _surface_from_recon_action(item: dict[str, Any]) -> str:
     action = item.get("action") or {}
     result = item.get("result") if isinstance(item.get("result"), dict) else {}
     surface = str(action.get("surface") or result.get("surface") or "").strip()
+    if not surface:
+        surface = str(
+            action.get("host_id")
+            or result.get("host_id")
+            or action.get("service_id")
+            or result.get("service_id")
+            or action.get("type")
+            or ""
+        ).strip()
+        object_space = str(
+            action.get("object_space") or result.get("object_space") or ""
+        ).strip()
+        if surface and object_space:
+            surface = f"{surface}:{object_space}"
     return surface or "unknown"
 
 
@@ -1535,12 +1553,13 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
     attacker_recon_actions = [
         item
         for item in attacker_actions
-        if _action_type(item) == "inspect_surface"
+        if _action_type(item) in NON_EFFECT_CAPABLE_ATTACKER_ACTION_TYPES
+        and _action_type(item) not in {"", "noop", "wait", "observe", "stop_episode"}
     ]
     attacker_manipulation_actions = [
         item
         for item in attacker_actions
-        if _action_type(item) != "inspect_surface"
+        if _action_type(item) not in NON_EFFECT_CAPABLE_ATTACKER_ACTION_TYPES
     ]
     mitigation_actions = [
         item
@@ -2092,7 +2111,7 @@ def compute_metrics(bundle: dict[str, Any], scenario: dict[str, Any]) -> dict[st
             if item.get("role") == "attacker"
             and (
                 _phase_name(item) == "manipulation"
-                or _action_type(item) != "inspect_surface"
+                or _action_type(item) not in NON_EFFECT_CAPABLE_ATTACKER_ACTION_TYPES
             )
         ],
         attack_start=attack_start,

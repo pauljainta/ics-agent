@@ -44,6 +44,15 @@ def attacker_surface(action: dict[str, Any] | str | None) -> str:
         return "hmi_session"
     if current_type == "inspect_surface":
         return "reconnaissance"
+    if current_type in {
+        "discover_hosts",
+        "enumerate_services",
+        "probe_protocol",
+        "enumerate_protocol_objects",
+    }:
+        return "reconnaissance"
+    if current_type == "write_protocol_object":
+        return "raw_protocol_write_path"
     return "unknown"
 
 

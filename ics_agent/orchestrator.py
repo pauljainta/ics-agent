@@ -166,7 +166,7 @@ class ExperimentOrchestrator:
             "black_box",
             "white_box",
             "target_semantic_ablation",
-        }:
+        } and not bool(normalized.get("independent_recon_tools", False)):
             allowed = list(normalized.get("allowed_action_types", []))
             if "inspect_surface" not in allowed:
                 insertion_index = (
@@ -213,6 +213,10 @@ class ExperimentOrchestrator:
         return action_type(action) not in {
             "",
             "inspect_surface",
+            "discover_hosts",
+            "enumerate_services",
+            "probe_protocol",
+            "enumerate_protocol_objects",
             "noop",
             "wait",
             "observe",
