@@ -212,16 +212,56 @@ class HandoffTracker:
             elif now - observed_at > req.max_age_sec:
                 reasons.append(f"stale {req.tag}")
         if reasons:
-            self._event(request_id, "completion_rejected", by, now, reasons=reasons)
+            self._event(
+                request_id, "completion_rejected", by, now,
+                reasons=reasons, evidence=[_sample_record(item) for item in evidence],
+            )
             return HandoffAssessment("rejected", tuple(reasons))
         record.completed_at_sec = now
         record.evidence = by_tag
         self._event(
             request_id, "completed", by, now,
-            evidence=[{"tag": item.tag, "source": item.source,
-                       "observed_at_sec": item.observed_at_sec} for item in evidence],
+            evidence=[_sample_record(item) for item in evidence],
         )
         return HandoffAssessment("completed")
+
+    def record_recommendation(
+        self, request_id: str, *, by: str, at: float, choice: str, basis: str,
+    ) -> HandoffAssessment:
+        """Record a simulated operator recommendation; never issue an operation."""
+        if choice not in {"recommend_operation", "hold_operation"}:
+            raise ValueError("unknown operator recommendation")
+        if not basis.strip():
+            raise ValueError("operator recommendation needs a stated basis")
+        record = self.requests[request_id]
+        if by != record.spec.requester:
+            raise ValueError("only the declared requester may recommend")
+        now = _time(at)
+        assessment = self.assess(request_id, at=now)
+        verification_reasons = list(assessment.reasons)
+        if assessment.status != "completed":
+            previous_rejection = next(
+                (
+                    event for event in reversed(self.events)
+                    if event["request_id"] == request_id
+                    and event["event_type"] == "completion_rejected"
+                    and event["time_sec"] <= now
+                ),
+                None,
+            )
+            if previous_rejection is not None:
+                verification_reasons.extend(previous_rejection["reasons"])
+            if not verification_reasons:
+                verification_reasons.append(f"handoff {assessment.status}")
+        self._event(
+            request_id, "recommendation", by, now, choice=choice, basis=basis,
+            handoff_status=assessment.status,
+            verification_state=(
+                "verified_current" if assessment.status == "completed" else "unverified"
+            ),
+            verification_reasons=verification_reasons,
+        )
+        return assessment
 
     def assess(self, request_id: str, *, at: float) -> HandoffAssessment:
         now = _time(at)
@@ -237,3 +277,12 @@ class HandoffTracker:
             if now - record.evidence[req.tag].observed_at_sec > req.max_age_sec
         )
         return HandoffAssessment("stale" if stale else "completed", stale)
+
+
+def _sample_record(sample: EvidenceSample) -> dict[str, Any]:
+    return {
+        "tag": sample.tag,
+        "source": sample.source,
+        "value": sample.value,
+        "observed_at_sec": sample.observed_at_sec,
+    }

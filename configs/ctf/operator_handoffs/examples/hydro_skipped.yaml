@@ -1,0 +1,12 @@
+mode: synthetic_authored
+utility: hydro_power
+scenario: hydro_skipped
+steps:
+  - {event: request, handoff: reset, spec: hydro_trip_reset_check, by: control_room, at_sec: 0}
+  - event: recommend
+    handoff: reset
+    by: control_room
+    at_sec: 2
+    choice: recommend_operation
+    basis: Simulated time pressure; status check has not been acknowledged.
+  - {event: assess, handoff: reset, at_sec: 31}

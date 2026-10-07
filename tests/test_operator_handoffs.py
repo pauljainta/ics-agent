@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ics_agent.operator_handoffs import (
@@ -8,6 +10,7 @@ from ics_agent.operator_handoffs import (
     specs_from_mapping,
     validate_contract_tags,
 )
+from ics_agent.operator_handoffs_replay import replay
 from ics_agent.paths import REPO_ROOT
 from ics_agent.utils import load_yaml
 
@@ -84,3 +87,76 @@ def test_handoff_has_no_actuation_method() -> None:
     tracker = HandoffTracker((spec,))
     assert not hasattr(tracker, "act")
     assert not hasattr(tracker, "execute")
+
+
+@pytest.mark.parametrize(
+    ("mapping_name", "scenario_name", "recommendation_status", "final_status"),
+    [
+        ("hydro_power", "hydro_checked", "completed", "completed"),
+        ("hydro_power", "hydro_skipped", "requested", "expired"),
+        ("water_distribution", "water_distribution_echo", "acknowledged", "expired"),
+    ],
+)
+def test_authored_replay_records_handoff_without_actuation(
+    mapping_name: str, scenario_name: str, recommendation_status: str, final_status: str,
+) -> None:
+    scenario = load_yaml(MAP_DIR / "examples" / f"{scenario_name}.yaml")
+    output = replay(_mapping(mapping_name), scenario)
+
+    assert output["mode"] == "synthetic_authored"
+    assert output["scenario"] == scenario_name
+    assert len(output["input_sha256"]) == 64
+    assert output["input_sha256"] == replay(_mapping(mapping_name), scenario)["input_sha256"]
+    recommendation = next(item for item in output["events"] if item["event_type"] == "recommendation")
+    assert recommendation["handoff_status"] == recommendation_status
+    assert recommendation["verification_state"] == (
+        "verified_current" if recommendation_status == "completed" else "unverified"
+    )
+    assert next(iter(output["final_handoffs"].values())) == final_status
+    assert all(item["event_type"] not in {"actuation", "controller_write"} for item in output["events"])
+    json.dumps(output)
+
+
+def test_rejected_hmi_echo_retains_its_source_and_value() -> None:
+    scenario = load_yaml(MAP_DIR / "examples" / "water_distribution_echo.yaml")
+    output = replay(_mapping("water_distribution"), scenario)
+    rejected = next(item for item in output["events"] if item["event_type"] == "completion_rejected")
+    assert "wrong source for Grid_Elev_Valve_Sts" in rejected["reasons"]
+    assert rejected["evidence"][0]["source"] == "hmi_echo"
+    assert rejected["evidence"][0]["value"] is True
+    recommendation = next(item for item in output["events"] if item["event_type"] == "recommendation")
+    assert "wrong source for Grid_Elev_Valve_Sts" in recommendation["verification_reasons"]
+
+
+def test_replay_rejects_unlabeled_or_out_of_order_traces() -> None:
+    scenario = load_yaml(MAP_DIR / "examples" / "hydro_checked.yaml")
+    scenario["mode"] = "live"
+    with pytest.raises(ValueError, match="synthetic_authored"):
+        replay(_mapping("hydro_power"), scenario)
+
+    scenario["mode"] = "synthetic_authored"
+    scenario["steps"][1]["at_sec"] = -1
+    with pytest.raises(ValueError, match="nondecreasing"):
+        replay(_mapping("hydro_power"), scenario)
+
+
+def test_replay_digest_changes_with_authored_evidence() -> None:
+    scenario = load_yaml(MAP_DIR / "examples" / "hydro_checked.yaml")
+    original = replay(_mapping("hydro_power"), scenario)["input_sha256"]
+    scenario["steps"][2]["evidence"][0]["value"] = 1
+    assert replay(_mapping("hydro_power"), scenario)["input_sha256"] != original
+
+
+def test_only_declared_requester_can_record_recommendation() -> None:
+    spec = specs_from_mapping(_mapping("hydro_power"))[0]
+    tracker = HandoffTracker((spec,))
+    request_id = tracker.request(spec.id, by=spec.requester, at=0)
+    with pytest.raises(ValueError, match="requester"):
+        tracker.record_recommendation(
+            request_id, by=spec.responder, at=1,
+            choice="recommend_operation", basis="test",
+        )
+    assert tracker.record_recommendation(
+        request_id, by=spec.requester, at=1,
+        choice="recommend_operation", basis="simulated omitted check",
+    ).status == "requested"

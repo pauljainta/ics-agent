@@ -46,8 +46,9 @@ It must also show that an operator cannot write a sensor or perform a
 security-defender action. Repeat the same initial state to check stability.
 
 This water-treatment pilot is not the three-utility CTF. Hydro/power and
-distribution need their own sourced observation/action maps and operator
-obligations. Regional dependency inputs, team isolation, concurrency, student
-views, and Take 1/Take 2 grading remain separate release gates. In particular,
-the operator's omitted verification is not yet a timed request/acknowledgement/
-completion handoff as envisioned in the proposal.
+distribution now have source-checked, CTF-authored operator handoff maps and
+offline replays under `configs/ctf/operator_handoffs/`; they are not connected
+to this pilot or to an action broker. Their live observation/action bindings,
+regional dependency inputs, team isolation, concurrency, student views, and
+Take 1/Take 2 grading remain separate release gates. In particular, this
+pilot's omitted verification note is not yet a timed handoff in a live run.

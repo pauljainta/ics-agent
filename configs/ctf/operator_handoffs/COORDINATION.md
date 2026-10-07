@@ -1,15 +1,16 @@
 # CTF handoffs alongside `feat/plcbench-baseline`
 
-Reviewed the local PLCBench worktree at `c4f6b8e` on 2026-10-07. That branch
+Reviewed the local PLCBench worktree through `a169071` on 2026-10-07. That branch
 already owns the Ollama and OpenAI-compatible/vLLM model backends, native
 actor sandbox and broker, six-flag scorer, run harness, and distribution
-live-plant binding. Its local checkout is ahead of `origin/main`; this CTF
+live-plant binding and Modbus map work. Its local checkout is ahead of `origin/main`; this CTF
 work does not edit that worktree or duplicate those components.
 
 This branch owns only:
 
 - a non-actuating request/acknowledgement/evidence-completion tracker;
 - CTF-authored operator-role bindings for hydro/power and distribution;
+- authored offline replays of checked, omitted, and wrong-source handoffs;
 - read-only checks of tag names and tag ownership against a pinned
   `sphere-usecases` revision.
 
@@ -21,6 +22,8 @@ Do not synthesize a field observation by copying the command or an HMI echo.
 Do not let a handoff-complete event directly call the PLC broker: completion
 does not establish that values are safe, that an actor is authorized, or that
 the modeled service outcome is acceptable.
+The replay module intentionally imports no plant binding, broker, or model
+backend; joining it to a live run is future integration work.
 
 The branch's WD process-object bindings and proposed impact thresholds remain
 its own experimental work. The CTF handoff map only identifies evidence needed
