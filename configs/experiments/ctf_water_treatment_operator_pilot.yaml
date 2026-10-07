@@ -1,0 +1,53 @@
+experiment_name: ctf_water_treatment_operator_pilot
+experiment_id: ctf_water_treatment_operator_pilot
+scenario_selectors:
+  - ctf/wt-operator-verification-pilot
+repeats: 1
+resume: false
+results_root: ../../../Results/ctf_pilot
+study_metadata:
+  family: ctf_live_attacker_routine_operator
+  notes:
+    - Operator behavior is authored simulation, not observed human behavior.
+    - No autonomous security defender or observer runs in this pilot.
+    - This config is for isolated staff qualification, not a student deployment.
+environment:
+  backend: sphere_openplc
+  testbed: water_treatment
+  infrastructure_profile: water_treatment
+conditions:
+  - name: gray_box_attacker__routine_operator
+    profiles:
+      attacker: gray_box_attacker
+      defender: silent_defender
+      observer: silent_observer
+      planner: scripted_planner
+      operator: rule_based_operator
+      offline_analysis: scripted_offline_analyst
+    profile_overrides:
+      attacker:
+        llm:
+          prompt_file: testbeds/water_treatment/prompts/gray_box_attacker.md
+      operator:
+        allowed_action_types: [hmi_start, hmi_stop, noop]
+        rules:
+          - id: routine_start
+            when:
+              time_after_sec: 5
+            action: {type: hmi_start}
+            action_summary: Operator begins the normal water-treatment run.
+            metadata:
+              actor_kind: simulated_human_operator
+              workflow_role: remote_operator
+              evidence_basis: routine_schedule
+          - id: accepts_unverified_low_level
+            when:
+              all:
+                - {state_is: RUNNING}
+                - {field: RW_Tank_Level, below: 450}
+            note: Operator treats the displayed low tank level as credible and does not request an independent check.
+            metadata:
+              actor_kind: simulated_human_operator
+              workflow_role: remote_operator
+              evidence_basis: hmi_level
+              verification_state: not_requested

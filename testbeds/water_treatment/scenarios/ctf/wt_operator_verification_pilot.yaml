@@ -1,0 +1,17 @@
+scenario_id: wt-operator-verification-pilot
+process_id: WT-P1
+description: Live attacker and routine-operator qualification pilot for water treatment.
+duration_sec: 40
+poll_interval_ms: 500
+
+initial_conditions:
+  RW_Tank_Level: 600
+  UF_UFFT_Tank_Level: 400
+  ChemTreat_NaCl_Level: 800
+  ChemTreat_NaOCl_Level: 800
+  ChemTreat_HCl_Level: 800
+
+# No attack timeline is supplied to the agent. Actions must be selected at runtime.
+timeline: []
+expectations:
+  min_samples: 40

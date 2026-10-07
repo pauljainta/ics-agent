@@ -229,6 +229,18 @@ profiles:
     - select_process
     - set_manual_valve
     - noop
+  rule_based_operator:
+    role: operator
+    family: rule_based
+    mode: online
+    allowed_action_types:
+    - hmi_start
+    - hmi_stop
+    - hmi_reset
+    - select_process
+    - set_manual_valve
+    - noop
+    rules: []
   scripted_offline_analyst:
     role: offline_analysis
     family: scripted
