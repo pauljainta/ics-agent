@@ -1,0 +1,36 @@
+schema: ctf-operator-handoffs
+utility: water_distribution
+source:
+  repository: iotrustlab/sphere-usecases
+  revision: 2b201a29c12bb3fbe654d987f17601c24369e2a0
+  contract: sector-water/rovisys-distribution/tag_contract.yaml
+  workflow_reference: sector-water/rovisys-distribution/README.md
+  interpretation: SPHERE simulated distribution process, not a municipal as-built system.
+roles:
+  control_room:
+    kind: simulated_human
+    provenance: ctf_authored
+  equipment_operator:
+    kind: simulated_human
+    provenance: ctf_authored
+handoffs:
+  - id: wd_grid_status_check
+    requester: control_room
+    responder: equipment_operator
+    purpose: Check grid and supply feedback before proposing a service-restoration step.
+    action_context: service_restoration_review
+    deadline_sec: 30  # CTF-authored workflow timing, not an FDS requirement.
+    requirements:
+      - {tag: Grid_Elev_Valve_Sts, source: simulator_feedback, contract_role: simulator, max_age_sec: 5}
+      - {tag: Grid_Elev_Tank_Level, source: simulator_feedback, contract_role: simulator, max_age_sec: 5}
+      - {tag: Grid_Consum_Tank_Level, source: simulator_feedback, contract_role: simulator, max_age_sec: 5}
+      - {tag: Supply_Pump_Sts, source: simulator_feedback, contract_role: simulator, max_age_sec: 5}
+    limits:
+      - The contract has controller-owned outputs, but does not establish an operator HMI command for this restoration step.
+      - This handoff never writes Grid_Elev_Valve or any other actuator.
+      - Simulator feedback is not a physically independent field measurement.
+regional_dependency:
+  upstream_power:
+    status: ctf_scenario_input_not_executed_feeder
+    provenance: ctf_authored
+    note: The distribution contract does not identify a physical feeder from the hydro model.
