@@ -11,6 +11,8 @@ This branch owns only:
 - a non-actuating request/acknowledgement/evidence-completion tracker;
 - CTF-authored operator-role bindings for hydro/power and distribution;
 - authored offline replays of checked, omitted, and wrong-source handoffs;
+- a staff-only regional notice replay consuming a pinned, supplied site-power
+  schedule from `sphere-usecases` without asserting a PS-1 feeder;
 - read-only checks of tag names and tag ownership against a pinned
   `sphere-usecases` revision.
 
@@ -24,6 +26,9 @@ does not establish that values are safe, that an actor is authorized, or that
 the modeled service outcome is acceptable.
 The replay module intentionally imports no plant binding, broker, or model
 backend; joining it to a live run is future integration work.
+The PLCBench native `trace.csv` reviewed at `a169071` contains timestamped tag
+values but not a field-observation provenance envelope. Do not treat that CSV
+alone as independent field verification or as a regional power notice.
 
 The branch's WD process-object bindings and proposed impact thresholds remain
 its own experimental work. The CTF handoff map only identifies evidence needed

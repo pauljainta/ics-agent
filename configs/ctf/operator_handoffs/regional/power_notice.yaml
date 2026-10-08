@@ -1,0 +1,31 @@
+schema: ctf-regional-power-notice
+mode: synthetic_authored
+source:
+  repository: iotrustlab/sphere-usecases
+  revision: 2b201a29c12bb3fbe654d987f17601c24369e2a0
+  fixture: compositions/power-water-service/fixtures/matched-authored.json
+  fixture_sha256: 08caaf88ddf7928f9305d99c837beb0c6cffb41997f5081e8251a00807499584
+  scenario: short_outage
+  service: site_power_available_kw
+  evidence_class: supplied
+  physical_feeder_claim: false
+roles:
+  requester: water_distribution_control_room
+  responder: regional_coordinator
+cases:
+  - id: timely_outage_notice
+    source_window_from_sec: 60
+    request_at_sec: 60
+    acknowledge_at_sec: 61
+    notice_at_sec: 62
+    decision_at_sec: 63
+    choice: hold_operation
+    basis: Coordinator notice received inside its declared validity window.
+  - id: expired_outage_notice
+    source_window_from_sec: 60
+    request_at_sec: 100
+    acknowledge_at_sec: 101
+    notice_at_sec: 121
+    decision_at_sec: 122
+    choice: recommend_operation
+    basis: Simulated mistaken reliance on a notice after its validity ended.

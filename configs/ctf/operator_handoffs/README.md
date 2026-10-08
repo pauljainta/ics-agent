@@ -56,3 +56,29 @@ python3 -B -m ics_agent.operator_handoffs_check /path/to/sphere-usecases
 This mapping does **not** connect hydro output to water pumps. The regional
 power-to-water condition remains a labeled, frozen CTF input until a separate
 composed model is executed and qualified.
+
+## Regional notice experiment
+
+`regional/power_notice.yaml` is a **staff-only authored handoff**, not another
+utility tag contract. It reads the pinned `sphere-usecases` power-water
+composition fixture's `short_outage` schedule. That schedule supplies site
+power availability to a fictional water-distribution control room through a
+fictional regional coordinator. It does **not** derive power from the Olmsted
+hydro model or assert a physical feeder. The notice and operator-choice times
+are CTF-authored; the source schedule remains owned by `sphere-usecases`.
+
+```sh
+python3 -B -m ics_agent.regional_power_notice \
+  /path/to/sphere-usecases \
+  configs/ctf/operator_handoffs/regional/power_notice.yaml
+```
+
+The reader rejects the wrong source revision, changed fixture bytes, and paths
+outside that checkout. The output contrasts a timely supplied outage notice
+with a notice received after its validity window. `staff_source_window` and
+`staff_decision_window` are staff-only; the authored recommendation must also
+not be copied wholesale into a Take 1 student packet. Release only evidence
+the fictional operator would have had at that decision time. Unknown or
+undelivered power is never relabeled as a
+measured zero. No controller, broker, model backend, or network connection is
+used by this replay.
