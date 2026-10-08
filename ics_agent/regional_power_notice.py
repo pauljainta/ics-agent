@@ -13,6 +13,13 @@ from typing import Any
 from .utils import load_yaml
 
 
+_OPERATOR_EVENT_FIELDS = {
+    "event_type", "actor", "time_sec", "evidence_class", "service",
+    "available_kw", "quality", "valid_from_sec", "valid_until_sec",
+    "choice", "basis", "notice_status", "actuation",
+}
+
+
 def read_pinned_fixture(source_root: Path, plan: dict[str, Any]) -> dict[str, Any]:
     """Read only the exact composition fixture named by a CTF notice plan."""
     root = source_root.resolve()
@@ -153,13 +160,37 @@ def replay(plan: dict[str, Any], fixture: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def operator_view(staff_replay: dict[str, Any]) -> dict[str, Any]:
+    """Project only the notice and actions available to the fictional operator."""
+    return {
+        "schema": "ctf-regional-power-notice-operator-view",
+        "mode": staff_replay["mode"],
+        "evidence_class": "supplied",
+        "physical_feeder_claim": False,
+        "cases": [
+            {
+                "case_id": case["case_id"],
+                "notice_status": case["notice_status"],
+                "events": [
+                    {key: value for key, value in event.items()
+                     if key in _OPERATOR_EVENT_FIELDS}
+                    for event in case["events"]
+                ],
+            }
+            for case in staff_replay["cases"]
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sphere_usecases", type=Path)
     parser.add_argument("plan", type=Path)
+    parser.add_argument("--staff", action="store_true", help="include source windows and hashes")
     args = parser.parse_args()
     plan = load_yaml(args.plan)
-    print(json.dumps(replay(plan, read_pinned_fixture(args.sphere_usecases, plan)), indent=2))
+    staff_replay = replay(plan, read_pinned_fixture(args.sphere_usecases, plan))
+    print(json.dumps(staff_replay if args.staff else operator_view(staff_replay), indent=2))
     return 0
 
 

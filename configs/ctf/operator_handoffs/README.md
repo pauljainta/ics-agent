@@ -74,11 +74,9 @@ python3 -B -m ics_agent.regional_power_notice \
 ```
 
 The reader rejects the wrong source revision, changed fixture bytes, and paths
-outside that checkout. The output contrasts a timely supplied outage notice
-with a notice received after its validity window. `staff_source_window` and
-`staff_decision_window` are staff-only; the authored recommendation must also
-not be copied wholesale into a Take 1 student packet. Release only evidence
-the fictional operator would have had at that decision time. Unknown or
-undelivered power is never relabeled as a
-measured zero. No controller, broker, model backend, or network connection is
-used by this replay.
+outside that checkout. The default CLI output shows only the fictional
+operator's notices and decisions; `--staff` adds the pinned source window and
+the decision-time window, making stale notice consequences visible to staff.
+Neither output is an approved Take 1 student packet. Unknown or undelivered
+power is never relabeled as a measured zero. No controller, broker, model
+backend, or network connection is used by this replay.

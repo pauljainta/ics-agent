@@ -66,6 +66,19 @@ def test_notice_does_not_treat_missing_or_unknown_as_zero() -> None:
     assert result["events"][2]["available_kw"] is None
 
 
+def test_operator_view_excludes_decision_time_staff_truth() -> None:
+    staff = regional_power_notice.replay(load_yaml(PLAN_PATH), _fixture())
+    view = regional_power_notice.operator_view(staff)
+    expired = view["cases"][1]
+
+    assert view["schema"] == "ctf-regional-power-notice-operator-view"
+    assert expired["notice_status"] == "outside_validity"
+    assert "staff_source_window" not in expired
+    assert "staff_decision_window" not in expired
+    assert expired["events"][2]["available_kw"] == 0.0
+    assert '"available_kw": 1.0' not in json.dumps(expired)
+
+
 def test_notice_rejects_feeder_claim_and_incoherent_time() -> None:
     plan = load_yaml(PLAN_PATH)
     plan["source"]["physical_feeder_claim"] = True
