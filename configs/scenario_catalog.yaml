@@ -173,6 +173,17 @@ suite_defaults:
     tags: [smoke, fast]
 
 scenario_overrides:
+  ctf/wt-operator-verification-pilot:
+    name: Water Treatment Operator Verification Pilot
+    intent: Qualify a live attack against an ordinary operator who uses HMI evidence without an independent check.
+    attacker_actions:
+      - Choose bounded actions from live observations; no authored attack timeline is provided.
+    defender_responses: []
+    expected_outcomes:
+      - Distinct operator, attacker, controller, and process events are recorded.
+    ground_truth:
+      incident_type: attack
+    tags: [ctf, pilot, simulated-operator]
   attack/wt-attack-sensor-rw-refill-spoof:
     name: Raw Water Refill Spoof Attack
     intent: Force unnecessary raw-water refill behavior by spoofing the tank level during runtime.

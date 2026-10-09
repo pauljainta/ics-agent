@@ -1,0 +1,22 @@
+mode: synthetic_authored
+utility: water_distribution
+scenario: water_distribution_echo
+steps:
+  - {event: request, handoff: grid, spec: wd_grid_status_check, by: control_room, at_sec: 0}
+  - {event: acknowledge, handoff: grid, by: equipment_operator, at_sec: 1}
+  - event: complete
+    handoff: grid
+    by: equipment_operator
+    at_sec: 2
+    evidence:
+      - {tag: Grid_Elev_Valve_Sts, source: hmi_echo, value: true, observed_at_sec: 1}
+      - {tag: Grid_Elev_Tank_Level, source: simulator_feedback, value: 900, observed_at_sec: 1}
+      - {tag: Grid_Consum_Tank_Level, source: simulator_feedback, value: 800, observed_at_sec: 1}
+      - {tag: Supply_Pump_Sts, source: simulator_feedback, value: true, observed_at_sec: 1}
+  - event: recommend
+    handoff: grid
+    by: control_room
+    at_sec: 3
+    choice: recommend_operation
+    basis: Simulated mistaken trust in an HMI echo despite the rejected evidence source.
+  - {event: assess, handoff: grid, at_sec: 31}

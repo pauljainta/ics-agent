@@ -1,0 +1,36 @@
+schema: ctf-operator-handoffs
+utility: hydro_power
+source:
+  repository: iotrustlab/sphere-usecases
+  revision: 2b201a29c12bb3fbe654d987f17601c24369e2a0
+  contract: sector-energy/olmsted-hydro/tag_contract.yaml
+  workflow_reference: sector-energy/olmsted-hydro/README.md
+  interpretation: Representative SPHERE hydro unit; not an as-built Utah plant.
+roles:
+  control_room:
+    kind: simulated_human
+    provenance: ctf_authored
+  equipment_operator:
+    kind: simulated_human
+    provenance: ctf_authored
+handoffs:
+  - id: hydro_trip_reset_check
+    requester: control_room
+    responder: equipment_operator
+    purpose: Check reported equipment state before proposing a trip reset.
+    action_context: HY_Reset_Cmd
+    deadline_sec: 30  # CTF-authored workflow timing, not a vendor requirement.
+    requirements:
+      - {tag: HY_Gate_Pos, source: simulator_feedback, contract_role: simulator, max_age_sec: 5}
+      - {tag: HY_Breaker_Sts, source: simulator_feedback, contract_role: simulator, max_age_sec: 5}
+      - {tag: HY_Speed_Pct, source: simulator_feedback, contract_role: simulator, max_age_sec: 5}
+      - {tag: HY_Unit_State, source: controller_status, contract_role: controller, max_age_sec: 5}
+    limits:
+      - Completion records evidence delivery only; the controller still decides whether reset conditions hold.
+      - Simulator feedback is not a physically independent field measurement.
+      - HY_SyncCheck_Bypass is a simulator-side test input and never an operator handoff action.
+regional_dependency:
+  power_to_water:
+    status: ctf_scenario_input_not_executed_feeder
+    provenance: ctf_authored
+    note: No PS-1-to-distribution feeder is established by this source contract.

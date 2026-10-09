@@ -1,0 +1,21 @@
+mode: synthetic_authored
+utility: hydro_power
+scenario: hydro_checked
+steps:
+  - {event: request, handoff: reset, spec: hydro_trip_reset_check, by: control_room, at_sec: 0}
+  - {event: acknowledge, handoff: reset, by: equipment_operator, at_sec: 1}
+  - event: complete
+    handoff: reset
+    by: equipment_operator
+    at_sec: 2
+    evidence:
+      - {tag: HY_Gate_Pos, source: simulator_feedback, value: 0, observed_at_sec: 1}
+      - {tag: HY_Breaker_Sts, source: simulator_feedback, value: false, observed_at_sec: 1}
+      - {tag: HY_Speed_Pct, source: simulator_feedback, value: 0, observed_at_sec: 1}
+      - {tag: HY_Unit_State, source: controller_status, value: 6, observed_at_sec: 1}
+  - event: recommend
+    handoff: reset
+    by: control_room
+    at_sec: 3
+    choice: recommend_operation
+    basis: Status evidence delivered for controller reset review; no reset is executed by this replay.

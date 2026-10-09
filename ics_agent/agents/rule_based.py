@@ -147,7 +147,7 @@ class RuleBasedRoleAgent(RoleAgent):
             return self._step_optionb_mitre(context)
         if self.role == "attacker":
             return self._step_attacker(context)
-        if self.role in {"defender", "observer"}:
+        if self.role in {"defender", "observer", "operator"}:
             return self._step_rules(context)
         if self.role == "planner":
             return self._step_planner(context)
@@ -767,6 +767,19 @@ class RuleBasedRoleAgent(RoleAgent):
 
             diagnosis = rule.get("diagnosis")
             labels = ["rule-based", self.role]
+            metadata = {**dict(rule.get("metadata") or {}), "rule_id": rule_id}
+            note_text = rule.get("note")
+            if note_text:
+                decisions.append(
+                    self.decision(
+                        decision_type="note",
+                        summary=str(note_text),
+                        time_sec=now,
+                        confidence=float(rule.get("confidence", 1.0)),
+                        labels=labels,
+                        metadata=metadata,
+                    )
+                )
             alert_text = rule.get("alert")
             if alert_text:
                 decisions.append(
@@ -777,7 +790,7 @@ class RuleBasedRoleAgent(RoleAgent):
                         confidence=float(rule.get("confidence", 1.0)),
                         diagnosis=diagnosis,
                         labels=labels,
-                        metadata={"rule_id": rule_id},
+                        metadata=metadata,
                     )
                 )
             action = rule.get("action")
@@ -793,7 +806,7 @@ class RuleBasedRoleAgent(RoleAgent):
                         confidence=float(rule.get("confidence", 1.0)),
                         diagnosis=diagnosis,
                         labels=labels,
-                        metadata={"rule_id": rule_id},
+                        metadata=metadata,
                     )
                 )
             triggered_rules.add(rule_id)
