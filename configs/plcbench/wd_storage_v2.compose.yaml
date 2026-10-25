@@ -1,0 +1,54 @@
+# Isolated local realization; publishes no host ports. Requires the
+# prebuilt sphere-openplc:master image and PLCBENCH_ROOT=absolute checkout path.
+services:
+  controller:
+    image: sphere-openplc:master
+    pull_policy: never
+    environment:
+      OPENPLC_PROGRAM: /programs/controller.st
+      OPENPLC_MODBUS_PORT: "502"
+      OPENPLC_SCAN_CYCLE_MS: "100"
+      OPENPLC_AUTOSTART: "true"
+    volumes:
+      - ${PLCBENCH_ROOT:?set PLCBENCH_ROOT}/testbeds/water_distribution/openplc/st/wd_controller.st:/programs/controller.st:ro
+      - controller-data:/docker_persistent
+    networks: [pair]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/login >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  simulator:
+    image: sphere-openplc:master
+    pull_policy: never
+    environment:
+      OPENPLC_PROGRAM: /programs/simulator.st
+      OPENPLC_MODBUS_PORT: "502"
+      OPENPLC_SCAN_CYCLE_MS: "100"
+      OPENPLC_AUTOSTART: "true"
+    volumes:
+      - ${PLCBENCH_ROOT:?set PLCBENCH_ROOT}/testbeds/water_distribution/openplc/st/wd_simulator_storage_v2.st:/programs/simulator.st:ro
+      - simulator-data:/docker_persistent
+    networks: [pair]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/login >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  bridge:
+    image: plcbench-native:py311-pymodbus386
+    pull_policy: never
+    user: "10001:10001"
+    volumes:
+      - ${PLCBENCH_ROOT:?set PLCBENCH_ROOT}:/repo:ro
+    command: ["python", "/repo/testbeds/water_distribution/openplc/scripts/modbus_bridge.py", "--map", "/repo/testbeds/water_distribution/openplc/configs/storage_v2/openplc_map.json", "--controller", "controller:502", "--simulator", "simulator:502"]
+    depends_on:
+      controller: {condition: service_healthy}
+      simulator: {condition: service_healthy}
+    networks: [pair]
+volumes:
+  controller-data:
+  simulator-data:
+networks:
+  pair:
+    internal: true

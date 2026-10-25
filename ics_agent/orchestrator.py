@@ -51,6 +51,13 @@ def canonical_action_name(action: dict[str, Any] | str) -> str:
 
 
 class ExperimentOrchestrator:
+    @staticmethod
+    def run_plcbench_swarm_fixture(roles, observations, decide, *, max_total_decisions=20):
+        """Coordinate bounded local roles using read-only external observations."""
+        from .plcbench_swarm import run_bounded_roles
+        return run_bounded_roles(roles, observations, decide,
+                                 max_total_decisions=max_total_decisions)
+
     def __init__(
         self,
         catalog: ScenarioCatalog | None = None,

@@ -79,6 +79,97 @@ profiles:
     knowledge_files:
     - testbeds/water_distribution/knowledge/shared_testbed_manual.md
     - testbeds/water_distribution/knowledge/attacker_manual.md
+  plcbench_matched_distribution_attacker:
+    role: attacker
+    family: agentic
+    mode: online
+    # Mirrors this testbed's gray_box_attacker capabilities exactly (backend,
+    # knowledge_mode, action menu incl. set_actuator/inspect_surface, knowledge
+    # files); differs ONLY in the PLCBench scaffold (three-part prompt +
+    # deterministic compaction) via `scaffold`. See docs/baselines/.
+    scaffold: plcbench_matched
+    knowledge_mode: gray_box
+    allowed_action_types:
+    - inspect_surface
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - set_sensor
+    - set_actuator
+    - noop
+    abort_on_backend_error: false
+    llm:
+      # Runs on a local Ollama server (CPU/Metal, no CUDA). model_id is the one
+      # line to change when moving to a larger model; both arms must share it
+      # (see gray_box_ollama_distribution_attacker). Frozen deployment open item.
+      backend: ollama
+      host: http://localhost:11434
+      model_id: llama3.1:latest
+      prompt_file: testbeds/water_distribution/prompts/plcbench_matched_attacker.md
+      local_files_only: true
+      require_cuda: false
+      quantization: bf16
+      temperature: 0
+      # Raised from 64 (this testbed's comparator cap): a PLCBench-style JSON
+      # decision needs headroom. Both arms must use the SAME frozen ceiling --
+      # open model-freeze item in plcbench_conformance.md.
+      max_new_tokens: 512
+      compaction:
+        soft_budget: 2048
+        target_budget: 1536
+        protected_k: 6
+    memory:
+      observation_window: 10
+      decision_window: 8
+      action_window: 12
+      alert_window: 8
+      summary_window: 6
+      attacker_candidate_window: 6
+    action_cooldown_sec: 2.0
+    reasoning_cooldown_sec: 12.0
+    reasoning_refresh_sec: 18.0
+    knowledge_files:
+    - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+    - testbeds/water_distribution/knowledge/attacker_manual.md
+  gray_box_ollama_distribution_attacker:
+    role: attacker
+    family: agentic
+    mode: online
+    # ICS-agent comparator arm on the SAME frozen Ollama deployment as
+    # plcbench_matched_distribution_attacker; identical capabilities, no PLCBench
+    # scaffold. Together they are the controlled matched pair.
+    knowledge_mode: gray_box
+    allowed_action_types:
+    - inspect_surface
+    - hmi_start
+    - hmi_stop
+    - hmi_estop
+    - set_sensor
+    - set_actuator
+    - noop
+    abort_on_backend_error: false
+    llm:
+      backend: ollama
+      host: http://localhost:11434
+      model_id: llama3.1:latest
+      prompt_file: testbeds/water_distribution/prompts/gray_box_attacker.md
+      local_files_only: true
+      require_cuda: false
+      temperature: 0
+      max_new_tokens: 512
+    memory:
+      observation_window: 10
+      decision_window: 8
+      action_window: 12
+      alert_window: 8
+      summary_window: 6
+      attacker_candidate_window: 6
+    action_cooldown_sec: 2.0
+    reasoning_cooldown_sec: 12.0
+    reasoning_refresh_sec: 18.0
+    knowledge_files:
+    - testbeds/water_distribution/knowledge/shared_testbed_manual.md
+    - testbeds/water_distribution/knowledge/attacker_manual.md
   white_box_attacker:
     role: attacker
     family: agentic

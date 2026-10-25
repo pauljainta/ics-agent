@@ -45,45 +45,39 @@
 (* 0=IDLE, 1=START, 2=RUNNING, 3=SHUTDOWN *)
 
 PROGRAM MainProgram
-  VAR_INPUT
-    (* Analog Inputs from Simulator *)
-    ai_supply_tank_level : REAL;      (* Supply tank level [mm] *)
-    ai_supply_pump_flow : REAL;       (* Supply pump flow [L/min] *)
-    ai_supply_naocl_level : REAL;     (* NaOCl tank level [mm] *)
-    ai_supply_nh4cl_level : REAL;     (* NH4Cl tank level [mm] *)
-    ai_grid_elev_level : REAL;        (* Elevated tank level [mm] *)
-    ai_grid_consum_level : REAL;      (* Consumer tank level [mm] *)
-    ai_rws_tank_level : REAL;         (* RWS tank level [mm] *)
-
-    (* Digital Inputs from Simulator *)
-    di_supply_pump_sts : BOOL;        (* Supply pump running *)
-    di_supply_mixer_sts : BOOL;       (* Supply mixer running *)
-    di_supply_valve_sts : BOOL;       (* Supply valve open *)
-    di_grid_elev_valve_sts : BOOL;    (* Elevated tank valve open *)
-    di_rws_pump_sts : BOOL;           (* RWS pump running *)
-    di_rws_valve_sts : BOOL;          (* RWS valve open *)
-
-    (* HMI Inputs *)
-    hmi_start : BOOL;                 (* Start button *)
-    hmi_stop : BOOL;                  (* Stop button *)
-  END_VAR
-
-  VAR_OUTPUT
-    (* Analog Outputs to Simulator *)
-    ao_supply_pump_speed : REAL;      (* Supply pump speed [%] *)
-    ao_rws_pump_speed : REAL;         (* RWS pump speed [%] *)
-
-    (* Digital Outputs to Simulator *)
-    do_supply_valve : BOOL;           (* Supply valve command *)
-    do_grid_elev_valve : BOOL;        (* Elevated tank valve command *)
-    do_rws_valve : BOOL;              (* RWS valve command *)
-
-    (* System State Outputs *)
-    do_sys_idle : BOOL;               (* System idle state *)
-    do_sys_running : BOOL;            (* System running state *)
-
-    (* Alarm Outputs *)
-    do_alarm_supply_hh : BOOL;        (* Supply tank HH alarm *)
+  VAR
+    (* ==== located I/O (Modbus-exposed; hydro holding-register/coil pattern).
+       Same addresses as wd_simulator.st. The controller writes the commands and
+       system/alarm status it owns, and only reads the simulator-owned sensors
+       and status plus the operator HMI coils. ==== *)
+    (* sensors from simulator (simulator-owned; controller reads) *)
+    ai_supply_tank_level AT %MD5 : REAL;    (* Supply tank level [mm] *)
+    ai_supply_pump_flow AT %MD6 : REAL;     (* Supply pump flow [L/min] *)
+    ai_supply_naocl_level AT %MD7 : REAL;   (* NaOCl tank level [mm] *)
+    ai_supply_nh4cl_level AT %MD8 : REAL;   (* NH4Cl tank level [mm] *)
+    ai_grid_elev_level AT %MD9 : REAL;      (* Elevated tank level [mm] *)
+    ai_grid_consum_level AT %MD10 : REAL;   (* Consumer tank level [mm] *)
+    ai_rws_tank_level AT %MD11 : REAL;      (* RWS tank level [mm] *)
+    (* status from simulator (controller reads) *)
+    di_supply_pump_sts AT %QX20.0 : BOOL;       (* Supply pump running *)
+    di_supply_mixer_sts AT %QX20.1 : BOOL;      (* Supply mixer running *)
+    di_supply_valve_sts AT %QX20.2 : BOOL;      (* Supply valve open *)
+    di_grid_elev_valve_sts AT %QX20.3 : BOOL;   (* Elevated tank valve open *)
+    di_rws_pump_sts AT %QX20.4 : BOOL;          (* RWS pump running *)
+    di_rws_valve_sts AT %QX20.5 : BOOL;         (* RWS valve open *)
+    (* HMI operator inputs (external master writes; controller reads) *)
+    hmi_start AT %QX0.0 : BOOL;             (* Start button *)
+    hmi_stop AT %QX0.1 : BOOL;              (* Stop button *)
+    (* commands to simulator (controller-owned; controller writes) *)
+    ao_supply_pump_speed AT %MD0 : REAL;    (* Supply pump speed [%] *)
+    ao_rws_pump_speed AT %MD1 : REAL;       (* RWS pump speed [%] *)
+    do_supply_valve AT %QX5.0 : BOOL;       (* Supply valve command *)
+    do_grid_elev_valve AT %QX5.1 : BOOL;    (* Elevated tank valve command *)
+    do_rws_valve AT %QX5.2 : BOOL;          (* RWS valve command *)
+    (* system state + alarm outputs (controller-owned) *)
+    do_sys_idle AT %QX7.0 : BOOL;           (* System idle state *)
+    do_sys_running AT %QX7.1 : BOOL;        (* System running state *)
+    do_alarm_supply_hh AT %QX8.0 : BOOL;    (* Supply tank HH alarm *)
   END_VAR
 
   VAR
@@ -239,3 +233,10 @@ PROGRAM MainProgram
   END_CASE;
 
 END_PROGRAM
+
+CONFIGURATION Config0
+  RESOURCE Res0 ON PLC
+    TASK Main(INTERVAL := T#100ms, PRIORITY := 0);
+    PROGRAM Inst0 WITH Main : MainProgram;
+  END_RESOURCE
+END_CONFIGURATION

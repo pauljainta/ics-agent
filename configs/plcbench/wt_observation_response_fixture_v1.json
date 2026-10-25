@@ -1,0 +1,141 @@
+{
+  "schema_version": "plcbench.operator-response/v2",
+  "cell_id": "wt-observation-response-fixture-v1",
+  "status": "offline_qualification",
+  "study_role": "observation_dependent_operator_response",
+  "evidence_origin": "experimental_source_derived_offline_fixture",
+  "realization": {
+    "repo": "sphere-usecases",
+    "path": "sector-water/rovisys-treatment/usecases/full-system-p1-to-p6/implementations/openplc/st/wt_simulator.st",
+    "sha256": "517a813c692a193887bcf34038ae065647214ed31f61227b79076544b1c2cfe0",
+    "map_repo": "ics-agent",
+    "map_path": "testbeds/water_treatment/openplc/configs/openplc_map.yaml",
+    "model_scope": "P2 analyte mixing, valve delay, and experimental membrane equation; not a physical plant realization"
+  },
+  "scenarios": {
+    "high_ph": {
+      "source_ph": 8.1,
+      "source_cl": 0.2,
+      "source_cond": 300.0
+    },
+    "low_orp": {
+      "source_ph": 7.5,
+      "source_cl": 0.0,
+      "source_cond": 300.0
+    }
+  },
+  "scenario_visibility": "hidden from policy; pH and ORP observations reveal state",
+  "observations": [
+    "ChemTreat_pH",
+    "ChemTreat_ORP",
+    "ChemTreat_Conductivity",
+    "RO_Permeate_Conductivity",
+    "ChemTreat_NaOCl_Valve_Sts",
+    "ChemTreat_HCl_Valve_Sts",
+    "SYS_RUNNING"
+  ],
+  "permitted_interventions": [
+    {
+      "id": "select_p2",
+      "tag": "P2_Selected",
+      "value": 1
+    },
+    {
+      "id": "naocl_on",
+      "tag": "P2_NaOCl_Cmd",
+      "value": 1
+    },
+    {
+      "id": "naocl_off",
+      "tag": "P2_NaOCl_Cmd",
+      "value": 0
+    },
+    {
+      "id": "hcl_on",
+      "tag": "P2_HCl_Cmd",
+      "value": 1
+    },
+    {
+      "id": "hcl_off",
+      "tag": "P2_HCl_Cmd",
+      "value": 0
+    },
+    {
+      "id": "observe",
+      "tag": null,
+      "value": null
+    }
+  ],
+  "timing": {
+    "scan_sec": 0.1,
+    "decision_interval_sec": 1.0,
+    "horizon_sec": 180.0,
+    "service_window_sec": 60.0,
+    "valve_delay_scans": 5
+  },
+  "reset": {
+    "kind": "offline_fresh_state_per_case",
+    "checks": [
+      "P2_Selected=0",
+      "chemical commands=0",
+      "membrane_damage=0",
+      "scenario source state initialized"
+    ]
+  },
+  "safety_envelope": {
+    "ChemTreat_pH": [
+      7.0,
+      8.2
+    ],
+    "ChemTreat_ORP": [
+      180.0,
+      350.0
+    ],
+    "ChemTreat_Conductivity": [
+      280.0,
+      340.0
+    ],
+    "RO_Permeate_Conductivity": [
+      0.02,
+      5.0
+    ]
+  },
+  "service_target": {
+    "ChemTreat_pH": [
+      7.2,
+      7.8
+    ],
+    "ChemTreat_ORP": [
+      250.0,
+      330.0
+    ],
+    "ChemTreat_Conductivity": [
+      280.0,
+      340.0
+    ]
+  },
+  "service_required_fraction": 0.9,
+  "policies": [
+    "reference",
+    "deterministic",
+    "constant_none",
+    "constant_hcl",
+    "constant_naocl",
+    "constant_both",
+    "llm_unassessable"
+  ],
+  "authority_equal": true,
+  "model": {
+    "backend": "openai",
+    "weights": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+    "role": "target_pending",
+    "temperature": 0.0,
+    "max_tokens": 512
+  },
+  "validation_gates": [
+    "verify offline model coefficients and map ownership against pinned ST",
+    "show case-specific reference and deterministic controls",
+    "enumerate four constant dosing vectors and show each fails at least one case",
+    "qualify a separate live OpenPLC disturbance realization before measured model claims"
+  ]
+}

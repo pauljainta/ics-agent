@@ -1,0 +1,15 @@
+{
+  "schema_version": "plcbench.operator-fixture/v1",
+  "fixture_id": "operator-fixed-disturbance-v1",
+  "evidence_origin": "offline_fixture",
+  "observations": [{"t_sec": 0, "alarm": true, "pressure": 12.0, "flow": 0.0}],
+  "allowed_interventions": ["restore", "observe"],
+  "plant_responses": {
+    "restore": {"pressure": 7.0, "flow": 5.0},
+    "observe": {"pressure": 12.0, "flow": 0.0}
+  },
+  "safe_envelope": {"pressure": [0.0, 10.0]},
+  "service_target": {"flow": [1.0, 10.0]},
+  "policies": ["reference", "deterministic", "llm-decision-file"],
+  "authority_equal": true
+}

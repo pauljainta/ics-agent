@@ -39,32 +39,32 @@
  *)
 
 PROGRAM MainProgram
-  VAR_INPUT
-    (* Command Inputs from Controller via Bridge *)
-    cmd_supply_pump_speed : REAL;     (* Supply pump speed cmd [%] *)
-    cmd_rws_pump_speed : REAL;        (* RWS pump speed cmd [%] *)
-    cmd_supply_valve : BOOL;          (* Supply valve command *)
-    cmd_grid_elev_valve : BOOL;       (* Elevated tank valve cmd *)
-    cmd_rws_valve : BOOL;             (* RWS valve command *)
-  END_VAR
-
-  VAR_OUTPUT
-    (* Sensor Outputs to Controller via Bridge *)
-    out_supply_tank_level : REAL;     (* Supply tank level [mm] *)
-    out_supply_pump_flow : REAL;      (* Supply pump flow [L/min] *)
-    out_supply_naocl_level : REAL;    (* NaOCl tank level [mm] *)
-    out_supply_nh4cl_level : REAL;    (* NH4Cl tank level [mm] *)
-    out_grid_elev_level : REAL;       (* Elevated tank level [mm] *)
-    out_grid_consum_level : REAL;     (* Consumer tank level [mm] *)
-    out_rws_tank_level : REAL;        (* RWS tank level [mm] *)
-
-    (* Status Outputs to Controller via Bridge *)
-    out_supply_pump_sts : BOOL;       (* Supply pump running *)
-    out_supply_mixer_sts : BOOL;      (* Supply mixer running *)
-    out_supply_valve_sts : BOOL;      (* Supply valve open *)
-    out_grid_elev_valve_sts : BOOL;   (* Elevated tank valve open *)
-    out_rws_pump_sts : BOOL;          (* RWS pump running *)
-    out_rws_valve_sts : BOOL;         (* RWS valve open *)
+  VAR
+    (* ==== located I/O (Modbus-exposed; hydro holding-register/coil pattern).
+       REAL at %MD (two holding registers each); BOOL at %QX coils. Both PLCs
+       declare every tag at the same address; the simulator writes the ones it
+       owns (sensors/status) and only reads the controller-owned commands. ==== *)
+    (* commands from controller (controller-owned; simulator reads only) *)
+    cmd_supply_pump_speed AT %MD0 : REAL;   (* Supply pump speed cmd [%] *)
+    cmd_rws_pump_speed AT %MD1 : REAL;      (* RWS pump speed cmd [%] *)
+    cmd_supply_valve AT %QX5.0 : BOOL;      (* Supply valve command *)
+    cmd_grid_elev_valve AT %QX5.1 : BOOL;   (* Elevated tank valve cmd *)
+    cmd_rws_valve AT %QX5.2 : BOOL;         (* RWS valve command *)
+    (* sensor outputs (simulator-owned; simulator writes) *)
+    out_supply_tank_level AT %MD5 : REAL;   (* Supply tank level [mm] *)
+    out_supply_pump_flow AT %MD6 : REAL;    (* Supply pump flow [L/min] *)
+    out_supply_naocl_level AT %MD7 : REAL;  (* NaOCl tank level [mm] *)
+    out_supply_nh4cl_level AT %MD8 : REAL;  (* NH4Cl tank level [mm] *)
+    out_grid_elev_level AT %MD9 : REAL;     (* Elevated tank level [mm] *)
+    out_grid_consum_level AT %MD10 : REAL;  (* Consumer tank level [mm] *)
+    out_rws_tank_level AT %MD11 : REAL;     (* RWS tank level [mm] *)
+    (* status outputs (simulator-owned; simulator writes) *)
+    out_supply_pump_sts AT %QX20.0 : BOOL;      (* Supply pump running *)
+    out_supply_mixer_sts AT %QX20.1 : BOOL;     (* Supply mixer running *)
+    out_supply_valve_sts AT %QX20.2 : BOOL;     (* Supply valve open *)
+    out_grid_elev_valve_sts AT %QX20.3 : BOOL;  (* Elevated tank valve open *)
+    out_rws_pump_sts AT %QX20.4 : BOOL;         (* RWS pump running *)
+    out_rws_valve_sts AT %QX20.5 : BOOL;        (* RWS valve open *)
   END_VAR
 
   VAR
@@ -367,3 +367,10 @@ PROGRAM MainProgram
   out_rws_valve_sts := rws_valve_state;
 
 END_PROGRAM
+
+CONFIGURATION Config0
+  RESOURCE Res0 ON PLC
+    TASK Main(INTERVAL := T#100ms, PRIORITY := 0);
+    PROGRAM Inst0 WITH Main : MainProgram;
+  END_RESOURCE
+END_CONFIGURATION

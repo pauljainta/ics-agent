@@ -82,6 +82,12 @@ class CachedQwenDecisionEngine:
         self.temperature = float(llm_cfg.get("temperature", 0.0))
         self.quantization = str(llm_cfg.get("quantization", "bf16")).strip().lower()
         self.require_cuda = bool(llm_cfg.get("require_cuda", True))
+        # Ollama backend (CPU/Metal, no CUDA) host; used when backend == "ollama".
+        self.ollama_host = str(llm_cfg.get("host") or "http://localhost:11434")
+        # OpenAI-compatible backend (e.g. vLLM on a GPU box); used when backend
+        # is "openai"/"vllm". base_url is typically a local SSH-tunnel endpoint.
+        self.openai_base_url = str(llm_cfg.get("base_url") or "http://localhost:8000/v1")
+        self.openai_api_key = llm_cfg.get("api_key")
         self.knowledge_files = list(profile.get("knowledge_files", []))
         self.prompt_text = self._load_prompt()
         self.operational_knowledge = load_manual_bundle(self.knowledge_files)
@@ -109,6 +115,26 @@ class CachedQwenDecisionEngine:
 
     def decide(self, context: dict[str, Any]) -> dict[str, Any]:
         self.last_error = None
+        if self.backend == "ollama":
+            try:
+                payload = self._decide_with_ollama(context)
+                self.last_mode = "ollama"
+                return payload
+            except Exception as exc:
+                self.last_error = f"ollama: {exc}"
+                raise RuntimeError(
+                    f"{self.role} backend `ollama` unavailable: {self.last_error}"
+                ) from exc
+        if self.backend in ("openai", "vllm"):
+            try:
+                payload = self._decide_with_openai(context)
+                self.last_mode = self.backend
+                return payload
+            except Exception as exc:
+                self.last_error = f"{self.backend}: {exc}"
+                raise RuntimeError(
+                    f"{self.role} backend `{self.backend}` unavailable: {self.last_error}"
+                ) from exc
         if self.backend not in {"qwen_langchain", "qwen_langgraph"}:
             raise RuntimeError(
                 f"unsupported backend `{self.backend}` for agentic role `{self.role}`"
@@ -317,6 +343,47 @@ class CachedQwenDecisionEngine:
             '{"summary":"Monitor and hold.","candidate_id":null,"confidence":0.42,"diagnosis":null,"labels":["agentic"],"decision_type":"note"}\n\n'
             f"Context:\n{json.dumps(payload, indent=2)}"
         )
+
+    def _decide_with_openai(self, context: dict[str, Any]) -> dict[str, Any]:
+        from ..openai_client import openai_chat
+
+        raw = openai_chat(
+            self._format_prompt(context),
+            model=self.model_id,
+            base_url=self.openai_base_url,
+            api_key=self.openai_api_key,
+            temperature=self.temperature,
+            max_tokens=self.max_new_tokens,
+        )
+        self.last_raw_output = self._raw_excerpt(raw)
+        payload = self._parse_output(raw)
+        if payload is None:
+            if not self.fatal_on_parse_error:
+                return self._parse_failure_payload(context)
+            raise RuntimeError(
+                f"model output did not contain valid JSON: {self.last_raw_output}"
+            )
+        return self._finalize_payload(payload, context)
+
+    def _decide_with_ollama(self, context: dict[str, Any]) -> dict[str, Any]:
+        from ..ollama_client import ollama_generate
+
+        raw = ollama_generate(
+            self._format_prompt(context),
+            model=self.model_id,
+            host=self.ollama_host,
+            temperature=self.temperature,
+            num_predict=self.max_new_tokens,
+        )
+        self.last_raw_output = self._raw_excerpt(raw)
+        payload = self._parse_output(raw)
+        if payload is None:
+            if not self.fatal_on_parse_error:
+                return self._parse_failure_payload(context)
+            raise RuntimeError(
+                f"model output did not contain valid JSON: {self.last_raw_output}"
+            )
+        return self._finalize_payload(payload, context)
 
     def _decide_with_langchain(self, context: dict[str, Any]) -> dict[str, Any]:
         from langchain_core.output_parsers import StrOutputParser  # type: ignore
@@ -779,6 +846,13 @@ class AgenticRoleAgent(RoleAgent):
         profile = self._normalized_agentic_profile(profile)
         super().__init__(profile_name, profile)
         self.engine = CachedQwenDecisionEngine(profile, self.role)
+        # Optional PLCBench-style scaffold: same capabilities and backend, but a
+        # three-part prompt and deterministic history compaction. See
+        # ics_agent/agents/plcbench.py and docs/baselines/plcbench_conformance.md.
+        if str(profile.get("scaffold", "")).strip().lower() == "plcbench_matched":
+            from .plcbench import PlcbenchMatchedDecisionEngine
+
+            self.engine = PlcbenchMatchedDecisionEngine(profile, self.role)
         self.knowledge_mode = self._normalized_knowledge_mode(
             profile.get("knowledge_mode", "standard")
         )

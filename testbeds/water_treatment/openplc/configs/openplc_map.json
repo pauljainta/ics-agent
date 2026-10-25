@@ -1,0 +1,671 @@
+{
+  "api_version": "sphere.mergetb.io/v1",
+  "kind": "BackendMapping",
+  "mappings": {
+    "Alarm_RW_Tank_H": {
+      "address": 66,
+      "iec_address": "%QX8.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Alarm_RW_Tank_HH": {
+      "address": 67,
+      "iec_address": "%QX8.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Alarm_RW_Tank_L": {
+      "address": 65,
+      "iec_address": "%QX8.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Alarm_RW_Tank_LL": {
+      "address": 64,
+      "iec_address": "%QX8.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "ChemTreat_Conductivity": {
+      "address": 2058,
+      "iec_address": "%MD5",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "uS/cm",
+      "words": 2
+    },
+    "ChemTreat_HCl_Level": {
+      "address": 2056,
+      "iec_address": "%MD4",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "ChemTreat_HCl_Valve": {
+      "address": 47,
+      "iec_address": "%QX5.7",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "ChemTreat_HCl_Valve_Sts": {
+      "address": 167,
+      "iec_address": "%QX20.7",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "ChemTreat_NaCl_Level": {
+      "address": 2052,
+      "iec_address": "%MD2",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "ChemTreat_NaCl_Valve": {
+      "address": 45,
+      "iec_address": "%QX5.5",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "ChemTreat_NaCl_Valve_Sts": {
+      "address": 165,
+      "iec_address": "%QX20.5",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "ChemTreat_NaOCl_Level": {
+      "address": 2054,
+      "iec_address": "%MD3",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "ChemTreat_NaOCl_Valve": {
+      "address": 46,
+      "iec_address": "%QX5.6",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "ChemTreat_NaOCl_Valve_Sts": {
+      "address": 166,
+      "iec_address": "%QX20.6",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "ChemTreat_ORP": {
+      "address": 2062,
+      "iec_address": "%MD7",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mV",
+      "words": 2
+    },
+    "ChemTreat_pH": {
+      "address": 2060,
+      "iec_address": "%MD6",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "pH",
+      "words": 2
+    },
+    "DC_Hardness": {
+      "address": 2082,
+      "iec_address": "%MD17",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "ppm",
+      "words": 2
+    },
+    "DC_NaHSO3_Level": {
+      "address": 2074,
+      "iec_address": "%MD13",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "DC_NaHSO3_Valve": {
+      "address": 77,
+      "iec_address": "%QX9.5",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "DC_NaHSO3_Valve_Sts": {
+      "address": 180,
+      "iec_address": "%QX22.4",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "DC_ORP": {
+      "address": 2084,
+      "iec_address": "%MD18",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mV",
+      "words": 2
+    },
+    "DC_ROFT_Tank_Level": {
+      "address": 2070,
+      "iec_address": "%MD11",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "DC_ROFT_Tank_Valve": {
+      "address": 72,
+      "iec_address": "%QX9.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "DC_ROFT_Tank_Valve_Sts": {
+      "address": 176,
+      "iec_address": "%QX22.0",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "DC_RO_Pump_Fault": {
+      "address": 178,
+      "iec_address": "%QX22.2",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "DC_RO_Pump_Flow": {
+      "address": 2072,
+      "iec_address": "%MD12",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "DC_RO_Pump_Speed": {
+      "address": 2098,
+      "iec_address": "%MD25",
+      "owner": "controller",
+      "register_type": "holding_register",
+      "units": "%",
+      "words": 2
+    },
+    "DC_RO_Pump_Start": {
+      "address": 73,
+      "iec_address": "%QX9.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "DC_RO_Pump_Stop": {
+      "address": 74,
+      "iec_address": "%QX9.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "DC_RO_Pump_Sts": {
+      "address": 177,
+      "iec_address": "%QX22.1",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "DC_UV_Off": {
+      "address": 76,
+      "iec_address": "%QX9.4",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "DC_UV_On": {
+      "address": 75,
+      "iec_address": "%QX9.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "DC_UV_Sts": {
+      "address": 179,
+      "iec_address": "%QX22.3",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "HMI_Start_Active": {
+      "address": 2,
+      "iec_address": "%QX0.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "HMI_Start_PB": {
+      "address": 0,
+      "iec_address": "%QX0.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "HMI_Stop_Active": {
+      "address": 3,
+      "iec_address": "%QX0.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "HMI_Stop_PB": {
+      "address": 1,
+      "iec_address": "%QX0.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "P2_HCl_Cmd": {
+      "address": 11,
+      "iec_address": "%QX1.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "P2_NaCl_Cmd": {
+      "address": 9,
+      "iec_address": "%QX1.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "P2_NaOCl_Cmd": {
+      "address": 10,
+      "iec_address": "%QX1.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "P2_Selected": {
+      "address": 8,
+      "iec_address": "%QX1.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "PT_PUB_Sts": {
+      "address": 187,
+      "iec_address": "%QX23.3",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "PT_PUB_Valve": {
+      "address": 84,
+      "iec_address": "%QX10.4",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "PT_RO_Valve": {
+      "address": 83,
+      "iec_address": "%QX10.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "PT_RO_Valve_Sts": {
+      "address": 186,
+      "iec_address": "%QX23.2",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "PT_Tank_Level": {
+      "address": 2080,
+      "iec_address": "%MD16",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "RO_CF_A_Valve": {
+      "address": 78,
+      "iec_address": "%QX9.6",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RO_CF_A_Valve_Sts": {
+      "address": 181,
+      "iec_address": "%QX22.5",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RO_CF_B_Valve": {
+      "address": 79,
+      "iec_address": "%QX9.7",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RO_CF_B_Valve_Sts": {
+      "address": 182,
+      "iec_address": "%QX22.6",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RO_Feed_Conductivity": {
+      "address": 2090,
+      "iec_address": "%MD21",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "uS/cm",
+      "words": 2
+    },
+    "RO_Feed_ORP": {
+      "address": 2088,
+      "iec_address": "%MD20",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mV",
+      "words": 2
+    },
+    "RO_Feed_pH": {
+      "address": 2086,
+      "iec_address": "%MD19",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "pH",
+      "words": 2
+    },
+    "RO_Permeate_Conductivity": {
+      "address": 2092,
+      "iec_address": "%MD22",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "uS/cm",
+      "words": 2
+    },
+    "RO_Pump_Fault": {
+      "address": 184,
+      "iec_address": "%QX23.0",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RO_Pump_Flow": {
+      "address": 2078,
+      "iec_address": "%MD15",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "RO_Pump_Speed": {
+      "address": 2100,
+      "iec_address": "%MD26",
+      "owner": "controller",
+      "register_type": "holding_register",
+      "units": "%",
+      "words": 2
+    },
+    "RO_Pump_Start": {
+      "address": 80,
+      "iec_address": "%QX10.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RO_Pump_Stop": {
+      "address": 81,
+      "iec_address": "%QX10.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RO_Pump_Sts": {
+      "address": 183,
+      "iec_address": "%QX22.7",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RO_Tank_Level": {
+      "address": 2076,
+      "iec_address": "%MD14",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "RO_Tank_Valve": {
+      "address": 82,
+      "iec_address": "%QX10.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RO_Tank_Valve_Sts": {
+      "address": 185,
+      "iec_address": "%QX23.1",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RW_Pump_Fault": {
+      "address": 164,
+      "iec_address": "%QX20.4",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RW_Pump_Flow": {
+      "address": 2050,
+      "iec_address": "%MD1",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "RW_Pump_Speed": {
+      "address": 2094,
+      "iec_address": "%MD23",
+      "owner": "controller",
+      "register_type": "holding_register",
+      "units": "%",
+      "words": 2
+    },
+    "RW_Pump_Start": {
+      "address": 43,
+      "iec_address": "%QX5.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RW_Pump_Stop": {
+      "address": 44,
+      "iec_address": "%QX5.4",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RW_Pump_Sts": {
+      "address": 163,
+      "iec_address": "%QX20.3",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RW_Tank_Level": {
+      "address": 2048,
+      "iec_address": "%MD0",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "RW_Tank_P6B_Valve": {
+      "address": 41,
+      "iec_address": "%QX5.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RW_Tank_P6B_Valve_Sts": {
+      "address": 161,
+      "iec_address": "%QX20.1",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RW_Tank_PR_Valve": {
+      "address": 40,
+      "iec_address": "%QX5.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RW_Tank_PR_Valve_Sts": {
+      "address": 160,
+      "iec_address": "%QX20.0",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RW_Tank_P_Valve": {
+      "address": 42,
+      "iec_address": "%QX5.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RW_Tank_P_Valve_Sts": {
+      "address": 162,
+      "iec_address": "%QX20.2",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "SYS_IDLE": {
+      "address": 56,
+      "iec_address": "%QX7.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "SYS_Permissives_Ready": {
+      "address": 60,
+      "iec_address": "%QX7.4",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "SYS_RUNNING": {
+      "address": 58,
+      "iec_address": "%QX7.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "SYS_SHUTDOWN": {
+      "address": 59,
+      "iec_address": "%QX7.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "SYS_START": {
+      "address": 57,
+      "iec_address": "%QX7.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_BWP_Valve": {
+      "address": 51,
+      "iec_address": "%QX6.3",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_BWP_Valve_Sts": {
+      "address": 171,
+      "iec_address": "%QX21.3",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "UF_BW_Pump_Fault": {
+      "address": 173,
+      "iec_address": "%QX21.5",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "UF_BW_Pump_Flow": {
+      "address": 2068,
+      "iec_address": "%MD10",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "UF_BW_Pump_Speed": {
+      "address": 2096,
+      "iec_address": "%MD24",
+      "owner": "controller",
+      "register_type": "holding_register",
+      "units": "%",
+      "words": 2
+    },
+    "UF_BW_Pump_Start": {
+      "address": 52,
+      "iec_address": "%QX6.4",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_BW_Pump_Stop": {
+      "address": 53,
+      "iec_address": "%QX6.5",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_BW_Pump_Sts": {
+      "address": 172,
+      "iec_address": "%QX21.4",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "UF_BW_Tank_Level": {
+      "address": 2066,
+      "iec_address": "%MD9",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "UF_BW_Tank_PT_Valve": {
+      "address": 55,
+      "iec_address": "%QX6.7",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_BW_Tank_PT_Valve_Sts": {
+      "address": 175,
+      "iec_address": "%QX21.7",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "UF_BW_Tank_RO_Valve": {
+      "address": 54,
+      "iec_address": "%QX6.6",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_BW_Tank_RO_Valve_Sts": {
+      "address": 174,
+      "iec_address": "%QX21.6",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "UF_Drain_Valve": {
+      "address": 49,
+      "iec_address": "%QX6.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_Drain_Valve_Sts": {
+      "address": 169,
+      "iec_address": "%QX21.1",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "UF_ROFT_Valve": {
+      "address": 50,
+      "iec_address": "%QX6.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_ROFT_Valve_Sts": {
+      "address": 170,
+      "iec_address": "%QX21.2",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "UF_UFFT_Tank_Level": {
+      "address": 2064,
+      "iec_address": "%MD8",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "UF_UFFT_Tank_Valve": {
+      "address": 48,
+      "iec_address": "%QX6.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "UF_UFFT_Tank_Valve_Sts": {
+      "address": 168,
+      "iec_address": "%QX21.0",
+      "owner": "simulator",
+      "register_type": "coil"
+    }
+  },
+  "metadata": {
+    "backend": "openplc",
+    "protocol": "modbus_tcp"
+  },
+  "source_yaml_sha256": "a4b071d315eb2cda10ea63729558f3d32c9e6a5c0004291b0950e3eddc8980be"
+}

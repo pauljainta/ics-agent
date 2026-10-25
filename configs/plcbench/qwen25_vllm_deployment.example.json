@@ -1,0 +1,11 @@
+{
+  "weight_revision": "REPLACE_WITH_HF_COMMIT_SHA",
+  "vllm_version": "REPLACE_WITH_EXACT_VERSION",
+  "runtime_digest": "REPLACE_WITH_CONTAINER_OR_CONDA_LOCK_SHA256",
+  "models_identity_sha256": "REPLACE_WITH_STABLE_MODEL_LISTING_SHA256",
+  "runtime_kind": "conda",
+  "served_model": "plcbench",
+  "quantization": "awq",
+  "tensor_parallel_size": 1,
+  "max_model_len": 8192
+}

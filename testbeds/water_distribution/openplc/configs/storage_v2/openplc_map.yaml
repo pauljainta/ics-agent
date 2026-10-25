@@ -1,0 +1,210 @@
+# OpenPLC Backend Mapping: Water Distribution UC0
+#
+# Maps each canonical tag to its Modbus register, matching the located I/O in
+# wd_controller.st / wd_simulator.st.
+#
+# Architecture:  Controller PLC <-> Modbus Bridge <-> Simulator PLC
+#
+# All analog is native REAL at %MD (two holding registers each, high word first,
+# no scaling); all digital is coils at %QX. There are NO input registers or
+# discrete inputs, because a Modbus master (the bridge, and the native actor)
+# cannot write those, so they cannot be shuttled. Both PLCs declare every tag at
+# the same address and write only the ones they own; the bridge copies owner ->
+# peer each cycle.
+#
+#   %QX<byte>.<bit>  coil              address = byte*8 + bit
+#   %MD<n>           holding registers address = 2048 + 2n   (REAL, 2 registers)
+
+api_version: sphere.mergetb.io/v1
+kind: BackendMapping
+metadata:
+  backend: openplc
+  protocol: modbus_tcp
+  status: active
+  controller_address: "controller:502"
+  simulator_address: "simulator:502"
+
+mappings:
+  # ─── Operator HMI (external master writes; controller reads) ──────────────
+  HMI_Start_PB:
+    register_type: coil
+    address: 0
+    iec_address: "%QX0.0"
+    owner: controller
+  HMI_Stop_PB:
+    register_type: coil
+    address: 1
+    iec_address: "%QX0.1"
+    owner: controller
+
+  # ─── Commands: controller -> simulator (controller-owned) ─────────────────
+  Supply_Pump_Speed:
+    register_type: holding_register
+    address: 2048
+    words: 2
+    iec_address: "%MD0"
+    units: "%"
+    owner: controller
+  RWS_Pump_Speed:
+    register_type: holding_register
+    address: 2050
+    words: 2
+    iec_address: "%MD1"
+    units: "%"
+    owner: controller
+  Supply_Tank_Valve:
+    register_type: coil
+    address: 40
+    iec_address: "%QX5.0"
+    owner: controller
+  Grid_Elev_Valve:
+    register_type: coil
+    address: 41
+    iec_address: "%QX5.1"
+    owner: controller
+  RWS_Tank_Valve:
+    register_type: coil
+    address: 42
+    iec_address: "%QX5.2"
+    owner: controller
+
+  # ─── Controller status + alarm (controller-owned) ─────────────────────────
+  Sys_Idle:
+    register_type: coil
+    address: 56
+    iec_address: "%QX7.0"
+    owner: controller
+  Sys_Running:
+    register_type: coil
+    address: 57
+    iec_address: "%QX7.1"
+    owner: controller
+  Alarm_Supply_Tank_HH:
+    register_type: coil
+    address: 64
+    iec_address: "%QX8.0"
+    owner: controller
+
+  # ─── Sensors: simulator -> controller (simulator-owned) ───────────────────
+  Supply_Tank_Level:
+    register_type: holding_register
+    address: 2058
+    words: 2
+    iec_address: "%MD5"
+    units: mm
+    owner: simulator
+  Supply_Pump_Flow:
+    register_type: holding_register
+    address: 2060
+    words: 2
+    iec_address: "%MD6"
+    units: L/min
+    owner: simulator
+  Supply_NaOCl_Level:
+    register_type: holding_register
+    address: 2062
+    words: 2
+    iec_address: "%MD7"
+    units: mm
+    owner: simulator
+  Supply_NH4Cl_Level:
+    register_type: holding_register
+    address: 2064
+    words: 2
+    iec_address: "%MD8"
+    units: mm
+    owner: simulator
+  Grid_Elev_Tank_Level:
+    register_type: holding_register
+    address: 2066
+    words: 2
+    iec_address: "%MD9"
+    units: mm
+    owner: simulator
+  Grid_Consum_Tank_Level:
+    register_type: holding_register
+    address: 2068
+    words: 2
+    iec_address: "%MD10"
+    units: mm
+    owner: simulator
+  RWS_Tank_Level:
+    register_type: holding_register
+    address: 2070
+    words: 2
+    iec_address: "%MD11"
+    units: mm
+    owner: simulator
+
+  # ─── Status: simulator -> controller (simulator-owned) ────────────────────
+  Supply_Pump_Sts:
+    register_type: coil
+    address: 160
+    iec_address: "%QX20.0"
+    owner: simulator
+  Supply_Mixer_Sts:
+    register_type: coil
+    address: 161
+    iec_address: "%QX20.1"
+    owner: simulator
+  Supply_Tank_Valve_Sts:
+    register_type: coil
+    address: 162
+    iec_address: "%QX20.2"
+    owner: simulator
+  Grid_Elev_Valve_Sts:
+    register_type: coil
+    address: 163
+    iec_address: "%QX20.3"
+    owner: simulator
+  RWS_Pump_Sts:
+    register_type: coil
+    address: 164
+    iec_address: "%QX20.4"
+    owner: simulator
+  RWS_Valve_Sts:
+    register_type: coil
+    address: 165
+    iec_address: "%QX20.5"
+    owner: simulator
+
+  # Storage-v2 modeled transfer and fixture observations.
+  Grid_To_Consumer_Flow:
+    register_type: holding_register
+    address: 2072
+    words: 2
+    iec_address: "%MD12"
+    units: L/min
+    owner: simulator
+  Consumer_Served_Flow:
+    register_type: holding_register
+    address: 2074
+    words: 2
+    iec_address: "%MD13"
+    units: L/min
+    owner: simulator
+  Fixture_Reset_Generation:
+    register_type: holding_register
+    address: 2076
+    words: 2
+    iec_address: "%MD14"
+    owner: simulator
+  Fixture_Demand_Flow:
+    register_type: holding_register
+    address: 2078
+    words: 2
+    iec_address: "%MD15"
+    units: L/min
+    owner: simulator
+  Total_Spill_Flow:
+    register_type: holding_register
+    address: 2080
+    words: 2
+    iec_address: "%MD16"
+    units: L/min
+    owner: simulator
+  Fixture_Reset_PB:
+    register_type: coil
+    address: 240
+    iec_address: "%QX30.0"
+    owner: fixture

@@ -53,3 +53,6 @@ models/local_models/*
 .hf/
 .huggingface/
 **/.cache/huggingface/
+
+# PLCBench run bundles (reproducible artifacts, not source)
+runs/

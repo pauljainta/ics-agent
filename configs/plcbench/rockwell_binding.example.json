@@ -1,0 +1,8 @@
+{
+  "controller_family": "REPLACE_WITH_OFFLINE_TESTED_FAMILY",
+  "program_identity": {"name": "REPLACE", "revision": "REPLACE", "checksum": "REPLACE"},
+  "tag_binding_ref": "REPLACE_WITH_EXPORTED_TAG_MAP.json",
+  "permitted_writes": ["REPLACE_WITH_EXPLICIT_OPERATOR_TAG"],
+  "baseline_readback_ref": "REPLACE_WITH_EVIDENCE_FILE.json",
+  "restore_readback_ref": "REPLACE_WITH_EVIDENCE_FILE.json"
+}

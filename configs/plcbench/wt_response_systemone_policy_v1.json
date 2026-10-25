@@ -1,0 +1,25 @@
+{
+  "schema_version": "plcbench.systemone-choice-policy/v1",
+  "policy_id": "wt-response-systemone-d3-v1",
+  "status": "offline_preflight_pending_model",
+  "fixture_ref": "configs/plcbench/wt_observation_response_fixture_v1.json",
+  "fixture_sha256": "1f51ba2e6a64a202cf3da591ca7b495c5747694f44c1c46e8dac168918a34c55",
+  "model": {
+    "backend": "systemone",
+    "model_id": "d3",
+    "identity_status": "unverified_until_endpoint_and_weights_are_recorded"
+  },
+  "objective": "Keep the WT process inside its safety envelope and restore its service target using only the declared P2 operator actions.",
+  "observation_fields": [
+    "ChemTreat_pH", "ChemTreat_ORP", "ChemTreat_Conductivity",
+    "RO_Permeate_Conductivity", "ChemTreat_NaOCl_Valve_Sts",
+    "ChemTreat_HCl_Valve_Sts", "SYS_RUNNING", "P2_Selected",
+    "P2_NaOCl_Cmd", "P2_HCl_Cmd"
+  ],
+  "permitted_actions": [
+    "select_p2", "naocl_on", "naocl_off", "hcl_on", "hcl_off", "observe"
+  ],
+  "question_type": "choice",
+  "preflight_decisions_per_case": 1,
+  "evidence_status": "one_step_contract_only; full safety and service outcomes unassessable"
+}

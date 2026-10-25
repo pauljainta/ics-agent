@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mm
+      POSTGRES_PASSWORD: ${PLCBENCH_POSTGRES_PASSWORD:?Set a local database password}
+      POSTGRES_DB: mattermost
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mm"]
+      interval: 3s
+      retries: 20
+    networks: [local_fixture]
+  mattermost:
+    image: mattermost/mattermost-team-edition:9.11
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mm:${PLCBENCH_POSTGRES_PASSWORD:?Set a local database password}@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: http://127.0.0.1:8065
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+    networks: [local_fixture]
+networks:
+  local_fixture:
+    internal: true

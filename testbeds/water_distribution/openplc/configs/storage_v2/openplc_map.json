@@ -1,0 +1,215 @@
+{
+  "api_version": "sphere.mergetb.io/v1",
+  "kind": "BackendMapping",
+  "mappings": {
+    "Alarm_Supply_Tank_HH": {
+      "address": 64,
+      "iec_address": "%QX8.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Consumer_Served_Flow": {
+      "address": 2074,
+      "iec_address": "%MD13",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "Fixture_Demand_Flow": {
+      "address": 2078,
+      "iec_address": "%MD15",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "Fixture_Reset_Generation": {
+      "address": 2076,
+      "iec_address": "%MD14",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "words": 2
+    },
+    "Fixture_Reset_PB": {
+      "address": 240,
+      "iec_address": "%QX30.0",
+      "owner": "fixture",
+      "register_type": "coil"
+    },
+    "Grid_Consum_Tank_Level": {
+      "address": 2068,
+      "iec_address": "%MD10",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "Grid_Elev_Tank_Level": {
+      "address": 2066,
+      "iec_address": "%MD9",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "Grid_Elev_Valve": {
+      "address": 41,
+      "iec_address": "%QX5.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Grid_Elev_Valve_Sts": {
+      "address": 163,
+      "iec_address": "%QX20.3",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "Grid_To_Consumer_Flow": {
+      "address": 2072,
+      "iec_address": "%MD12",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "HMI_Start_PB": {
+      "address": 0,
+      "iec_address": "%QX0.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "HMI_Stop_PB": {
+      "address": 1,
+      "iec_address": "%QX0.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RWS_Pump_Speed": {
+      "address": 2050,
+      "iec_address": "%MD1",
+      "owner": "controller",
+      "register_type": "holding_register",
+      "units": "%",
+      "words": 2
+    },
+    "RWS_Pump_Sts": {
+      "address": 164,
+      "iec_address": "%QX20.4",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "RWS_Tank_Level": {
+      "address": 2070,
+      "iec_address": "%MD11",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "RWS_Tank_Valve": {
+      "address": 42,
+      "iec_address": "%QX5.2",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "RWS_Valve_Sts": {
+      "address": 165,
+      "iec_address": "%QX20.5",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "Supply_Mixer_Sts": {
+      "address": 161,
+      "iec_address": "%QX20.1",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "Supply_NH4Cl_Level": {
+      "address": 2064,
+      "iec_address": "%MD8",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "Supply_NaOCl_Level": {
+      "address": 2062,
+      "iec_address": "%MD7",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "Supply_Pump_Flow": {
+      "address": 2060,
+      "iec_address": "%MD6",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    },
+    "Supply_Pump_Speed": {
+      "address": 2048,
+      "iec_address": "%MD0",
+      "owner": "controller",
+      "register_type": "holding_register",
+      "units": "%",
+      "words": 2
+    },
+    "Supply_Pump_Sts": {
+      "address": 160,
+      "iec_address": "%QX20.0",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "Supply_Tank_Level": {
+      "address": 2058,
+      "iec_address": "%MD5",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "mm",
+      "words": 2
+    },
+    "Supply_Tank_Valve": {
+      "address": 40,
+      "iec_address": "%QX5.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Supply_Tank_Valve_Sts": {
+      "address": 162,
+      "iec_address": "%QX20.2",
+      "owner": "simulator",
+      "register_type": "coil"
+    },
+    "Sys_Idle": {
+      "address": 56,
+      "iec_address": "%QX7.0",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Sys_Running": {
+      "address": 57,
+      "iec_address": "%QX7.1",
+      "owner": "controller",
+      "register_type": "coil"
+    },
+    "Total_Spill_Flow": {
+      "address": 2080,
+      "iec_address": "%MD16",
+      "owner": "simulator",
+      "register_type": "holding_register",
+      "units": "L/min",
+      "words": 2
+    }
+  },
+  "metadata": {
+    "backend": "openplc",
+    "controller_address": "controller:502",
+    "protocol": "modbus_tcp",
+    "simulator_address": "simulator:502",
+    "status": "active"
+  },
+  "source_yaml_sha256": "729da5b35f3db83f39c2bea9baca2259ab1ebf846597a166dca47d02243f0f7e"
+}

@@ -1,0 +1,5 @@
+# Reproducible scorer, fixture, and focused PLCBench test environment (Python 3.10).
+# Live model serving and full ICS-Agent experiments use requirements.txt instead.
+PyYAML==6.0.2
+pymodbus==3.8.6
+pytest==8.4.1

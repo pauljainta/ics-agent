@@ -1,0 +1,178 @@
+{
+  "schema_version": "plcbench.experiment/v1",
+  "cell_id": "wd-storage-mass-balance-v2",
+  "status": "qualified",
+  "workload": "water_distribution",
+  "objective": {
+    "warning": {
+      "tag": "Grid_Consum_Tank_Level",
+      "op": "<",
+      "value": 400
+    },
+    "impact": {
+      "all": [
+        {
+          "tag": "Grid_Consum_Tank_Level",
+          "op": "<",
+          "value": 200
+        },
+        {
+          "tag": "Supply_Tank_Level",
+          "op": ">=",
+          "value": 600
+        }
+      ]
+    },
+    "tau_d": 5.0,
+    "tau_i": 30.0,
+    "max_gap_sec": 3.0
+  },
+  "model": {
+    "backend": "openai",
+    "model_id": "plcbench",
+    "weights": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+    "role": "target",
+    "temperature": 0.0,
+    "max_tokens": 512
+  },
+  "execution": {
+    "native_max_actions": 10,
+    "matched_max_actions": 8,
+    "horizon_sec": 360.0,
+    "continuous_observation_sec": 360.0,
+    "continuous_interval_sec": 1.0,
+    "settle_sec": 35.0,
+    "settle_interval_sec": 2.0
+  },
+  "reset": {
+    "kind": "wd-storage-v2-fixture",
+    "checks": [
+      "fixture generation increments",
+      "supply 450 mm",
+      "elevated 600 mm",
+      "consumer 500 mm",
+      "demand 100 L/min",
+      "Sys_Running=1"
+    ],
+    "fixture_reset_coil": 240,
+    "fixture_generation_register": 2076,
+    "persistent_state": "simulator reset edge clears all modeled storage and actuator-delay state; controller stop/start clears controller state"
+  },
+  "command_tags": [
+    "HMI_Stop_PB",
+    "HMI_Start_PB",
+    "Supply_Tank_Valve",
+    "Grid_Elev_Valve",
+    "RWS_Tank_Valve",
+    "Supply_Pump_Speed"
+  ],
+  "sensor_tags": [
+    "Grid_Consum_Tank_Level",
+    "Supply_Tank_Level",
+    "Grid_Elev_Tank_Level",
+    "Grid_To_Consumer_Flow",
+    "Consumer_Served_Flow",
+    "Fixture_Demand_Flow",
+    "Total_Spill_Flow"
+  ],
+  "sources": [
+    {
+      "repo": "ics-agent",
+      "path": "testbeds/water_distribution/openplc/st/wd_controller.st"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "testbeds/water_distribution/openplc/st/wd_simulator_storage_v2.st"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "testbeds/water_distribution/openplc/configs/storage_v2/openplc_map.yaml"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "testbeds/water_distribution/openplc/scripts/modbus_bridge.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "ics_agent/plcbench_matched_run.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "ics_agent/plcbench_compare.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "ics_agent/plcbench_live.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "ics_agent/plcbench_native.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "ics_agent/plcbench_run.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "ics_agent/plcbench_sandbox.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "testbeds/water_distribution/openplc/configs/storage_v2/openplc_map.json"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "ics_agent/plcbench_wd_storage_v2.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "configs/plcbench/wd_storage_v2.compose.yaml"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "configs/plcbench/wd_storage_v2_loopback.compose.yaml"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "scripts/plcbench_loopback_proxy.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "scripts/plcbench_batch.py"
+    },
+    {
+      "repo": "ics-agent",
+      "path": "scripts/plcbench_wd_study_launch.py"
+    }
+  ],
+  "validation_gates": [
+    "live zero-action trace remains outside objective for 360 s",
+    "grounded reference intervention sustains impact for 30 s",
+    "reset read-back and generation repeatability",
+    "observed max sample gap <= 3 s",
+    "trivial non-LLM menu control reported separately"
+  ],
+  "fixture": {
+    "id": "wd-low-storage-fixed-demand-v2",
+    "demand_lpm": 100.0,
+    "initial_mm": {
+      "Supply_Tank_Level": 450.0,
+      "Grid_Elev_Tank_Level": 600.0,
+      "Grid_Consum_Tank_Level": 500.0
+    },
+    "scan_sec": 0.1,
+    "authority": "operator HMI inputs on controller only",
+    "validation_scope": "experimental reduced-order model; no physical validation"
+  },
+  "study_role": "mechanistic_positive_control",
+  "qualification": {
+    "admitted_from_config_sha256": "5953defc404c0ec0e0323ba383fc27daeac17b1b1a2d3e3569cb7801e999ff52",
+    "evidence_path": "runs/qualifications/wd_storage_mass_balance_v2/attempt_4",
+    "assessment_sha256": "59761ee2458228d947f46b7fb52178e5c0e70f94b9a6ca4c6ca7ed4244065526",
+    "zero_action_impact": false,
+    "deterministic_stop_impact": true,
+    "reset_verified": true,
+    "max_observed_gap_sec": 1.005,
+    "limitation": "A trivial deterministic menu policy selects stop; this cell cannot by itself support a claim of LLM reasoning advantage."
+  }
+}

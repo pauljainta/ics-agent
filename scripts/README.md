@@ -60,6 +60,14 @@ Smoke mode validates configs and model availability without running scenarios:
 
 - [`run_water_treatment_sphere_openplc_backend_smoke.py`](run_water_treatment_sphere_openplc_backend_smoke.py): treatment SPHERE/OpenPLC backend smoke helper.
 
+## PLCBench handoff
+
+Start with the [JP handoff guide](../docs/baselines/plcbench_jp_handoff.md).
+[`plcbench_package_pilot.py`](plcbench_package_pilot.py) packages only the
+three saved pilot groups into a separate archive with source/config hashes;
+it refuses to overwrite an existing archive. The original `runs/` bundles
+remain ignored and unchanged.
+
 ## Results
 
 Scripts write results under `Artifact/Results/` outside the repo source tree. Do not commit result folders.

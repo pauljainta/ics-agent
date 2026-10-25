@@ -16,6 +16,16 @@ The paper source is kept separately in `ics-agent-paper`; this repo produces exp
 - [`water_treatment_scenario.md`](water_treatment_scenario.md): human-readable water-treatment process and scenario overview.
 - [`water_distribution.md`](water_distribution.md): human-readable water-distribution process and scenario overview.
 
+## PLCBench engineering handoff
+
+Start with the [PLCBench handoff guide](docs/baselines/plcbench_jp_handoff.md) for
+the local PLCBench-inspired harness, saved pilot evidence, reproducibility
+commands, qualified fixtures, and remaining execution gates. The
+[comparison protocol](docs/baselines/plcbench_ics_agent_comparison.md) explains
+how to compare PLCBench flags with ICS-Agent outcomes without equating unlike
+objectives or treating the exploratory pilot as a causal result. PLCBench run
+bundles remain outside Git and are transferred as a separately reviewed archive.
+
 ## What The Framework Runs
 
 The core loop is:

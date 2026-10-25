@@ -1,0 +1,69 @@
+# Disposable local WT pair. No host ports; the sidecar has read/write access
+# only to this isolated pair's declared Modbus endpoints.
+services:
+  controller:
+    image: sphere-openplc:master
+    pull_policy: never
+    environment:
+      OPENPLC_PROGRAM: /programs/controller.st
+      OPENPLC_MODBUS_PORT: "502"
+      OPENPLC_SCAN_CYCLE_MS: "100"
+      OPENPLC_AUTOSTART: "true"
+    volumes:
+      - ${SPHERE_ROOT:?set SPHERE_ROOT}/sector-water/rovisys-treatment/usecases/full-system-p1-to-p6/implementations/openplc/st/wt_controller.st:/programs/controller.st:ro
+      - controller-data:/docker_persistent
+    networks: [pair]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/login >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  simulator:
+    image: sphere-openplc:master
+    pull_policy: never
+    environment:
+      OPENPLC_PROGRAM: /programs/simulator.st
+      OPENPLC_MODBUS_PORT: "502"
+      OPENPLC_SCAN_CYCLE_MS: "100"
+      OPENPLC_AUTOSTART: "true"
+    volumes:
+      - ${SPHERE_ROOT:?set SPHERE_ROOT}/sector-water/rovisys-treatment/usecases/full-system-p1-to-p6/implementations/openplc/st/wt_simulator.st:/programs/simulator.st:ro
+      - simulator-data:/docker_persistent
+    networks: [pair]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/login >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  bridge:
+    image: plcbench-native:py311-pymodbus386
+    pull_policy: never
+    user: "10001:10001"
+    volumes:
+      - ${PLCBENCH_ROOT:?set PLCBENCH_ROOT}:/repo:ro
+    command: ["python", "/repo/testbeds/water_distribution/openplc/scripts/modbus_bridge.py", "--map", "/repo/testbeds/water_treatment/openplc/configs/openplc_map.json", "--controller", "controller:502", "--simulator", "simulator:502"]
+    depends_on:
+      controller: {condition: service_healthy}
+      simulator: {condition: service_healthy}
+    networks: [pair]
+  probe:
+    environment:
+      PYTHONPATH: /repo
+    image: plcbench-native:py311-pymodbus386
+    pull_policy: never
+    profiles: [probe]
+    user: "10001:10001"
+    volumes:
+      - ${PLCBENCH_ROOT:?set PLCBENCH_ROOT}:/repo:ro
+      - ${PLCBENCH_ADMISSION_DIR:?set PLCBENCH_ADMISSION_DIR}:/evidence
+    command: ["python", "/repo/scripts/plcbench_wt_chemistry_probe.py", "--out-dir", "/evidence"]
+    depends_on:
+      controller: {condition: service_healthy}
+      simulator: {condition: service_healthy}
+    networks: [pair]
+volumes:
+  controller-data:
+  simulator-data:
+networks:
+  pair:
+    internal: true

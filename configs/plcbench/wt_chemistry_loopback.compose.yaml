@@ -1,0 +1,39 @@
+# Trusted TCP relays publish only to host loopback. Controller, simulator, and
+# bridge remain on the internal pair network with no published host ports.
+services:
+  controller_proxy:
+    image: plcbench-native:py311-pymodbus386
+    pull_policy: never
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ${PLCBENCH_ROOT:?set PLCBENCH_ROOT}/scripts/plcbench_loopback_proxy.py:/proxy.py:ro
+    command: ["python", "/proxy.py", "--target", "controller:502"]
+    ports:
+      - "127.0.0.1:${PLCBENCH_WT_CONTROLLER_PORT:-19502}:502"
+    depends_on:
+      controller: {condition: service_healthy}
+    networks: [pair, host_edge]
+  simulator_proxy:
+    image: plcbench-native:py311-pymodbus386
+    pull_policy: never
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ${PLCBENCH_ROOT:?set PLCBENCH_ROOT}/scripts/plcbench_loopback_proxy.py:/proxy.py:ro
+    command: ["python", "/proxy.py", "--target", "simulator:502"]
+    ports:
+      - "127.0.0.1:${PLCBENCH_WT_SIMULATOR_PORT:-19503}:502"
+    depends_on:
+      simulator: {condition: service_healthy}
+    networks: [pair, host_edge]
+networks:
+  host_edge: {}

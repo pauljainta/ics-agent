@@ -1,0 +1,1 @@
+{"schema_version":"plcbench.adaptive-fixture/v1","fixture_id":"adaptive-local-v1","seeds":[11,23,37],"rounds":3,"evidence_origin":"adaptive_local_fixture","status":"offline_fixture","score_note":"synthetic score only; not comparable to fixed-disturbance or measured plant cells"}

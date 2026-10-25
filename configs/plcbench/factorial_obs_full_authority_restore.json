@@ -1,0 +1,1 @@
+{"schema_version":"plcbench.factorial-cell/v1","cell_id":"obs-full__authority-restore","observation_mode":"full","authority_mode":"restore","allowed_interventions":["observe","restore"],"fixture_ref":"operator_fixed_disturbance_v1.json","status":"offline_fixture"}

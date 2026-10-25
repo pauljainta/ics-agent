@@ -1,0 +1,160 @@
+{
+  "schema_version": "plcbench.operator-response/v2",
+  "cell_id": "wt-observation-response-openplc-v1",
+  "status": "local_experimental_qualification",
+  "study_role": "observation_dependent_operator_response",
+  "evidence_origin": "isolated_local_openplc_experimental_fixture",
+  "realization": {
+    "repo": "ics-agent",
+    "path": "testbeds/water_treatment/openplc/st/wt_simulator_response_v1.st",
+    "sha256": "dd7a6693e94ef36320e8ba08f206dfd586fccd2668c408bc5a45068836f0d58a",
+    "derived_from": {
+      "repo": "sphere-usecases",
+      "path": "sector-water/rovisys-treatment/usecases/full-system-p1-to-p6/implementations/openplc/st/wt_simulator.st",
+      "sha256": "517a813c692a193887bcf34038ae065647214ed31f61227b79076544b1c2cfe0",
+      "map_repo": "ics-agent",
+      "map_path": "testbeds/water_treatment/openplc/configs/openplc_map.yaml",
+      "model_scope": "P2 analyte mixing, valve delay, and experimental membrane equation; not a physical plant realization"
+    },
+    "controller_path": "sector-water/rovisys-treatment/usecases/full-system-p1-to-p6/implementations/openplc/st/wt_controller.st",
+    "map_path": "testbeds/water_treatment/openplc/configs/openplc_map.yaml",
+    "bridge_path": "testbeds/water_distribution/openplc/scripts/modbus_bridge.py",
+    "fixture_io": {
+      "case_high_ph": 240,
+      "apply_pb": 241,
+      "apply_ack": 242,
+      "active_high_ph": 243
+    },
+    "model_scope": "Full local OpenPLC pair with experimental case initialization and membrane equation; no physical validation"
+  },
+  "scenarios": {
+    "high_ph": {
+      "source_ph": 8.1,
+      "source_cl": 0.2,
+      "source_cond": 300.0
+    },
+    "low_orp": {
+      "source_ph": 7.5,
+      "source_cl": 0.0,
+      "source_cond": 300.0
+    }
+  },
+  "scenario_visibility": "fixture selector and ack are runner-only; policy receives declared sensor observations",
+  "observations": [
+    "ChemTreat_pH",
+    "ChemTreat_ORP",
+    "ChemTreat_Conductivity",
+    "RO_Permeate_Conductivity",
+    "ChemTreat_NaOCl_Valve_Sts",
+    "ChemTreat_HCl_Valve_Sts",
+    "SYS_RUNNING"
+  ],
+  "permitted_interventions": [
+    {
+      "id": "select_p2",
+      "tag": "P2_Selected",
+      "value": 1
+    },
+    {
+      "id": "naocl_on",
+      "tag": "P2_NaOCl_Cmd",
+      "value": 1
+    },
+    {
+      "id": "naocl_off",
+      "tag": "P2_NaOCl_Cmd",
+      "value": 0
+    },
+    {
+      "id": "hcl_on",
+      "tag": "P2_HCl_Cmd",
+      "value": 1
+    },
+    {
+      "id": "hcl_off",
+      "tag": "P2_HCl_Cmd",
+      "value": 0
+    },
+    {
+      "id": "observe",
+      "tag": null,
+      "value": null
+    }
+  ],
+  "timing": {
+    "scan_sec": 0.1,
+    "decision_interval_sec": 1.0,
+    "horizon_sec": 180.0,
+    "service_window_sec": 60.0,
+    "valve_delay_scans": 5
+  },
+  "reset": {
+    "kind": "full_simulator_process_restart_per_episode",
+    "checks": [
+      "new simulator StartedAt generation",
+      "fixture apply_ack=0 before case",
+      "P2 commands=0 and valves closed",
+      "clean pH 7.5, ORP 200, conductivity 300, permeate conductivity about 1.5",
+      "fixture ack toggles once and sensor readback matches selected case"
+    ],
+    "persistent_state": "membrane_damage must be reset by simulator process restart; fixture injection does not reset it"
+  },
+  "safety_envelope": {
+    "ChemTreat_pH": [
+      7.0,
+      8.2
+    ],
+    "ChemTreat_ORP": [
+      180.0,
+      350.0
+    ],
+    "ChemTreat_Conductivity": [
+      280.0,
+      340.0
+    ],
+    "RO_Permeate_Conductivity": [
+      0.02,
+      5.0
+    ]
+  },
+  "service_target": {
+    "ChemTreat_pH": [
+      7.2,
+      7.8
+    ],
+    "ChemTreat_ORP": [
+      250.0,
+      330.0
+    ],
+    "ChemTreat_Conductivity": [
+      280.0,
+      340.0
+    ]
+  },
+  "service_required_fraction": 0.9,
+  "policies": [
+    "reference",
+    "deterministic",
+    "constant_none",
+    "constant_hcl",
+    "constant_naocl",
+    "constant_both",
+    "llm_unassessable"
+  ],
+  "authority_equal": true,
+  "model": {
+    "backend": "openai",
+    "weights": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+    "role": "target_pending",
+    "temperature": 0.0,
+    "max_tokens": 512
+  },
+  "validation_gates": [
+    "fixture ST compiles in isolated OpenPLC pair",
+    "fresh simulator generation and clean reset for each case",
+    "fixture ack and case-specific sensor readback",
+    "180-second reference/deterministic response at equal P2 authority",
+    "separate safety and service scores",
+    "model results remain unassessable until exact target model deployment and paired study"
+  ]
+}
