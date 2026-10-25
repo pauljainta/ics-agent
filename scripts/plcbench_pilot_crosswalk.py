@@ -71,8 +71,12 @@ def crosswalk_from_rescored(rescored: dict[str, Any], run_root: Path) -> dict[st
                       "flags": case_flags,
                       "reason": item.get("reason")})
     group_rows = [groups[key] for key in sorted(groups)]
+    objectives = {row["objective_source"] for row in group_rows}
     complete_pilot = (len(cases) == 30 and len(group_rows) == 6 and
-                      len({row["objective_source"] for row in group_rows}) == 3 and
+                      len(objectives) == 3 and
+                      all({row["arm"] for row in group_rows
+                           if row["objective_source"] == objective} == {"native", "matched"}
+                          for objective in objectives) and
                       all(row["attempted"] == 5 for row in group_rows))
     return {
         "schema_version": "plcbench.pilot-crosswalk/v1",
