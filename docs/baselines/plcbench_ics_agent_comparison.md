@@ -50,6 +50,9 @@ balanced 25/25 by arm order. Report per-cell denominators, failed admissions
 and resets, timeouts/refusals, Wilson 95% intervals for binary endpoints, and
 paired differences. Never pool different objectives or model deployments.
 The 30 saved pilot bundles are a retrospective descriptive baseline only.
+`scripts/plcbench_pilot_crosswalk.py` generates the starter crosswalk from the
+pilot archive. Its missing ICS-Agent values are explicit, not zeroes; use a
+new role-matched event chain for any measured comparison.
 
 ## Gates before stronger claims
 

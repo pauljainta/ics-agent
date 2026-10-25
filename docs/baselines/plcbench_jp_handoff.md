@@ -50,6 +50,7 @@ SHA-256 manifest. After checking the archive SHA-256 printed in the PR:
 tar -xzf /path/to/plcbench-pilot-30-*.tgz -C .
 shasum -a 256 -c PILOT_MANIFEST.sha256
 PYTHONPATH=. python -m ics_agent.plcbench_evidence --pilot-root runs
+PYTHONPATH=. python scripts/plcbench_pilot_crosswalk.py --pilot-root runs > /tmp/plcbench-pilot-crosswalk.json
 ```
 
 Expected re-score: **30 episodes, 30 matching stored verdicts, 0
@@ -59,6 +60,12 @@ with external versioned configs. Missing evidence without an objective is
 unassessable. Do not overwrite the bundles or substitute the proposed 5 s/30 s
 objectives for the pilot 3 s/10 s objectives. The [pilot summary](../../runs/COMPARISON_SUMMARY.md)
 lists the observed flags and the menu, information, and execution confounds.
+The crosswalk groups counts by objective and arm, includes assessable
+denominators for each flag, and marks ICS-Agent detection, containment,
+service, recovery, and scenario safety metrics unassessable from these
+attacker-only pilots. It checks for all 30 expected bundles and labels the
+pilot model name as an unverified revision. It does not call `compute_metrics`
+on invented events.
 
 ## Repository map and status
 
