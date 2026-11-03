@@ -56,3 +56,5 @@ models/local_models/*
 
 # PLCBench run bundles (reproducible artifacts, not source)
 runs/
+.runtime/
+.venv-vllm/
