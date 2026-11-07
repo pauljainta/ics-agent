@@ -36,10 +36,11 @@ from .plcbench_native import (
     NativeEpisodeResult,
     NativeEpisodeRunner,
     PlcbenchNativeActor,
+    native_transactions_from_records,
 )
 from .plcbench_sandbox import Sandbox, SandboxConfig
 from .plcbench_container import LinuxContainerSandbox, RELAY_PORT
-from .plcbench_scorer import Objective
+from .plcbench_scorer import Objective, score_episode
 
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -82,7 +83,8 @@ def require_confinement(endpoint: tuple[str, int], confinement: str | None) -> s
 
 
 def write_native_bundle(run_dir: Path, meta: Mapping[str, Any],
-                        result: NativeEpisodeResult) -> Path:
+                        result: NativeEpisodeResult, *,
+                        model_outputs: Sequence[Mapping[str, Any]] | None = None) -> Path:
     """Persist a scored native episode as a run bundle. Returns the directory."""
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +94,9 @@ def write_native_bundle(run_dir: Path, meta: Mapping[str, Any],
     (run_dir / "score.json").write_text(json.dumps(result.score.to_dict(), indent=2) + "\n")
     (run_dir / "transactions.json").write_text(json.dumps(result.transactions, indent=2) + "\n")
     (run_dir / "history.txt").write_text("\n".join(result.history) + "\n")
+    if model_outputs is not None:
+        # Raw model responses are evidence, not execution input on replay.
+        (run_dir / "model_outputs.json").write_text(json.dumps(list(model_outputs), indent=2) + "\n")
     tags = sorted({k for _, obs in result.trace for k in obs})
     with (run_dir / "trace.csv").open("w") as f:
         f.write(",".join(["t", *tags]) + "\n")
@@ -114,6 +119,8 @@ def run_native_episode(
     deployment: Mapping[str, Any] | None = None,
     experiment: Mapping[str, Any] | None = None,
     task: Mapping[str, Any] | None = None,
+    status_view: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    trace_provider: Callable[[], Sequence[tuple[float, Mapping[str, Any]]]] | None = None,
     system_prompt: str = NATIVE_SYSTEM_PROMPT,
     max_actions: int = 100,
     horizon_sec: float = 3600.0,
@@ -159,13 +166,26 @@ def run_native_episode(
         broker.stop()
         shutil.rmtree(sb_dir, ignore_errors=True)
         raise
-    actor = PlcbenchNativeActor(
-        generate, system_prompt=system_prompt,
-        task=dict(task or {"endpoint": (f"127.0.0.1:{RELAY_PORT}" if confinement == "linux-container"
-                                        else f"{host}:{port}"),
-                           "objective": asdict(objective)}),
-    )
+    task_payload = dict(task or {"objective": asdict(objective)})
+    task_payload.setdefault("target", f"127.0.0.1:{RELAY_PORT}" if confinement == "linux-container"
+                              else f"{host}:{port}")
+    actor = PlcbenchNativeActor(generate, system_prompt=system_prompt, task=task_payload)
     def run_command(kind: str, payload: str) -> str:
+        if kind in {"read_file", "write_file"}:
+            first, separator, remainder = payload.partition("\n")
+            filename = Path(first.strip())
+            if not first.strip() or filename.is_absolute() or ".." in filename.parts:
+                return "[tool failed: file path must be relative to the sandbox workdir]"
+            target = (sb_dir / filename).resolve()
+            if not target.is_relative_to(sb_dir.resolve()):
+                return "[tool failed: file path escapes sandbox workdir]"
+            if kind == "read_file":
+                if not target.is_file():
+                    return "[tool failed: file not found]"
+                return target.read_text(errors="replace")[:65536]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(remainder if separator else "")
+            return f"[wrote {filename}]"
         execution = sandbox.run(kind, payload)
         if execution.ok:
             return execution.stdout.strip()[:120]
@@ -177,11 +197,22 @@ def run_native_episode(
         run_command=run_command,
         transactions=lambda: broker.transactions,
         clock=clock,
+        status_view=status_view,
     )
     try:
         result = runner.run(actor, objective=objective, object_set=object_set,
                             max_actions=max_actions, horizon_sec=horizon_sec,
                             settle_sec=settle_sec, settle_interval_sec=settle_interval_sec)
+        if trace_provider is not None:
+            # A physical recorder runs independently while the model is thinking.
+            # Its trace, not sparse action-boundary samples, is scoring evidence.
+            result.trace = [(float(t), dict(values)) for t, values in trace_provider()]
+            result.score = score_episode(
+                process_trace=result.trace,
+                native_transactions=native_transactions_from_records(broker.transactions),
+                object_set=object_set,
+                objective=objective,
+            )
     finally:
         sandbox.cleanup()
         broker.stop()
@@ -202,7 +233,14 @@ def run_native_episode(
             result.score.to_dict()["physical"][name]["assessable"]
             for name in ("disrupt", "impact")) else "partly_unassessable"),
     }
-    write_native_bundle(run_dir, meta, result)
+    write_native_bundle(
+        run_dir, meta, result,
+        model_outputs=[
+            {"index": turn.index, "action_kind": turn.action_kind,
+             "payload": turn.payload, "raw_output": turn.raw_output}
+            for turn in actor.turns
+        ],
+    )
     physical = result.score.to_dict()["physical"]
     record = EpisodeRecord(
         episode_id=episode_id, workload=workload, profile=profile,

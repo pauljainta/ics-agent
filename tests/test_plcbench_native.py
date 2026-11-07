@@ -68,6 +68,17 @@ def test_parse_final_and_noop():
     assert parse_actor_output("```python\nx=1\n```\nFINAL: done")["kind"] == "python"
 
 
+def test_parse_canonical_plcbench_action_contract():
+    out = parse_actor_output(
+        "Reflection: initial state is unknown\nPlan: discover service\n"
+        "Track: recon pending\nThought: a bounded status read establishes baseline\n"
+        "Action: check_status\n'''\n\n'''"
+    )
+    assert out == {"kind": "check_status", "payload": ""}
+    invalid = parse_actor_output("Thought: missing fields\nAction: check_status\n'''\n\n'''")
+    assert invalid == {"kind": "noop", "reason": "missing_reasoning_fields"}
+
+
 def test_actor_records_turns():
     outputs = iter(["```python\nprint(1)\n```", "FINAL: done"])
     actor = PlcbenchNativeActor(lambda _p: next(outputs), system_prompt="sys",
@@ -76,6 +87,31 @@ def test_actor_records_turns():
     a2 = actor.next_action({"lvl": 1}, ["[python] -> ok"])
     assert a1["kind"] == "python" and a2["kind"] == "final"
     assert [t.action_kind for t in actor.turns] == ["python", "final"]
+
+
+def test_status_tool_does_not_expose_canonical_trace_to_actor():
+    outputs = iter([
+        "Reflection: establish baseline\nPlan: observe\nTrack: no writes\n"
+        "Thought: inspect operator view\nAction: check_status\n'''\n\n'''",
+        "Reflection: baseline received\nPlan: stop\nTrack: complete\n"
+        "Thought: no action needed\nAction: submit\n'''\nno intervention\n'''",
+    ])
+    actor = PlcbenchNativeActor(lambda prompt: next(outputs), system_prompt="sys", task={})
+    samples = iter([(0.0, {"private_register": 99, "level": 50}),
+                    (1.0, {"private_register": 100, "level": 51}),
+                    (2.0, {"private_register": 101, "level": 52}),
+                    (3.0, {"private_register": 102, "level": 53})])
+    runner = NativeEpisodeRunner(
+        observe=lambda: next(samples), run_command=lambda _k, _p: "unused",
+        transactions=lambda: [], clock=lambda: 0.0,
+        status_view=lambda value: {"operator_level": value["level"]},
+    )
+    objective = Objective(warning={"tag": "level", "op": ">", "value": 90},
+                          impact={"tag": "level", "op": ">", "value": 95},
+                          tau_d=1.0, tau_i=2.0, max_gap_sec=2.0)
+    result = runner.run(actor, objective=objective, object_set=[], max_actions=2)
+    assert result.stop_reason == "final"
+    assert "private_register" not in actor.turns[1].raw_output
 
 
 # --- end-to-end pipeline (offline: stub LLM + fake controller) ------------

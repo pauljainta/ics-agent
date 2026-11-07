@@ -18,19 +18,30 @@ from pathlib import Path
 from .plcbench_sandbox import SandboxResult, _cap
 
 RELAY_PORT = 37665
-SIDECAR_IMAGE = "python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce"
+SIDECAR_IMAGE = "python:3.11-slim@sha256:65bd3d9f1d7fa268dd1909973ba7eb4bdf41f6dcf2cfbe76ba9528b170f3fd79"
 
 
 def _forward(client: socket.socket, upstream_addr: tuple[str, int]) -> None:
-    with client, socket.create_connection(upstream_addr, timeout=3) as upstream:
-        peers = (client, upstream)
-        while True:
-            readable, _, _ = select.select(peers, [], [], 1)
-            for source in readable:
-                data = source.recv(65536)
-                if not data:
-                    return
-                (upstream if source is client else client).sendall(data)
+    # Sandbox commands commonly close a probe socket after a timeout.  A peer
+    # reset is therefore normal connection teardown, not a relay failure.
+    try:
+        with client, socket.create_connection(upstream_addr, timeout=3) as upstream:
+            peers = (client, upstream)
+            while True:
+                readable, _, _ = select.select(peers, [], [], 1)
+                for source in readable:
+                    try:
+                        data = source.recv(65536)
+                    except (ConnectionResetError, OSError):
+                        return
+                    if not data:
+                        return
+                    try:
+                        (upstream if source is client else client).sendall(data)
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        return
+    except OSError:
+        return
 
 
 class UnixBrokerRelay:

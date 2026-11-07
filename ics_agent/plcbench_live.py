@@ -242,6 +242,7 @@ def run_live_native_episode(
     reset: Callable[[], Any] | None = None,
     deployment: Mapping[str, Any] | None = None,
     observer_clock: Callable[[], float] = time.monotonic,
+    status_view: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     **run_kwargs: Any,
 ):
     """Run a native episode against a live OpenPLC pair, scoring simulator state.
@@ -256,16 +257,28 @@ def run_live_native_episode(
     if reset is not None:
         reset()
     observer = ModbusObserver(*simulator_endpoint, specs, clock=observer_clock)
-    return run_native_episode(
-        endpoint=controller_endpoint,
-        generate=generate,
-        observe=observer,
-        objective=objective,
-        object_set=object_set,
-        workload=workload,
-        profile=profile,
-        episode_id=episode_id,
-        run_dir=run_dir,
-        deployment=deployment,
-        **run_kwargs,
+    # The recorder owns a separate simulator connection and continues sampling
+    # while model inference or sandbox commands take tens of seconds.
+    recorder = ContinuousTraceRecorder(
+        ModbusObserver(*simulator_endpoint, specs, clock=observer_clock), interval_sec=1.0,
+        clock=observer_clock,
     )
+    recorder.start()
+    try:
+        return run_native_episode(
+            endpoint=controller_endpoint,
+            generate=generate,
+            observe=observer,
+            objective=objective,
+            object_set=object_set,
+            workload=workload,
+            profile=profile,
+            episode_id=episode_id,
+            run_dir=run_dir,
+            deployment=deployment,
+            status_view=status_view,
+            trace_provider=lambda: list(recorder.trace),
+            **run_kwargs,
+        )
+    finally:
+        recorder.stop()

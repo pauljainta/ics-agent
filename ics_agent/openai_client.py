@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Mapping
 
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
 
@@ -32,6 +32,7 @@ def openai_chat(
     max_tokens: int = 512,
     timeout: float = 180.0,
     system: str | None = None,
+    request_options: Mapping[str, Any] | None = None,
 ) -> str:
     """Call /v1/chat/completions (non-streaming) and return the message content.
 
@@ -42,13 +43,17 @@ def openai_chat(
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    body = json.dumps({
+    request_body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
-    }).encode("utf-8")
+    }
+    # Provider-specific controls are opt-in so existing vLLM/OpenAI callers
+    # retain their exact request shape.
+    request_body.update(dict(request_options or {}))
+    body = json.dumps(request_body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -64,7 +69,11 @@ def openai_chat(
     except (ValueError, json.JSONDecodeError) as exc:
         raise OpenAIError(f"server returned non-JSON: {exc}") from exc
     try:
-        return str(payload["choices"][0]["message"]["content"])
+        content = payload["choices"][0]["message"].get("content")
+        if not isinstance(content, str) or not content.strip():
+            finish = payload["choices"][0].get("finish_reason")
+            raise OpenAIError(f"completion contained no visible content (finish_reason={finish!r})")
+        return content
     except (KeyError, IndexError, TypeError) as exc:
         raise OpenAIError(f"unexpected completion shape: {payload!r}") from exc
 
