@@ -71,6 +71,14 @@ def test_system_message_prepended(server):
     assert _Stub.captured["messages"][0] == {"role": "system", "content": "be careful"}
 
 
+def test_chat_supports_direct_openai_completion_field_and_default_temperature(server):
+    openai_chat("task", model="gpt-5.5", base_url=server, temperature=None,
+                max_tokens=1536, output_token_parameter="max_completion_tokens")
+    assert _Stub.captured["max_completion_tokens"] == 1536
+    assert "max_tokens" not in _Stub.captured
+    assert "temperature" not in _Stub.captured
+
+
 def test_chat_raises_on_http_error(server):
     with pytest.raises(OpenAIError):
         openai_chat("x", model="boom", base_url=server)

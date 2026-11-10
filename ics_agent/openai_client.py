@@ -28,8 +28,9 @@ def openai_chat(
     model: str,
     base_url: str = DEFAULT_BASE_URL,
     api_key: str | None = None,
-    temperature: float = 0.0,
+    temperature: float | None = 0.0,
     max_tokens: int = 512,
+    output_token_parameter: str = "max_tokens",
     timeout: float = 180.0,
     system: str | None = None,
     request_options: Mapping[str, Any] | None = None,
@@ -43,13 +44,16 @@ def openai_chat(
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+    if output_token_parameter not in {"max_tokens", "max_completion_tokens"}:
+        raise ValueError("output_token_parameter must be max_tokens or max_completion_tokens")
     request_body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "stream": False,
     }
+    if temperature is not None:
+        request_body["temperature"] = temperature
+    request_body[output_token_parameter] = max_tokens
     # Provider-specific controls are opt-in so existing vLLM/OpenAI callers
     # retain their exact request shape.
     request_body.update(dict(request_options or {}))

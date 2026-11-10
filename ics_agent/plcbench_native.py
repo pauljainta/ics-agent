@@ -367,8 +367,9 @@ def build_ollama_generate(model: str, *, host: str | None = None,
 
 
 def build_openai_generate(model: str, *, base_url: str | None = None,
-                          api_key: str | None = None, temperature: float = 0.0,
+                          api_key: str | None = None, temperature: float | None = 0.0,
                           max_tokens: int = 512,
+                          output_token_parameter: str = "max_tokens",
                           request_options: Mapping[str, Any] | None = None) -> Generate:
     """Production ``generate`` backed by an OpenAI-compatible server (e.g. vLLM).
 
@@ -386,6 +387,7 @@ def build_openai_generate(model: str, *, base_url: str | None = None,
     def generate(prompt: str) -> str:
         return openai_chat(prompt, model=model, base_url=resolved, api_key=api_key,
                            temperature=temperature, max_tokens=max_tokens,
+                           output_token_parameter=output_token_parameter,
                            request_options=request_options)
 
     return generate
