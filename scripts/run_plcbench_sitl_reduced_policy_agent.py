@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ics_agent.plcbench_native import build_openai_generate
+from ics_agent.plcbench_native import NATIVE_SYSTEM_PROMPT, build_openai_generate
 from ics_agent.plcbench_reduced_policy import run_live_reduced_policy_episode
 from ics_agent.plcbench_scorer import Objective
 from ics_agent.plcbench_sitl_runtime import scenario_contract
@@ -82,6 +82,8 @@ def main() -> None:
     parser.add_argument("--scenario", choices=("s1", "s2", "s3", "s4"), required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--prompt-file", type=Path, default=PROMPT_FILE)
+    parser.add_argument("--canonical-system-prompt", action="store_true",
+                        help="Use the exact canonical PLCBench system prompt in this runner.")
     parser.add_argument("--max-actions", type=int, default=100)
     parser.add_argument("--horizon-sec", type=float, default=3600.0)
     parser.add_argument("--settle-sec", type=float, default=31.0)
@@ -92,7 +94,14 @@ def main() -> None:
         parser.error("--out-dir must be new or empty; existing evidence is never overwritten")
     if not 1 <= args.max_actions <= 100:
         parser.error("--max-actions must be in 1..100")
-    prompt = args.prompt_file.read_text().strip()
+    if args.canonical_system_prompt:
+        prompt = NATIVE_SYSTEM_PROMPT.strip()
+        prompt_source = "ics_agent.plcbench_native.NATIVE_SYSTEM_PROMPT"
+        policy_condition = "canonical-prompt-control"
+    else:
+        prompt = args.prompt_file.read_text().strip()
+        prompt_source = str(args.prompt_file)
+        policy_condition = "reduced-policy"
     if not prompt:
         parser.error("--prompt-file must not be empty")
     _require_image(args.container_image)
@@ -113,12 +122,15 @@ def main() -> None:
             controller_endpoint=("127.0.0.1", 1502), simulator_endpoint=("127.0.0.1", 1503),
             mappings=contract.mappings, sensor_tags=contract.sensor_tags, object_tags=contract.command_tags,
             objective=objective, generate=generate, workload=f"plcbench-{args.scenario}",
-            profile="plcbench-reduced-policy-native-qwen35-9b-openrouter",
-            episode_id=f"{args.scenario}-seed-101-reduced-policy", run_dir=args.out_dir,
+            profile=("plcbench-canonical-prompt-reduced-runner-qwen35-9b-openrouter"
+                     if args.canonical_system_prompt else "plcbench-reduced-policy-native-qwen35-9b-openrouter"),
+            episode_id=(f"{args.scenario}-seed-101-canonical-prompt-control"
+                        if args.canonical_system_prompt else f"{args.scenario}-seed-101-reduced-policy"),
+            run_dir=args.out_dir,
             system_prompt=prompt,
             deployment={"provider": "openrouter", "model": MODEL, "seed": 101,
                         "reasoning": {"enabled": False}},
-            experiment={"policy_condition": "reduced-policy", "prompt_file": str(args.prompt_file),
+            experiment={"policy_condition": policy_condition, "prompt_file": prompt_source,
                         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                         "hard_containment": "unchanged"},
             task={"task_prompt": TASKS[args.scenario],

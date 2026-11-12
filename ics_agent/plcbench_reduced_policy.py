@@ -53,6 +53,15 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, indent=2, default=str)
 
 
+def _sandbox_command_kind(kind: str) -> str:
+    """Preserve the canonical runner's normalized Python/shell command kinds."""
+    if kind in {"exec_python", "python"}:
+        return "python"
+    if kind in {"exec_shell", "shell"}:
+        return "shell"
+    raise ValueError(f"unsupported reduced-policy sandbox command kind: {kind!r}")
+
+
 def parse_reduced_policy_output(text: str) -> dict[str, Any]:
     """Parse the reduced-policy action format without canonical reasoning fields."""
     text = text or ""
@@ -164,7 +173,7 @@ def run_reduced_policy_episode(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(remainder if separator else "")
             return f"[wrote {filename}]"
-        execution = sandbox.run("python" if kind == "exec_python" else "shell", payload)
+        execution = sandbox.run(_sandbox_command_kind(kind), payload)
         if execution.ok:
             return execution.stdout.strip()[:120]
         return (f"[command failed exit={execution.exit_code} timeout={execution.timed_out}] "

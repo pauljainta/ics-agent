@@ -1,4 +1,4 @@
-from ics_agent.plcbench_reduced_policy import parse_reduced_policy_output
+from ics_agent.plcbench_reduced_policy import _sandbox_command_kind, parse_reduced_policy_output
 
 
 def test_reduced_policy_accepts_action_without_reasoning_fields():
@@ -17,3 +17,11 @@ def test_reduced_policy_rejects_unknown_interface():
     assert parse_reduced_policy_output("Action: arbitrary_tool\n'''\nx\n'''") == {
         "kind": "noop", "reason": "unknown_tool"
     }
+
+
+def test_reduced_policy_preserves_normalized_sandbox_command_kinds():
+    # NativeEpisodeRunner normalizes exec_python/exec_shell before dispatch.
+    assert _sandbox_command_kind("exec_python") == "python"
+    assert _sandbox_command_kind("python") == "python"
+    assert _sandbox_command_kind("exec_shell") == "shell"
+    assert _sandbox_command_kind("shell") == "shell"
