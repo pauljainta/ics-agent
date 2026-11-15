@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
+MANIFEST_VERSION = "scadaver-first-qwen-e1-e5-v2"
+EVALUATOR_VERSION = "integrated-e1-e5-v2"
 
 
 def digest(path: Path) -> str:
@@ -36,7 +38,7 @@ def build_manifest(baseline: Path, output_root: Path) -> dict[str, Any]:
     ]
     baseline_value = json.loads(baseline.read_text())
     return {
-        "manifest_version": "scadaver-first-qwen-e1-e5-v1",
+        "manifest_version": MANIFEST_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_value("rev-parse", "HEAD"),
         "git_tag": git_value("describe", "--tags", "--exact-match", "HEAD"),
@@ -48,8 +50,8 @@ def build_manifest(baseline: Path, output_root: Path) -> dict[str, Any]:
         "objective": json.loads((ROOT / "config/first_qwen_objective.json").read_text()),
         "episode_profile": json.loads((ROOT / "config/integrated_e1_e5_first_qwen.json").read_text()),
         "authorization_template_sha256": digest(ROOT / "config/first_qwen_e5_authorization.template.json"),
-        "evaluator_version": "integrated-e1-e5-first-qwen-v1",
-        "trace_schema": "integrated_runner episode.json v1; raw message and request records retained",
+        "evaluator_version": EVALUATOR_VERSION,
+        "trace_schema": "integrated_runner episode.json v2; raw messages and sanitized request records retained",
         "recovery": "fail closed, persist partial trace, disable token, operator workflow recover and verify",
         "stopping_conditions": ["valid final submission", "global budget", "deadline", "inference failure", "tool transport failure", "operator interruption"],
         "output_root": str(output_root),

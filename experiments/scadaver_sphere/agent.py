@@ -53,15 +53,36 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
     recovery_attempted = False
     submission_recovery_active = False
     regular_steps = max(0, max_steps - max(0, reserved_completion_steps))
+    model_call_index = 0
+    submission_tools = [
+        item for item in (tool_schemas or TOOL_SCHEMAS)
+        if item.get("function", {}).get("name") == submission_tool_name
+    ]
 
     def finish(report: dict[str, Any] | None, reason: str) -> AgentRun:
+        if isinstance(client, OpenRouterClient):
+            client.mark_termination(reason)
         return AgentRun(messages, report, reason, diagnostics, budget.snapshot() if budget else None)
 
-    def ask(*, finalization: bool = False) -> dict[str, Any]:
+    def remaining_budget_snapshot() -> dict[str, int | float] | None:
+        if not budget:
+            return None
+        remaining = budget.remaining()
+        remaining["steps"] = max(0, max_steps - step - 1)
+        if episode_deadline_seconds is not None:
+            remaining["episode_seconds"] = max(
+                0.0, episode_deadline_seconds - (time.monotonic() - started)
+            )
+        return remaining
+
+    def ask(*, finalization: bool = False,
+            recovery: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+        nonlocal model_call_index
         if budget and not budget.can_model_call():
             raise RuntimeError("model_call_budget_exhausted")
         if budget:
             budget.record_model_call()
+        model_call_index += 1
         model_messages, compacted = compact_model_context(
             messages, max_chars=max_context_chars, tail_groups=context_tail_groups
         )
@@ -74,12 +95,40 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
                 "model_chars": sum(len(json.dumps(item, sort_keys=True)) for item in model_messages),
             })
         if isinstance(client, OpenRouterClient):
-            response = client.chat(model_messages, tool_schemas or TOOL_SCHEMAS,
-                                   max_tokens=final_submission_max_tokens if finalization else None)
+            requested_max = final_submission_max_tokens if finalization else None
+            if finalization and budget:
+                requested_max = min(final_submission_max_tokens,
+                                    int(budget.remaining()["output_tokens"]))
+            response = client.chat(
+                model_messages,
+                submission_tools if finalization else (tool_schemas or TOOL_SCHEMAS),
+                max_tokens=requested_max,
+                call_index=model_call_index,
+                mode="submission_recovery" if recovery else (
+                    "finalization" if finalization else "investigation"
+                ),
+                remaining_budget=remaining_budget_snapshot(),
+            )
             if budget:
                 budget.ingest_request_records(client.request_records)
-            return response
-        return client.chat(model_messages, tool_schemas or TOOL_SCHEMAS)
+                client.update_last_request(remaining_budget_after=remaining_budget_snapshot())
+        else:
+            response = client.chat(
+                model_messages,
+                submission_tools if finalization else (tool_schemas or TOOL_SCHEMAS),
+            )
+        metadata = response.pop("_scadaver_response_metadata", {})
+        return response, metadata if isinstance(metadata, dict) else {}
+
+    def recovery_budget_blocker() -> str | None:
+        if not budget:
+            return None
+        if not budget.can_model_call():
+            return "model_calls"
+        for name in ("input_tokens", "output_tokens", "api_cost_usd"):
+            if name in budget.exhausted or budget.remaining()[name] <= 0:
+                return name
+        return None
 
     def add_finalization_notice(*, retry: bool = False) -> None:
         nonlocal finalization_notice_sent
@@ -103,27 +152,35 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
         if episode_deadline_seconds is not None and time.monotonic() - started >= episode_deadline_seconds:
             return finish(None, "episode_deadline_exceeded")
         finalization = step >= regular_steps or submission_recovery_active or bool(budget and budget.should_finalize())
+        recovery_turn = bool(recovery_attempted and submission_recovery_active)
         if finalization and not finalization_notice_sent:
             add_finalization_notice()
         try:
-            assistant = ask(finalization=finalization)
+            assistant, response_metadata = ask(finalization=finalization, recovery=recovery_turn)
         except Exception as exc:
             diagnostics.append({"kind": "inference_failure", "error_type": type(exc).__name__, "detail": str(exc)})
             return finish(None, "inference_error")
         messages.append({"role": "assistant", **assistant})
         calls = assistant.get("tool_calls", [])
         if not calls:
-            # OpenRouter can return a valid assistant message whose entire output
-            # budget was consumed by reasoning. Give the model one larger,
-            # submission-only opportunity; never synthesize a report ourselves.
-            if ((not isinstance(assistant.get("content"), str) or not assistant.get("content").strip())
-                    and not recovery_attempted and step + 1 < max_steps):
+            content = assistant.get("content")
+            empty = not isinstance(content, str) or not content.strip()
+            length_truncated = response_metadata.get("finish_reason") == "length"
+            if recovery_turn:
+                return finish(None, "submission_recovery_truncated" if length_truncated
+                              else "submission_recovery_invalid")
+            # Preserve the complete failed response and offer one model-authored,
+            # submission-only turn. Never synthesize or repair substantive content.
+            if ((empty or length_truncated) and not recovery_attempted and step + 1 < max_steps):
+                blocker = recovery_budget_blocker()
+                if blocker:
+                    diagnostics.append({"kind": "submission_recovery_blocked", "budget": blocker})
+                    return finish(None, "submission_recovery_budget_exhausted")
                 recovery_attempted = True
                 submission_recovery_active = True
                 add_finalization_notice(retry=True)
                 continue
             try:
-                content = assistant.get("content")
                 if not isinstance(content, str):
                     return finish(None, "invalid_final_report")
                 report = report_validator(json.loads(content))
@@ -186,6 +243,8 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
                              "content": json.dumps(result, sort_keys=True)})
             if name == submission_tool_name and result.get("status") == "accepted":
                 return finish(result["report"], "submitted_inventory")
+        if recovery_turn:
+            return finish(None, "submission_recovery_invalid")
     return finish(None, "max_steps")
 
 

@@ -80,6 +80,22 @@ class EpisodeBudget:
     def should_finalize(self) -> bool:
         return bool(self.exhausted) or not self.can_model_call()
 
+    def remaining(self) -> dict[str, int | float]:
+        """Return a secret-free snapshot of capacity before the next request."""
+        return {
+            "model_calls": max(0, self.limits.max_model_calls - self.model_calls),
+            "tool_calls": max(0, self.limits.max_tool_calls - self.tool_calls),
+            "input_tokens": max(0, self.limits.max_input_tokens - self.input_tokens),
+            "output_tokens": max(0, self.limits.max_output_tokens - self.output_tokens),
+            "network_observation_seconds": max(
+                0.0, self.limits.max_network_observation_seconds - self.network_observation_seconds
+            ),
+            "time_series_samples": max(
+                0, self.limits.max_time_series_samples - self.time_series_samples
+            ),
+            "api_cost_usd": max(0.0, self.limits.max_api_cost_usd - self.api_cost_usd),
+        }
+
     def snapshot(self) -> dict[str, Any]:
         return {"limits": asdict(self.limits), "usage": {
             "model_calls": self.model_calls,

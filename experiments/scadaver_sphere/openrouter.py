@@ -32,7 +32,9 @@ class OpenRouterClient:
             self.request_records = []
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *,
-             max_tokens: int | None = None) -> dict[str, Any]:
+             max_tokens: int | None = None, call_index: int | None = None,
+             mode: str = "investigation",
+             remaining_budget: dict[str, int | float] | None = None) -> dict[str, Any]:
         key = os.environ.get(self.api_key_env)
         if not key:
             raise OpenRouterError(f"required environment variable {self.api_key_env} is not set")
@@ -44,6 +46,16 @@ class OpenRouterClient:
         request = Request(self.base_url, data=payload, method="POST", headers={
             "Authorization": f"Bearer {key}", "Content-Type": "application/json",
         })
+        record_context = {
+            "model_call_index": call_index,
+            "mode": mode,
+            "model": self.model,
+            "provider": None,
+            "requested_max_tokens": effective_max_tokens,
+            "remaining_budget_before": remaining_budget,
+            "remaining_budget_after": None,
+            "termination_reason": None,
+        }
         body: dict[str, Any] | None = None
         for attempt in range(self.retries + 1):
             result: Queue[object] = Queue(maxsize=1)
@@ -60,12 +72,16 @@ class OpenRouterClient:
             try:
                 outcome = result.get(timeout=self.request_timeout)
             except Exception:
-                self.request_records.append({"attempt": attempt + 1, "latency_seconds": round(time.monotonic() - started, 3), "status": "deadline_exceeded"})
+                self.request_records.append({**record_context, "attempt": attempt + 1,
+                                             "latency_seconds": round(time.monotonic() - started, 3),
+                                             "status": "deadline_exceeded"})
                 if attempt == self.retries:
                     raise OpenRouterError("OpenRouter request exceeded the per-request deadline")
                 continue
             if isinstance(outcome, BaseException):
-                record = {"attempt": attempt + 1, "latency_seconds": round(time.monotonic() - started, 3), "status": "transport_error", "error_type": type(outcome).__name__}
+                record = {**record_context, "attempt": attempt + 1,
+                          "latency_seconds": round(time.monotonic() - started, 3),
+                          "status": "transport_error", "error_type": type(outcome).__name__}
                 if isinstance(outcome, HTTPError):
                     record["http_status"] = outcome.code
                     self.request_records.append(record)
@@ -78,7 +94,9 @@ class OpenRouterClient:
             choice = body.get("choices", [{}])[0]
             message = choice.get("message") if isinstance(choice, dict) else None
             tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
-            self.request_records.append({
+            completion_details = (body.get("usage") or {}).get("completion_tokens_details") or {}
+            record = {
+                **record_context,
                 "attempt": attempt + 1,
                 "latency_seconds": round(time.monotonic() - started, 3),
                 "http_status": status,
@@ -87,14 +105,34 @@ class OpenRouterClient:
                 "response_id": body.get("id"),
                 "finish_reason": choice.get("finish_reason"),
                 "requested_max_tokens": effective_max_tokens,
+                "provider_limit_evidence": {
+                    "finish_reason": choice.get("finish_reason"),
+                    "completion_tokens": (body.get("usage") or {}).get("completion_tokens"),
+                },
                 "message_content_present": bool(isinstance(message, dict) and message.get("content")),
                 "tool_call_count": len(tool_calls) if isinstance(tool_calls, list) else 0,
+                "reasoning_tokens": completion_details.get("reasoning_tokens"),
                 "usage": body.get("usage"),
-            })
+            }
+            self.request_records.append(record)
             break
         if body is None:
             raise OpenRouterError("OpenRouter request failed")
         try:
-            return body["choices"][0]["message"]
+            response = dict(body["choices"][0]["message"])
+            response["_scadaver_response_metadata"] = {
+                "finish_reason": choice.get("finish_reason"),
+                "requested_max_tokens": effective_max_tokens,
+                "model_call_index": call_index,
+                "mode": mode,
+            }
+            return response
         except (KeyError, IndexError, TypeError) as exc:
             raise OpenRouterError("OpenRouter returned no assistant message") from exc
+
+    def update_last_request(self, **values: Any) -> None:
+        if self.request_records:
+            self.request_records[-1].update(values)
+
+    def mark_termination(self, reason: str) -> None:
+        self.update_last_request(termination_reason=reason)
