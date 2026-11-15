@@ -23,6 +23,14 @@ from .heterogeneous_sitl_v1.action_broker import (
 )
 from .integrated_evaluation import evaluate_integrated, load_spec
 from .openrouter import OpenRouterClient
+from .reasoning_ablation import (
+    TOOL_NAME as REASONING_TOOL_NAME,
+    ReasoningProfile,
+    ReasoningStateManager,
+    load_prompt as load_reasoning_prompt,
+    reasoning_tool_schema,
+)
+from .reasoning_metrics import compute_reasoning_diagnostics
 from .schemas import E4_TOOL_SCHEMAS
 from .transport import AccessWorkerTransport
 
@@ -66,11 +74,17 @@ def validate_report(value: Any) -> dict[str, Any]:
 
 
 class CompositeExecutor:
-    def __init__(self, transport: AccessWorkerTransport, broker: ActionBroker | None, token: str | None) -> None:
+    def __init__(self, transport: AccessWorkerTransport, broker: ActionBroker | None,
+                 token: str | None, reasoning: ReasoningStateManager | None = None) -> None:
         self.transport, self.broker, self.token = transport, broker, token
+        self.reasoning = reasoning
         self.action_requests = 0
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == REASONING_TOOL_NAME:
+            if self.reasoning is None:
+                return {"tool": name, "status": "rejected", "error": "reasoning_scaffold_disabled"}
+            return self.reasoning.execute(arguments)
         if name == "bounded_binary_output":
             if self.broker is None:
                 return {"tool": name, "status": "rejected", "error": "actions_not_authorized"}
@@ -100,9 +114,27 @@ class IntegratedMockClient:
         self.run_id = run_id
         self.action_duration_seconds = action_duration_seconds
         self.calls = 0
+        self.reasoning_recorded = False
         self.request_records = []
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        reasoning_schema = next((item for item in tools if item.get("function", {}).get("name") == REASONING_TOOL_NAME), None)
+        if reasoning_schema and not self.reasoning_recorded:
+            required = reasoning_schema["function"]["parameters"]["required"]
+            state: dict[str, Any] = {
+                "phase": "fixture_validation",
+                "evidence_ledger": [{"claim": "No network evidence has been collected yet.", "observation_ids": [], "status": "uncertain", "confidence": 0.0}],
+                "unresolved_questions": ["Which observations are needed?"],
+                "next_observations": ["Begin bounded discovery."],
+            }
+            if "hypotheses" in required:
+                state["hypotheses"] = [{"claim": "Authorized endpoints may expose distinguishable services.", "supporting_observation_ids": [], "contradicting_observation_ids": [], "evidence_needed": ["service observations"], "confidence": 0.1, "status": "active"}]
+            if "pre_action_review" in required:
+                state["pre_action_review"] = None
+            if "information_gain_selection" in required:
+                state["information_gain_selection"] = {"uncertainty": "available services", "candidate_observations": ["bounded discovery"], "selected_observation": "bounded discovery", "selection_rationale": "establishes the initial observation surface", "redundancy_risk": "none before first observation"}
+            self.reasoning_recorded = True
+            return {"tool_calls": [{"id": "mock-reasoning", "function": {"name": REASONING_TOOL_NAME, "arguments": json.dumps(state)}}]}
         sequence: list[tuple[str, dict[str, Any]]] = [
             ("discover_hosts", {"cidr": "198.18.4.0/24"}),
             ("discover_services", {"ip": "198.18.4.10", "port_set": [1502, 8080]}),
@@ -196,6 +228,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker-url", default=os.environ.get("SCADAVER_WORKER_URL")); parser.add_argument("--objective", required=True); parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=ROOT / "config/integrated_e1_e5_research.json")
+    parser.add_argument("--reasoning-config", type=Path,
+                        help="Optional B0-B4 reasoning-ablation profile")
     parser.add_argument("--evaluation-spec", type=Path, default=ROOT / "private/integrated_e1_e5_spec.json", help=argparse.SUPPRESS)
     mode = parser.add_mutually_exclusive_group(required=True); mode.add_argument("--mock", action="store_true"); mode.add_argument("--execute-live-model", action="store_true")
     parser.add_argument("--enable-actions", action="store_true")
@@ -222,6 +256,16 @@ def main() -> None:
         parser.error("deployed actions require SCADAVER_ENABLE_SITL_ACTIONS=1")
     if args.out_dir.exists() and any(args.out_dir.iterdir()): parser.error("--out-dir must be new or empty")
     config = ScenarioConfig.from_json(args.config)
+    reasoning_profile = (ReasoningProfile.from_json(args.reasoning_config)
+                         if args.reasoning_config else None)
+    if reasoning_profile:
+        expected_base = (args.reasoning_config.parent / reasoning_profile.base_config).resolve()
+        if args.config.resolve() != expected_base:
+            parser.error(
+                f"reasoning profile {reasoning_profile.condition} requires base config {expected_base}"
+            )
+    reasoning_manager = (ReasoningStateManager(reasoning_profile)
+                         if reasoning_profile and reasoning_profile.enabled else None)
     authorization = None
     if args.enable_actions:
         if not args.authorization_file:
@@ -269,7 +313,12 @@ def main() -> None:
         restoration_mode="operational_recovery" if deployed_action else "exact_snapshot",
         sleeper=action_sleeper,
     ) if action_enabled else None
-    tools = [item for item in E4_TOOL_SCHEMAS if item["function"]["name"] != "submit_objective_pathway"] + ([action_schema(config.max_action_duration_seconds)] if action_enabled else []) + [FINAL_SCHEMA]
+    tools = [item for item in E4_TOOL_SCHEMAS if item["function"]["name"] != "submit_objective_pathway"]
+    if reasoning_profile:
+        reasoning_schema = reasoning_tool_schema(reasoning_profile)
+        if reasoning_schema:
+            tools.append(reasoning_schema)
+    tools += ([action_schema(config.max_action_duration_seconds)] if action_enabled else []) + [FINAL_SCHEMA]
     client = (IntegratedMockClient(
         args.objective,
         action_enabled,
@@ -284,14 +333,19 @@ def main() -> None:
         retries=config.inference_retries,
     ))
     system_prompt = (ROOT / "prompts/integrated_system_v1.md").read_text()
+    if reasoning_profile:
+        addition = load_reasoning_prompt(reasoning_profile, ROOT)
+        if addition:
+            system_prompt += "\n\n" + addition
     task_prompt = (ROOT / "prompts/integrated_e1_e5_v1.md").read_text() + "\nObjective: " + args.objective
     try:
-        outcome = run_agent(client, CompositeExecutor(transport, broker, token), allowed_cidr=config.allowed_cidr, permitted_ports=config.permitted_ports, max_steps=config.max_steps, system_prompt=system_prompt, task_prompt=task_prompt, episode_deadline_seconds=config.episode_deadline_seconds, tool_schemas=tools, report_validator=validate_report, submission_tool_name="submit_integrated_report", final_submission_max_tokens=config.final_submission_max_output_tokens, reserved_completion_steps=config.reserved_completion_steps, budget=budget, max_context_chars=config.max_context_chars, context_tail_groups=config.context_tail_groups)
+        outcome = run_agent(client, CompositeExecutor(transport, broker, token, reasoning_manager), allowed_cidr=config.allowed_cidr, permitted_ports=config.permitted_ports, max_steps=config.max_steps, system_prompt=system_prompt, task_prompt=task_prompt, episode_deadline_seconds=config.episode_deadline_seconds, tool_schemas=tools, report_validator=validate_report, submission_tool_name="submit_integrated_report", final_submission_max_tokens=config.final_submission_max_output_tokens, reserved_completion_steps=config.reserved_completion_steps, budget=budget, max_context_chars=config.max_context_chars, context_tail_groups=config.context_tail_groups)
     finally:
         transport.close_episode()
     evaluation = evaluate_integrated(outcome.messages, outcome.report, load_spec(args.evaluation_spec), action_required=action_enabled)
     action_mode = "deployed" if deployed_action else ("fixture" if args.mock_action else "disabled")
-    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "inference_requests": client.request_records}
+    reasoning_state = reasoning_manager.snapshot() if reasoning_manager else None
+    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "inference_requests": client.request_records, "reasoning_profile": reasoning_profile.public_snapshot() if reasoning_profile else None, "reasoning_state": reasoning_state, "reasoning_diagnostics": compute_reasoning_diagnostics(outcome.messages, outcome.diagnostics, reasoning_state)}
     _write(args.out_dir / "episode.json", record)
     print(json.dumps(record["evaluation"], indent=2))
 

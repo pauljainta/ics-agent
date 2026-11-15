@@ -1,0 +1,10 @@
+{
+  "condition": "B2",
+  "version": "reasoning-ablation-v1",
+  "base_config": "../integrated_e1_e5_first_qwen.json",
+  "prompt_addition": "prompts/reasoning_ablation_v1/B2.md",
+  "evidence_ledger": true,
+  "hypothesis_verification": true,
+  "pre_action_review": false,
+  "information_gain_selection": false
+}
