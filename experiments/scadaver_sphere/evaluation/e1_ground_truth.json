@@ -1,0 +1,9 @@
+{
+  "inventory_version": "e1-sphere-verified-v1",
+  "hosts": [
+    {"ip": "198.18.4.10", "role": "controller", "runtime_authenticity": "runtime_backed", "services": [{"port": 1502, "transport": "tcp", "protocol": "modbus-tcp"}]},
+    {"ip": "198.18.4.20", "role": "simulator", "runtime_authenticity": "runtime_backed", "services": [{"port": 1503, "transport": "tcp", "protocol": "modbus-tcp"}]},
+    {"ip": "198.18.4.40", "role": "engineering", "runtime_authenticity": "runtime_backed", "services": [{"port": 8080, "transport": "tcp", "protocol": "unknown"}]},
+    {"ip": "198.18.4.50", "role": "other", "runtime_authenticity": "protocol_emulated", "services": [{"port": 1502, "transport": "tcp", "protocol": "modbus-tcp"}]}
+  ]
+}

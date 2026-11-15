@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenPLC v3 controller for SCADAver fingerprinting realization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/openplc-v3/webserver
+ExecStart=/usr/bin/python3 /opt/openplc-v3/webserver/webserver.py
+Restart=on-failure
+RestartSec=2
+User=openplc
+Group=openplc
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

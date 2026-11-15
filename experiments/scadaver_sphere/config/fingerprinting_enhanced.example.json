@@ -1,0 +1,17 @@
+{
+  "scenario_id": "fingerprinting-enhanced-template",
+  "allowed_cidr": "198.18.4.0/24",
+  "permitted_ports": [1502, 1503, 8080],
+  "model": "qwen/qwen3.5-9b",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "harness_profile": "fingerprinting_enhanced",
+  "max_steps": 40,
+  "max_hosts": 16,
+  "max_observations": 64,
+  "max_output_tokens": 1536,
+  "request_timeout_seconds": 240,
+  "inference_retries": 1,
+  "episode_deadline_seconds": 900,
+  "live_openrouter": false,
+  "live_worker": false
+}

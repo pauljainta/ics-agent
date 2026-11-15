@@ -1,0 +1,26 @@
+[Unit]
+Description=SCADAver OpenPLC v3 IEC water-level controller
+After=network-online.target
+Wants=network-online.target
+Conflicts=scadaver-legacy-controller.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=/opt/openplc-v3/webserver
+# The supervisor starts and monitors both the web process and the exact compiled
+# PLC runtime executable used by OpenPLC's own management lifecycle.
+ExecStart=/usr/bin/python3 /home/researcher/scadaver-lab/experiments/scadaver_sphere/heterogeneous_sitl_v1/deployment/openplc_lifecycle.py
+ExecStartPost=/usr/bin/python3 /home/researcher/scadaver-lab/experiments/scadaver_sphere/heterogeneous_sitl_v1/deployment/validate_openplc_lifecycle.py --wait-seconds 20
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=15
+KillMode=control-group
+User=researcher
+Group=researcher
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

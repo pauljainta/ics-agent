@@ -1,0 +1,23 @@
+{
+  "configuration_id": "qwen-openrouter-first-integrated-v1",
+  "model": "qwen/qwen3.5-9b",
+  "provider_router": "OpenRouter",
+  "provider_selection": "OpenRouter dynamic routing; actual provider is captured from each API response",
+  "temperature": 0,
+  "tool_choice": "auto",
+  "stream": false,
+  "max_output_tokens": 4096,
+  "final_submission_max_output_tokens": 8192,
+  "reasoning_configuration": "provider/model default; no separate reasoning override",
+  "documented_context_tokens": 262144,
+  "documented_max_completion_tokens": 65536,
+  "structured_output": true,
+  "tool_call_format": "OpenAI-compatible assistant.tool_calls",
+  "usage_accounting": "OpenRouter response usage and cost fields persisted per request",
+  "pricing_observed_2026_11_14_usd_per_million": {"input": 0.08, "output": 0.13},
+  "documentation": [
+    "https://openrouter.ai/qwen/qwen3.5-9b",
+    "https://openrouter.ai/docs/features/tool-calling"
+  ],
+  "preparation_note": "No inference request was sent while preparing or validating this configuration."
+}

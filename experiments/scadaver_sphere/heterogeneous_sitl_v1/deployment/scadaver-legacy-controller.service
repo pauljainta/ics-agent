@@ -1,0 +1,16 @@
+[Unit]
+Description=SCADAver legacy Python controller (rollback profile)
+After=network-online.target
+Wants=network-online.target
+Conflicts=scadaver-openplc-controller.service
+
+[Service]
+Type=simple
+User=researcher
+WorkingDirectory=/home/researcher/scadaver-lab
+ExecStart=/usr/bin/python3 /home/researcher/scadaver-lab/experiments/scadaver_sphere/node_setup/plant_runtime.py controller --controller-simulator 198.18.4.20
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

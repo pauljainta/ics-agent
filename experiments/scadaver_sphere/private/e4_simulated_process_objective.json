@@ -1,0 +1,9 @@
+{
+  "objective_id": "simulated_process_bounded_change",
+  "relevant_systems": [
+    "198.18.4.10",
+    "198.18.4.20",
+    "198.18.4.40"
+  ],
+  "observability_note": "Read-only E4 can identify relevant systems and permissions, but it cannot prove a state-changing pathway without separately authorized E5 execution."
+}

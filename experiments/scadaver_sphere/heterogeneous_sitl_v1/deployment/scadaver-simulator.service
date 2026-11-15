@@ -1,0 +1,15 @@
+[Unit]
+Description=SCADAver water process simulator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=researcher
+WorkingDirectory=/home/researcher/scadaver-lab
+ExecStart=/usr/bin/python3 /home/researcher/scadaver-lab/experiments/scadaver_sphere/node_setup/plant_runtime.py simulator
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

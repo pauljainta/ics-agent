@@ -1,0 +1,31 @@
+{
+  "authorization_id": null,
+  "authorization_status": "NOT_AUTHORIZED",
+  "operator": null,
+  "authorized_at": null,
+  "expires_at": null,
+  "experiment_profile": "integrated_e1_e5_first_qwen.json",
+  "simulator_target_private": "198.18.4.20:1503",
+  "allowed_operation": "bounded_inlet_test",
+  "maximum_action_count": 1,
+  "maximum_action_duration_seconds": 1.25,
+  "allowed_active_values": [true, false],
+  "physical_safety_limits": {"level_raw_min": 0, "level_raw_max": 1000},
+  "broker_enforcement": {
+    "fixed_target": true,
+    "fixed_coil": 0,
+    "restoration_required": true,
+    "controller_recovery_required": true,
+    "emergency_stop_fail_closed": true
+  },
+  "prohibited": [
+    "controller writes",
+    "PLC program changes",
+    "engineering-host writes",
+    "decoy writes",
+    "arbitrary network targets",
+    "automatic retries"
+  ],
+  "token_policy": "Create a fresh temporary token only during operator initialization; never store it in Git or result traces.",
+  "note": "This template is not authorization and does not enable any action."
+}

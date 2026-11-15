@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/Whispergate/SCADAVER.git",
+  "commit": "7f482a4a1d4c86f9cb766337d946a32637bb6185",
+  "purpose": "Pinned source candidate observed during the 2026-11-12 audit. Verify binary --help and license before deployment.",
+  "binary": "scadaver"
+}

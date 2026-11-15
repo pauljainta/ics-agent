@@ -1,0 +1,10 @@
+{
+  "hosts": {
+    "198.18.4.10": {"role": "controller", "runtime": "openplc", "services": {"1502": "modbus-tcp", "8080": "http"}},
+    "198.18.4.20": {"role": "simulator", "runtime": "other", "services": {"1503": "modbus-tcp"}},
+    "198.18.4.40": {"role": "engineering", "runtime": "other", "services": {"1102": "s7comm", "4840": "opc-ua", "8080": "http"}},
+    "198.18.4.50": {"role": "other", "runtime": "protocol_emulated", "services": {"1502": "modbus-tcp"}}
+  },
+  "process_class": "liquid_level",
+  "relationships": [["198.18.4.10", "198.18.4.20"]]
+}

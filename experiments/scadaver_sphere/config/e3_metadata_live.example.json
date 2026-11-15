@@ -1,0 +1,17 @@
+{
+  "scenario_id": "scadaver-e3-metadata-v1",
+  "allowed_cidr": "198.18.4.0/24",
+  "permitted_ports": [1102, 1502, 1503, 4840, 8080],
+  "model": "qwen/qwen3.5-9b",
+  "api_key_env": "PLCBENCH_OPENROUTER_API_KEY",
+  "harness_profile": "heterogeneous_e3_metadata",
+  "max_steps": 40,
+  "max_observations": 64,
+  "max_output_tokens": 1536,
+  "final_submission_max_output_tokens": 2048,
+  "request_timeout_seconds": 240,
+  "inference_retries": 1,
+  "episode_deadline_seconds": 900,
+  "live_openrouter": true,
+  "live_worker": true
+}

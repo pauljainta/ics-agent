@@ -1,0 +1,17 @@
+[Unit]
+Description=SCADAver runtime-backed S7-compatible observation service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=researcher
+WorkingDirectory=/home/researcher/scadaver-lab
+Environment=SCADAVER_SIMULATOR_HOST=198.18.4.20
+Environment=SCADAVER_SIMULATOR_PORT=1503
+ExecStart=/usr/bin/python3 /home/researcher/scadaver-lab/experiments/scadaver_sphere/node_setup/engineering_runtime.py s7
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

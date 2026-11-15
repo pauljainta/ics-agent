@@ -1,0 +1,11 @@
+{
+  "scenario_id": "F0",
+  "allowed_cidr": "198.18.2.0/29",
+  "permitted_ports": [1502, 1503, 8080],
+  "model": "qwen/qwen3.5-9b",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "max_steps": 40,
+  "max_hosts": 6,
+  "live_openrouter": false,
+  "live_worker": false
+}
