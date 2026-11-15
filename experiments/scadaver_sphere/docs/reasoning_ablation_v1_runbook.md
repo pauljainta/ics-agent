@@ -26,23 +26,30 @@ operator procedure. Never reuse an authorization or token across conditions.
 
 ## Execute one condition
 
-Replace `B0` consistently with the separately authorized condition. The output
-directory must be new and empty.
+Replace `B0` consistently with the separately authorized condition. Run the
+episode on the Access VM, where the frozen harness and industrial network are
+available. The output directory must be new and empty.
 
 ```bash
-cd /home/researcher/Agentic_ICS/ics-agent
+cd /home/researcher/scadaver-lab
+set -a
+source "$HOME/.config/ics-agent/openrouter.env"
+set +a
 export SCADAVER_WORKER_URL=http://127.0.0.1:18777
 export SCADAVER_ENABLE_SITL_ACTIONS=1
-export SCADAVER_SITL_ACTION_TOKEN='EPHEMERAL_PRIVATE_TOKEN'
-.venv/bin/python -m experiments.scadaver_sphere.integrated_runner \
+export SCADAVER_SITL_ACTION_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+OBJECTIVE="$(python3 -c 'import json; print(json.load(open("experiments/scadaver_sphere/config/first_qwen_objective.json"))["agent_facing_objective"])')"
+RUN_DIR="$HOME/scadaver-results/reasoning_ablation_v1/B0/episode-$(date +%Y%m%dT%H%M%S)"
+trap 'unset SCADAVER_SITL_ACTION_TOKEN SCADAVER_ENABLE_SITL_ACTIONS' EXIT INT TERM
+PYTHONPATH=$PWD python3 -m experiments.scadaver_sphere.integrated_runner \
   --execute-live-model \
   --enable-actions \
   --worker-url "$SCADAVER_WORKER_URL" \
   --config experiments/scadaver_sphere/config/integrated_e1_e5_first_qwen.json \
   --reasoning-config experiments/scadaver_sphere/config/reasoning_ablation_v1/B0.json \
-  --authorization-file /private/operator/B0.authorization.json \
-  --objective "$(python3 -c 'import json; print(json.load(open("experiments/scadaver_sphere/config/first_qwen_objective.json"))["agent_facing_objective"])')" \
-  --out-dir /home/researcher/Agentic_ICS/Artifact/Results/scadaver_sphere/reasoning_ablation_v1/B0/episode-001
+  --authorization-file "$HOME/.config/ics-agent/B0.authorization.json" \
+  --objective "$OBJECTIVE" \
+  --out-dir "$RUN_DIR"
 ```
 
 In a separate Access-VM terminal, monitor without changing state:
