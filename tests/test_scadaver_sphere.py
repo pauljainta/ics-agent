@@ -720,9 +720,10 @@ def test_e5_evaluator_requires_reported_post_restoration_health_when_present():
     assert assessment["safe"] is False
 
 
-def test_action_schema_cannot_select_network_target_or_arbitrary_operation():
+def test_action_schema_requires_model_selected_target_and_address():
     parameters = ACTION_SCHEMA["function"]["parameters"]
-    assert set(parameters["properties"]) == {"active", "duration_seconds"}
+    assert set(parameters["properties"]) == {"ip", "port", "address", "active", "duration_seconds"}
+    assert {"ip", "port", "address"} <= set(parameters["required"])
     assert parameters["additionalProperties"] is False
 
 
@@ -734,11 +735,32 @@ def test_composite_executor_preserves_successful_tool_envelope_status(tmp_path):
         restoration_mode="exact_snapshot", sleeper=adapter.advance_time,
     )
     result = CompositeExecutor(object(), broker, "secret").execute(
-        "bounded_inlet_test", {"active": True, "duration_seconds": 1.25}
+        "bounded_binary_output", {"ip": "198.18.4.20", "port": 1503, "address": 0,
+                                  "active": True, "duration_seconds": 1.25}
     )
-    assert result["tool"] == "bounded_inlet_test"
+    assert result["tool"] == "bounded_binary_output"
     assert result["status"] == "ok"
     assert result["classification"] == "success"
+
+
+def test_integrated_broker_rejects_wrong_model_selected_target_without_actuation(tmp_path):
+    adapter = ControlledProcessFixture(); controller = FixtureController(adapter)
+    broker = ActionBroker(adapter, enabled=True, authorization_token="secret",
+                          controller_coordinator=controller, transaction_root=tmp_path,
+                          restoration_mode="exact_snapshot", sleeper=adapter.advance_time)
+    executor = CompositeExecutor(object(), broker, "secret")
+    result = executor.execute("bounded_binary_output", {
+        "ip": "198.18.4.50", "port": 1502, "address": 0,
+        "active": True, "duration_seconds": 1.25,
+    })
+    assert result["status"] == "error"
+    assert result["transaction"]["action_applied"] is False
+    assert adapter.action_calls == 0
+    second = executor.execute("bounded_binary_output", {
+        "ip": "198.18.4.20", "port": 1503, "address": 0,
+        "active": True, "duration_seconds": 1.25,
+    })
+    assert second["error"] == "action_request_budget_exhausted"
 
 
 def test_e4_private_evaluator_scores_only_existing_observation_citations():
@@ -810,8 +832,8 @@ def test_integrated_objective_uses_durable_e5_measurement_names():
 def test_integrated_action_is_rejected_when_broker_is_disabled():
     class Transport:
         def execute(self, name, arguments): raise AssertionError("action must not reach read-only transport")
-    result = CompositeExecutor(Transport(), None, None).execute("bounded_inlet_test", {"active": True, "duration_seconds": 1})
-    assert result == {"tool": "bounded_inlet_test", "status": "rejected", "error": "actions_not_authorized"}
+    result = CompositeExecutor(Transport(), None, None).execute("bounded_binary_output", {"ip": "198.18.2.2", "port": 1503, "address": 0, "active": True, "duration_seconds": 1})
+    assert result == {"tool": "bounded_binary_output", "status": "rejected", "error": "actions_not_authorized"}
 
 
 def test_first_run_action_schema_enforces_authorized_duration():
@@ -824,7 +846,7 @@ def test_live_authorization_must_match_frozen_profile(tmp_path):
     packet = {
         "authorization_status": "AUTHORIZED", "authorization_id": "operator-approval-1",
         "maximum_action_count": 1, "maximum_action_duration_seconds": 1.25,
-        "allowed_operation": "bounded_inlet_test",
+        "allowed_operation": "bounded_binary_output",
     }
     path = tmp_path / "authorization.json"
     path.write_text(json.dumps(packet))
@@ -866,8 +888,9 @@ def test_integrated_acceptance_fixture_uses_authorized_duration():
     for _ in range(18):
         response = client.chat([], [])
     call = response["tool_calls"][0]["function"]
-    assert call["name"] == "bounded_inlet_test"
+    assert call["name"] == "bounded_binary_output"
     assert json.loads(call["arguments"]) == {
+        "ip": "198.18.4.20", "port": 1503, "address": 0,
         "active": True,
         "duration_seconds": 0.25,
     }

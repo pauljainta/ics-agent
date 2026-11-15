@@ -106,10 +106,12 @@ export SCADAVER_ENABLE_SITL_ACTIONS=1
 export SCADAVER_SITL_ACTION_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 ```
 
-The broker, schema, configuration, and authorization packet independently
-enforce one `bounded_inlet_test`, fixed private simulator/coil, maximum 1.25
-seconds, restoration, controller recovery, safe envelope, and fail-closed
-emergency behavior. No automatic action retry exists.
+The model-facing tool requires Qwen to select an endpoint, address, value, and
+duration from its evidence. The broker, schema, configuration, and authorization
+packet independently enforce one `bounded_binary_output` request, a fixed
+private simulator/coil allowlist, maximum 1.25 seconds, restoration, controller
+recovery, safe envelope, and fail-closed emergency behavior. No automatic
+action retry exists.
 
 ## D. Run exactly one continuous Qwen episode
 

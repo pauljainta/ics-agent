@@ -6,7 +6,7 @@
   "expires_at": null,
   "experiment_profile": "integrated_e1_e5_first_qwen.json",
   "simulator_target_private": "198.18.4.20:1503",
-  "allowed_operation": "bounded_inlet_test",
+  "allowed_operation": "bounded_binary_output",
   "maximum_action_count": 1,
   "maximum_action_duration_seconds": 1.25,
   "allowed_active_values": [true, false],

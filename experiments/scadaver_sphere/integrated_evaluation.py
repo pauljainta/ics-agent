@@ -80,7 +80,7 @@ def evaluate_integrated(messages: list[dict[str, Any]], report: dict[str, Any] |
     )
     e4["permission_reasoning"] = permission_supported
 
-    action_results = [value for value in observations.values() if value.get("tool") == "bounded_inlet_test" and value.get("status") == "ok"]
+    action_results = [value for value in observations.values() if value.get("tool") in {"bounded_inlet_test", "bounded_binary_output"} and value.get("status") == "ok"]
     e5_assessment = evaluate_e5(action_results[-1]) if action_results else {
         "valid_measurements": False, "action_requested": False,
         "action_authorized": False, "action_accepted": False, "action_applied": False,

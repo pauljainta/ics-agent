@@ -15,6 +15,11 @@ or causality. If you request a permitted simulation operation, assess success
 only from the returned acknowledgement, process measurements, restoration, and
 health evidence, not from the request itself.
 
+If the bounded action tool is present, select its endpoint, address, value, and
+duration only from evidence you collected. You have one action request; a wrong
+or rejected request cannot be retried. The private broker allowlist is not
+evidence and is not disclosed.
+
 When evidence is sufficient or remaining uncertainty is explicit, call the
 designated integrated submission tool exactly once. Unknown and insufficient
 evidence are valid conclusions. Do not return a prose-only final answer.

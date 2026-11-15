@@ -205,6 +205,9 @@ class ActionBroker:
         request = {"action": action, "parameters": parameters}
         if action != "bounded_inlet_test":
             return self._reject(store, request, "action is not in the simulator-only allowlist")
+        supplied_target = (parameters.get("ip"), parameters.get("port"), parameters.get("address"))
+        if any(value is not None for value in supplied_target) and supplied_target != ("198.18.4.20", 1503, 0):
+            return self._reject(store, request, "requested endpoint or address is outside the private action allowlist")
         if self.emergency_stop:
             return self._reject(store, request, "emergency stop is active")
         if self._actions >= self.max_actions:

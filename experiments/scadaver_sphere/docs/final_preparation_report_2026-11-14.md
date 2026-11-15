@@ -65,7 +65,7 @@ semantics, relationship map, or expected sequence.
 
 The tracked authorization file is a non-authorizing template. Live action mode
 requires a private packet with status `AUTHORIZED`, a unique ID, one action,
-1.25-second maximum, and `bounded_inlet_test`; mismatches fail before the
+1.25-second maximum, and `bounded_binary_output`; mismatches fail before the
 episode. The token remains ephemeral. The schema and broker independently
 enforce the same duration/action count and fixed private mapping.
 
