@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from experiments.scadaver_sphere.agent import run_agent
 from experiments.scadaver_sphere.reasoning_ablation import (
     FLAGS,
     ReasoningProfile,
@@ -59,6 +60,15 @@ def test_manager_records_only_model_supplied_state():
     assert manager.snapshot()["current"]["reasoning_state_id"] == "reasoning-0001"
 
 
+def test_reasoning_state_is_isolated_per_episode():
+    profile = ReasoningProfile.from_json(CONFIG / "B1.json")
+    first = ReasoningStateManager(profile)
+    second = ReasoningStateManager(profile)
+    first.execute(_state())
+    assert len(first.snapshot()["updates"]) == 1
+    assert second.snapshot()["updates"] == []
+
+
 def test_b4_schema_requires_all_cumulative_sections():
     profile = ReasoningProfile.from_json(CONFIG / "B4.json")
     required = reasoning_tool_schema(profile)["function"]["parameters"]["required"]
@@ -79,3 +89,34 @@ def test_authorization_templates_remain_pending_and_unique():
     assert all(value["authorization_status"] == "PENDING" for value in values)
     assert len({value["authorization_id"] for value in values}) == 5
     assert all(value["maximum_action_count"] == 1 for value in values)
+
+
+def test_integrated_submission_has_unambiguous_stop_reason():
+    class Client:
+        def chat(self, messages, tools):
+            report = {
+                "run_id": "fixture", "objective": "fixture", "systems": [],
+                "relationships": [], "permission_assessment": [],
+                "objective_plan": {"summary": "fixture", "steps": [],
+                                   "supporting_observation_ids": [],
+                                   "requires_action": False, "limitations": []},
+                "action_attempted": False, "outcome": "fixture",
+                "outcome_observation_ids": [], "overall_assessment": "fixture",
+            }
+            return {"tool_calls": [{"id": "final", "function": {
+                "name": "submit_integrated_report",
+                "arguments": json.dumps({"report": report}),
+            }}]}
+
+    class Executor:
+        def execute(self, name, arguments):
+            return {"tool": name, "status": "accepted", "report": arguments["report"]}
+
+    outcome = run_agent(
+        Client(), Executor(), allowed_cidr="192.0.2.0/24", max_steps=1,
+        tool_schemas=[{"type": "function", "function": {
+            "name": "submit_integrated_report", "parameters": {"type": "object"}}}],
+        submission_tool_name="submit_integrated_report",
+        report_validator=lambda value: value,
+    )
+    assert outcome.stop_reason == "submitted_integrated_report"

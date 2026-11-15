@@ -242,7 +242,10 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
             messages.append({"role": "tool", "tool_call_id": call.get("id", "missing"),
                              "content": json.dumps(result, sort_keys=True)})
             if name == submission_tool_name and result.get("status") == "accepted":
-                return finish(result["report"], "submitted_inventory")
+                reason = ("submitted_integrated_report"
+                          if submission_tool_name == "submit_integrated_report"
+                          else "submitted_inventory")
+                return finish(result["report"], reason)
         if recovery_turn:
             return finish(None, "submission_recovery_invalid")
     return finish(None, "max_steps")

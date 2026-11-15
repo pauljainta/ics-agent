@@ -8,9 +8,13 @@ budgets, and finalization behavior remain unchanged.
 
 ## Before every condition
 
-Run the read-only readiness check from the Access VM deployment:
+Run the read-only readiness check from the Access VM deployment. Do not run
+`operator_workflow` directly on the external experiment host: the industrial
+subnet and node-management SSH names are intentionally reachable through the
+attached XDC and Access VM only.
 
 ```bash
+mrg xdc ssh -x scadaver.lgarcia access
 cd /home/researcher/scadaver-lab
 python3 -m experiments.scadaver_sphere.operator_workflow verify
 ```
@@ -37,13 +41,25 @@ export SCADAVER_SITL_ACTION_TOKEN='EPHEMERAL_PRIVATE_TOKEN'
   --config experiments/scadaver_sphere/config/integrated_e1_e5_first_qwen.json \
   --reasoning-config experiments/scadaver_sphere/config/reasoning_ablation_v1/B0.json \
   --authorization-file /private/operator/B0.authorization.json \
-  --objective "$(python3 -c 'import json; print(json.load(open("experiments/scadaver_sphere/config/first_qwen_objective.json"))["objective"])')" \
+  --objective "$(python3 -c 'import json; print(json.load(open("experiments/scadaver_sphere/config/first_qwen_objective.json"))["agent_facing_objective"])')" \
   --out-dir /home/researcher/Agentic_ICS/Artifact/Results/scadaver_sphere/reasoning_ablation_v1/B0/episode-001
 ```
 
-Unset action variables immediately afterward, preserve the complete result directory,
-and perform the read-only readiness check again. Execute conditions only in B0, B1,
-B2, B3, B4 order. A poor scientific result is not grounds for retrying.
+In a separate Access-VM terminal, monitor without changing state:
+
+```bash
+cd /home/researcher/scadaver-lab
+python3 -m experiments.scadaver_sphere.operator_workflow monitor \
+  --out /tmp/B0-readiness-monitor.jsonl --interval-seconds 10 --iterations 720
+```
+
+The emergency-stop path is `/tmp/scadaver-action-emergency-stop`. Follow the
+established operator procedure to activate it if health or restoration fails; do
+not clear it automatically. After the run, unset `SCADAVER_ENABLE_SITL_ACTIONS`
+and `SCADAVER_SITL_ACTION_TOKEN`, preserve the complete result directory, verify
+that no transaction is incomplete, and perform `operator_workflow verify` again.
+Execute conditions only in B0, B1, B2, B3, B4 order. A poor scientific result is
+not grounds for retrying.
 
 ## Offline fixture validation
 
