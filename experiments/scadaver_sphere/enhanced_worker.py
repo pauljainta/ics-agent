@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from .policy import PolicyError
+from .tool_results import normalize_tool_result, policy_error_category
 from .worker import ReadOnlyWorker
 
 _HOLDING = re.compile(r"^\s*4\d+\s+(-?\d+)\b", re.MULTILINE)
@@ -67,15 +68,35 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
         if handler is None:
             return super().execute(name, arguments)
         if len(self.observations.values) >= self.max_observations:
-            return {"tool": name, "status": "rejected", "error": "observation_budget_exhausted"}
+            return normalize_tool_result(
+                {"tool": name, "status": "rejected", "error": "observation_budget_exhausted",
+                 "error_category": "resource_budget_exhausted",
+                 "detail": "The per-session observation budget is exhausted."},
+                tool=name, attempted=False, budget_consumed=False)
         if not self.live:
-            return self.observations.add({"tool": name, "status": "disabled", "error": "live_worker_disabled"})
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "disabled", "error": "live_worker_disabled"}),
+                tool=name, attempted=False, budget_consumed=False)
         try:
-            return handler()
+            return normalize_tool_result(handler(), tool=name)
         except PolicyError as exc:
-            return self.observations.add({"tool": name, "status": "rejected", "error": "policy_denied", "detail": str(exc)})
-        except (OSError, TimeoutError, subprocess.TimeoutExpired):
-            return self.observations.add({"tool": name, "status": "error", "error": "timeout_or_connection_failure"})
+            detail = str(exc)
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "rejected", "error": "policy_denied",
+                 "error_category": policy_error_category(detail), "detail": detail}),
+                tool=name, attempted=False, budget_consumed=False)
+        except (TimeoutError, socket.timeout, subprocess.TimeoutExpired):
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "error", "error": "connection_timeout",
+                 "error_category": "connection_timeout",
+                 "detail": "The bounded operation timed out before a complete response was received."}),
+                tool=name, attempted=True)
+        except OSError:
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "error", "error": "connection_failure",
+                 "error_category": "connection_failure",
+                 "detail": "The bounded connection or protocol operation failed."}),
+                tool=name, attempted=True)
 
     def _fingerprint_any(self, args: dict[str, Any]) -> dict[str, Any]:
         """Confirm a protocol only after a protocol-level handshake succeeds."""
@@ -113,11 +134,34 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
                     "protocol": "unknown", "error": "s7_handshake_failed",
                     "detail": "No S7 session was established. The TCP service may be unavailable or may not speak S7.",
                 })
+        if port == 8080:
+            return self._fingerprint_http(ip, port)
         return self._scadaver(
             "fingerprint_protocol",
             [self.scadaver, "scan", "--safe-mode", "--live", "-i", ip, "-p", str(port), "--protocol", "modbus"],
             ip, port,
         )
+
+    def _fingerprint_http(self, ip: str, port: int) -> dict[str, Any]:
+        """Confirm only that an HTTP response exists; never infer product identity."""
+        connection = http.client.HTTPConnection(ip, port, timeout=self.connect_timeout)
+        try:
+            connection.request("HEAD", "/", headers={
+                "User-Agent": "ICS-ReadOnly-Assessment/1.0", "Connection": "close",
+            })
+            response = connection.getresponse()
+            headers = self._safe_http_headers(response)
+            location = headers.get("location")
+            return self.observations.add({
+                "tool": "fingerprint_protocol", "status": "ok",
+                "target": {"ip": ip, "port": port}, "protocol": "http",
+                "protocol_evidence": "http_response_received", "http_status": response.status,
+                "redirect_received": response.status in {301, 302, 303, 307, 308},
+                "location": location, "redirect_followed": False,
+                "detail": "An HTTP response was received. Product and runtime identity remain unconfirmed.",
+            })
+        finally:
+            connection.close()
 
     def _consume_probe(self) -> None:
         if self.probe_operations >= self.max_probe_operations:
@@ -131,15 +175,16 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
             self._reserve_probe(ip)
             self._consume_probe()
         command_kind = "register" if register_type == "holding" else "coil"
+        collected_at = time.time()
         result = self.runner([self.scadaver, "get", "--safe-mode", "--live", "-i", ip, "-p", str(port), "--protocol", "modbus", command_kind, str(start), str(count)], self.cli_timeout)
         self._log_raw({"tool": f"read_modbus_{register_type}", "target": {"ip": ip, "port": port}, "returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
         values = parse_scadaver_values(result.stdout, register_type, count) if result.returncode == 0 else None
         if values is None:
             failure_text = f"{result.stdout}\n{result.stderr}".lower()
             error = "decoded_values_unavailable" if result.returncode == 0 else "modbus_exception" if "exception" in failure_text else "command_failed"
-            value = {"tool": f"read_modbus_{register_type}", "status": "unsupported" if result.returncode == 0 else "error", "target": {"ip": ip, "port": port}, "register_type": register_type, "start": start, "count": count, "values": None, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": error}
+            value = {"tool": f"read_modbus_{register_type}", "status": "unsupported" if result.returncode == 0 else "error", "target": {"ip": ip, "port": port}, "register_type": register_type, "start": start, "count": count, "values": None, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(collected_at)), "collected_at_unix": collected_at, "error": error}
             return self.observations.add(value) if record else value
-        value = {"tool": f"read_modbus_{register_type}", "status": "ok", "target": {"ip": ip, "port": port}, "protocol": "modbus-tcp", "register_type": register_type, "start": start, "count": count, "values": values, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        value = {"tool": f"read_modbus_{register_type}", "status": "ok", "target": {"ip": ip, "port": port}, "protocol": "modbus-tcp", "register_type": register_type, "start": start, "count": count, "values": values, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(collected_at)), "collected_at_unix": collected_at}
         return self.observations.add(value) if record else value
 
     def _sample_series(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -159,8 +204,11 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
             if index:
                 time.sleep(interval)
             reading = self._read_data_model(register_type, {"ip": ip, "port": port, "start": start, "count": count}, record=False)
-            series.append({"timestamp_utc": reading.get("timestamp_utc"), "status": reading["status"], "values": reading.get("values"), "error": reading.get("error")})
-        return self.observations.add({"tool": "sample_modbus_series", "status": "ok" if any(sample["status"] == "ok" for sample in series) else "error", "target": {"ip": ip, "port": port}, "register_type": register_type, "start": start, "count": count, "samples": series})
+            series.append({"sample_index": index, "timestamp_utc": reading.get("timestamp_utc"),
+                           "collected_at_unix": reading.get("collected_at_unix"),
+                           "status": reading["status"], "values": reading.get("values"),
+                           "error": reading.get("error")})
+        return self.observations.add({"tool": "sample_modbus_series", "status": "ok" if any(sample["status"] == "ok" for sample in series) else "error", "target": {"ip": ip, "port": port}, "register_type": register_type, "start": start, "count": count, "requested_interval_seconds": interval, "sampling_mode": "sequential_bounded", "samples": series})
 
     def _native_modbus_read(self, data_model: str, args: dict[str, Any], *, reserve: bool = True, record: bool = True) -> dict[str, Any]:
         from pymodbus.client import ModbusTcpClient
@@ -168,6 +216,7 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
         start, count = self.policy.register_range(args.get("start"), args.get("count"))
         if reserve: self._reserve_probe(ip); self._consume_probe()
         client = ModbusTcpClient(ip, port=port, timeout=self.connect_timeout)
+        collected_at = time.time()
         try:
             if not client.connect(): raise OSError("modbus_connect_failed")
             method_name = {"holding": "read_holding_registers", "input": "read_input_registers", "coil": "read_coils", "discrete": "read_discrete_inputs"}[data_model]
@@ -182,7 +231,7 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
                 value = {"tool": tool, "status": "unsupported", "target": {"ip": ip, "port": port}, "data_model": data_model, "start": start, "count": count, "values": None, "error": "modbus_exception", "detail": str(response)[:256]}
             else:
                 values = list(response.bits[:count]) if data_model in {"coil", "discrete"} else list(response.registers[:count])
-                value = {"tool": tool, "status": "ok", "target": {"ip": ip, "port": port}, "protocol": "modbus-tcp", "data_model": data_model, "start": start, "count": count, "values": values, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                value = {"tool": tool, "status": "ok", "target": {"ip": ip, "port": port}, "protocol": "modbus-tcp", "data_model": data_model, "start": start, "count": count, "values": values, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(collected_at)), "collected_at_unix": collected_at}
             return self.observations.add(value) if record else value
         finally:
             client.close()
@@ -243,6 +292,7 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
                     "target": {key: target[key] for key in ("ip", "port")},
                     "register_type": target["register_type"], "start": target["start"], "count": target["count"],
                     "timestamp_utc": reading.get("timestamp_utc"), "status": reading["status"],
+                    "collected_at_unix": reading.get("collected_at_unix"),
                     "values": reading.get("values"), "error": reading.get("error"),
                 })
             sweep_finished = time.time()
@@ -257,6 +307,8 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
             "status": "ok" if any(reading["status"] == "ok" for sweep in series for reading in sweep["readings"]) else "error",
             "targets": [{key: target[key] for key in ("ip", "port", "register_type", "start", "count")} for target in normalized],
             "samples": series,
+            "requested_interval_seconds": interval,
+            "sampling_mode": "sequential_cross_device_sweeps",
             "sampling_note": "Targets are sampled sequentially within each sweep; timestamps and measured skew are supplied.",
         })
 
@@ -295,22 +347,43 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
             try:
                 connection.request(method, current, headers={"User-Agent": "ICS-ReadOnly-Assessment/1.0", "Connection": "close"})
                 response = connection.getresponse(); raw_body = response.read(4096) if method == "GET" else b""
-                headers = {key.lower(): value[:256] for key, value in response.getheaders() if key.lower() in {"server", "content-type", "content-length", "location", "www-authenticate"}}
-                visited.append({"path": current, "status": response.status})
+                headers = self._safe_http_headers(response)
                 location = headers.get("location")
+                hop: dict[str, Any] = {"path": current, "status": response.status}
                 if response.status in {301, 302, 303, 307, 308} and location:
                     candidate = urlparse(urljoin(f"http://{ip}:{port}{current}", location))
+                    location_kind = "absolute" if urlparse(location).scheme else "relative"
+                    hop.update({"location": location, "location_kind": location_kind})
+                    visited.append(hop)
+                    if candidate.scheme not in {"http", ""}:
+                        return self.observations.add({"tool": tool, "status": "unsupported", "target": {"ip": ip, "port": port}, "http_status": response.status, "location": location, "location_kind": location_kind, "error": "unsupported_redirect_destination", "error_category": "protocol_unsupported", "detail": "Redirect destination uses an unsupported scheme.", "redirect_chain": visited, "redirect_followed": False})
                     if candidate.hostname not in {None, ip} or candidate.port not in {None, port} or not candidate.path.startswith("/"):
-                        return self.observations.add({"tool": tool, "status": "unsupported", "target": {"ip": ip, "port": port}, "error": "cross_host_redirect_blocked", "detail": "Redirect target is outside the requested host or port.", "redirect_chain": visited})
+                        return self.observations.add({"tool": tool, "status": "unsupported", "target": {"ip": ip, "port": port}, "http_status": response.status, "location": location, "location_kind": location_kind, "error": "cross_host_redirect_blocked", "error_category": "policy_rejected", "detail": "Redirect target is outside the requested host or port.", "redirect_chain": visited, "redirect_followed": False})
+                    next_path = candidate.path + (f"?{candidate.query}" if candidate.query else "")
+                    if any(item.get("path") == next_path for item in visited):
+                        return self.observations.add({"tool": tool, "status": "error", "target": {"ip": ip, "port": port}, "http_status": response.status, "location": location, "location_kind": location_kind, "error": "redirect_loop", "error_category": "redirect_loop", "detail": "The same-host redirect chain loops to an already visited path.", "redirect_chain": visited, "redirect_followed": False})
                     if len(hops) >= redirects:
-                        return self.observations.add({"tool": tool, "status": "error", "target": {"ip": ip, "port": port}, "error": "redirect_limit_reached", "detail": "The bounded same-host redirect allowance was exhausted.", "redirect_chain": visited})
-                    hops.append(location); current = candidate.path + (f"?{candidate.query}" if candidate.query else ""); continue
+                        status = "redirect" if tool == "inspect_http_service" and redirects == 0 else "error"
+                        return self.observations.add({"tool": tool, "status": status, "target": {"ip": ip, "port": port}, "http_status": response.status, "location": location, "location_kind": location_kind, "error": "redirect_not_followed" if status == "redirect" else "redirect_limit_reached", "error_category": "redirect_received" if status == "redirect" else "redirect_limit_reached", "detail": "A redirect was received but not followed by this bounded request." if status == "redirect" else "The bounded same-host redirect allowance was exhausted.", "redirect_chain": visited, "redirect_followed": False})
+                    hops.append(location); current = next_path; continue
+                visited.append(hop)
+                if response.status in {301, 302, 303, 307, 308}:
+                    return self.observations.add({"tool": tool, "status": "unsupported", "target": {"ip": ip, "port": port}, "http_status": response.status, "error": "redirect_missing_location", "error_category": "protocol_unsupported", "detail": "The HTTP redirect response did not include a usable Location header.", "redirect_chain": visited, "redirect_followed": False})
                 body = raw_body.decode("utf-8", "replace"); title = re.search(r"<title[^>]*>\s*(.{0,200}?)\s*</title>", body, re.IGNORECASE | re.DOTALL)
                 links = _visible_links(body)
-                return self.observations.add({"tool": tool, "status": "authentication_required" if response.status in {401, 403} else "ok", "target": {"ip": ip, "port": port}, "request_path": path, "final_path": current, "http_status": response.status, "headers": headers, "page_title": title.group(1) if title else None, "visible_same_host_links": links, "redirect_chain": visited, "body_excerpt": body[:1024], "visible_text_excerpt": _visible_text(body), "body_truncated": len(raw_body) >= 4096, "content_is_untrusted": True, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+                return self.observations.add({"tool": tool, "status": "authentication_required" if response.status in {401, 403} else "ok", "target": {"ip": ip, "port": port}, "request_path": path, "final_path": current, "http_status": response.status, "headers": headers, "page_title": title.group(1) if title else None, "visible_same_host_links": links, "redirect_chain": visited, "redirect_count": len(hops), "redirect_followed": bool(hops), "body_excerpt": body[:1024], "visible_text_excerpt": _visible_text(body), "body_truncated": len(raw_body) >= 4096, "content_is_untrusted": True, "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             finally:
                 connection.close()
         return self.observations.add({"tool": tool, "status": "error", "target": {"ip": ip, "port": port}, "error": "redirect_limit_reached", "redirect_chain": visited})
+
+    @staticmethod
+    def _safe_http_headers(response: Any) -> dict[str, str]:
+        allowed = {"server", "content-type", "content-length", "location", "www-authenticate"}
+        return {
+            key.lower(): value[:256]
+            for key, value in response.getheaders()
+            if key.lower() in allowed
+        }
 
     def _browse_opcua(self, args: dict[str, Any]) -> dict[str, Any]:
         ip, port = self.policy.target_ip(args.get("ip")), self.policy.port(args.get("port"))

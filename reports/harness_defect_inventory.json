@@ -1,0 +1,19 @@
+{
+  "version": "scadaver-harness-defect-inventory-v1",
+  "date": "2026-11-16",
+  "issues": [
+    {"id": "H1", "name": "HTTP inspection", "classification": "confirmed_harness_defect", "status": "resolved"},
+    {"id": "H2", "name": "State freshness", "classification": "expected_dynamic_behavior_and_interface_limitation", "status": "hardened_and_documented"},
+    {"id": "H3", "name": "Budget admission", "classification": "confirmed_harness_defect", "status": "resolved_with_provider_accounting_limitation"},
+    {"id": "H4", "name": "Tool failures", "classification": "mixed_harness_clarity_and_agent_reasoning", "status": "interface_resolved_agent_behavior_unchanged"},
+    {"id": "H5", "name": "Deployment mismatch", "classification": "confirmed_harness_defect", "status": "resolved"},
+    {"id": "H6", "name": "E5 attribution", "classification": "historical_evaluator_defect", "status": "existing_v3_fix_verified"},
+    {"id": "H7", "name": "Initial comparability", "classification": "experimental_control_limitation", "status": "recorded_not_reset"},
+    {"id": "A1", "name": "Acceptance action tool name", "classification": "acceptance_code_defect", "status": "resolved"},
+    {"id": "A2", "name": "Acceptance action schema assertion", "classification": "stale_acceptance_assertion", "status": "resolved"}
+  ],
+  "scientific_protocol_changed": false,
+  "historical_results_modified": false,
+  "live_model_calls": 0,
+  "deployed_writes": 0
+}

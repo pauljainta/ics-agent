@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from .openrouter import OpenRouterClient
-from .budgets import EpisodeBudget
+from .budgets import EpisodeBudget, ModelBudgetAdmissionError
 from .schemas import SYSTEM_PROMPT, TOOL_SCHEMAS, validate_inventory
 
 
@@ -78,11 +78,6 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
     def ask(*, finalization: bool = False,
             recovery: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
         nonlocal model_call_index
-        if budget and not budget.can_model_call():
-            raise RuntimeError("model_call_budget_exhausted")
-        if budget:
-            budget.record_model_call()
-        model_call_index += 1
         model_messages, compacted = compact_model_context(
             messages, max_chars=max_context_chars, tail_groups=context_tail_groups
         )
@@ -94,24 +89,39 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
                 "raw_chars": sum(len(json.dumps(item, sort_keys=True)) for item in messages),
                 "model_chars": sum(len(json.dumps(item, sort_keys=True)) for item in model_messages),
             })
-        if isinstance(client, OpenRouterClient):
-            requested_max = final_submission_max_tokens if finalization else None
-            if finalization and budget:
-                requested_max = min(final_submission_max_tokens,
-                                    int(budget.remaining()["output_tokens"]))
-            response = client.chat(
-                model_messages,
-                submission_tools if finalization else (tool_schemas or TOOL_SCHEMAS),
-                max_tokens=requested_max,
-                call_index=model_call_index,
-                mode="submission_recovery" if recovery else (
-                    "finalization" if finalization else "investigation"
+        selected_tools = submission_tools if finalization else (tool_schemas or TOOL_SCHEMAS)
+        requested_max = (final_submission_max_tokens if finalization else
+                         getattr(client, "max_tokens", final_submission_max_tokens))
+        if budget:
+            estimated_input = budget.conservative_token_estimate({
+                "messages": model_messages, "tools": selected_tools,
+            })
+            requested_max = min(int(requested_max or 0), int(budget.remaining()["output_tokens"]))
+            budget.admit_model_request(
+                estimated_input_tokens=estimated_input,
+                requested_output_tokens=int(requested_max or 0),
+                reserve_input_tokens=0 if finalization else estimated_input,
+                reserve_output_tokens=0 if finalization else min(
+                    final_submission_max_tokens, int(budget.remaining()["output_tokens"])
                 ),
-                remaining_budget=remaining_budget_snapshot(),
             )
-            if budget:
-                budget.ingest_request_records(client.request_records)
-                client.update_last_request(remaining_budget_after=remaining_budget_snapshot())
+            budget.record_model_call()
+        model_call_index += 1
+        if isinstance(client, OpenRouterClient):
+            try:
+                response = client.chat(
+                    model_messages, selected_tools,
+                    max_tokens=requested_max,
+                    call_index=model_call_index,
+                    mode="submission_recovery" if recovery else (
+                        "finalization" if finalization else "investigation"
+                    ),
+                    remaining_budget=remaining_budget_snapshot(),
+                )
+            finally:
+                if budget:
+                    budget.ingest_request_records(client.request_records)
+                    client.update_last_request(remaining_budget_after=remaining_budget_snapshot())
         else:
             response = client.chat(
                 model_messages,
@@ -157,6 +167,14 @@ def run_agent(client: OpenRouterClient, worker: ToolExecutor, *, allowed_cidr: s
             add_finalization_notice()
         try:
             assistant, response_metadata = ask(finalization=finalization, recovery=recovery_turn)
+        except ModelBudgetAdmissionError as exc:
+            diagnostics.append({"kind": "model_request_not_admitted", "budget": exc.resource,
+                                "detail": str(exc), "finalization": finalization})
+            if not finalization and step + 1 < max_steps:
+                submission_recovery_active = True
+                add_finalization_notice()
+                continue
+            return finish(None, "model_request_budget_not_admitted")
         except Exception as exc:
             diagnostics.append({"kind": "inference_failure", "error_type": type(exc).__name__, "detail": str(exc)})
             return finish(None, "inference_error")

@@ -15,7 +15,9 @@ from experiments.scadaver_sphere.e1_evaluation import evaluate_e1, summarize
 from experiments.scadaver_sphere.e1b_evaluation import evaluate_e1b, reliability, summarize_e1b
 from experiments.scadaver_sphere.e1b_batch import ENHANCED_PROFILE, SYSTEM_PROMPT_PATH, TASK_PROMPT_PATH, render_comparison
 from experiments.scadaver_sphere.agent import run_agent
-from experiments.scadaver_sphere.budgets import EpisodeBudget, EpisodeLimits
+from experiments.scadaver_sphere.budgets import (
+    EpisodeBudget, EpisodeLimits, ModelBudgetAdmissionError,
+)
 from experiments.scadaver_sphere.config import ScenarioConfig
 from experiments.scadaver_sphere.policy import PolicyError, ReadOnlyPolicy
 from experiments.scadaver_sphere.schemas import E2_TOOL_SCHEMAS, E3_METADATA_TOOL_SCHEMAS, E3_TELEMETRY_TOOL_SCHEMAS, E4_TOOL_SCHEMAS, ENHANCED_TOOL_SCHEMAS, RUNTIME_PROCESS_TOOL_SCHEMAS, TOOL_SCHEMAS, tool_schemas, validate_inventory, validate_objective_pathway_report, validate_runtime_process_report
@@ -26,6 +28,9 @@ from experiments.scadaver_sphere.e5_fixture import ControlledProcessFixture, Fix
 from experiments.scadaver_sphere.integrated_evaluation import evaluate_integrated
 from experiments.scadaver_sphere.integrated_runner import ACTION_SCHEMA, CompositeExecutor, IntegratedMockClient, action_schema, validate_live_authorization
 from experiments.scadaver_sphere.openrouter import OpenRouterClient
+from experiments.scadaver_sphere.production_acceptance import (
+    _broker_evaluator_acceptance, _budget_acceptance, _tool_contract_acceptance,
+)
 from experiments.scadaver_sphere.agent import compact_model_context
 from experiments.scadaver_sphere.worker import ReadOnlyWorker
 from experiments.scadaver_sphere.transport import AccessWorkerTransport, WorkerTransportError
@@ -35,6 +40,16 @@ from experiments.scadaver_sphere.heterogeneous_sitl_v1.deployment import validat
 
 def policy() -> ReadOnlyPolicy:
     return ReadOnlyPolicy.build("198.18.2.0/29", (1502, 1503, 8080), max_hosts=6)
+
+
+def test_offline_production_acceptance_components_are_fail_closed_and_safe():
+    broker, evaluator = _broker_evaluator_acceptance()
+    assert _budget_acceptance()["passed"] is True
+    assert _tool_contract_acceptance()["passed"] is True
+    assert broker["passed"] is True
+    assert evaluator["passed"] is True
+    assert broker["cases"]["no_deployed_adapter_used"] is True
+    assert broker["cases"]["no_authorization_token_created"] is True
 
 
 def test_policy_rejects_management_and_oversized_requests():
@@ -71,11 +86,13 @@ def test_worker_enforces_observation_budget():
     worker.max_observations = 1
     worker.execute("discover_hosts", {"cidr": "198.18.2.0/29"})
     result = worker.execute("discover_hosts", {"cidr": "198.18.2.0/29"})
-    assert result == {
-        "tool": "discover_hosts",
-        "status": "rejected",
-        "error": "observation_budget_exhausted",
-    }
+    assert result["tool"] == "discover_hosts"
+    assert result["status"] == "rejected"
+    assert result["error"] == "observation_budget_exhausted"
+    assert result["error_category"] == "resource_budget_exhausted"
+    assert result["operation_attempted"] is False
+    assert result["budget_consumed"] is False
+    assert result["state_change_possible"] is False
 
 
 def test_worker_uses_fixed_argument_array_for_modbus_read():
@@ -395,7 +412,97 @@ def test_http_resource_stops_bounded_redirect_loop(monkeypatch):
     worker = EnhancedReadOnlyWorker(policy(), live=True)
     result = worker.execute("inspect_http_resource", {"ip": "198.18.2.2", "port": 8080, "path": "/loop", "method": "GET", "max_redirects": 1})
     assert result["status"] == "error"
-    assert result["error"] == "redirect_limit_reached"
+    assert result["error"] == "redirect_loop"
+
+
+@pytest.mark.parametrize("code", [301, 302, 307, 308])
+def test_http_root_reports_redirect_without_following(monkeypatch, code):
+    response = type("Response", (), {
+        "status": code,
+        "read": lambda self, _limit: b"",
+        "getheaders": lambda self: [("Location", "/login"), ("X-Private", "hidden")],
+    })()
+    class Connection:
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, *_args, **_kwargs): pass
+        def getresponse(self): return response
+        def close(self): pass
+    monkeypatch.setattr(enhanced_worker.http.client, "HTTPConnection", Connection)
+    result = EnhancedReadOnlyWorker(policy(), live=True).execute(
+        "inspect_http_service", {"ip": "198.18.2.2", "port": 8080})
+    assert result["status"] == "redirect"
+    assert result["http_status"] == code
+    assert result["location"] == "/login"
+    assert result["location_kind"] == "relative"
+    assert result["redirect_followed"] is False
+    assert result["error_category"] == "redirect_received"
+
+
+def test_http_resource_follows_absolute_same_host_redirect(monkeypatch):
+    responses = iter([
+        type("Response", (), {"status": 302, "read": lambda self, _limit: b"",
+                              "getheaders": lambda self: [("Location", "http://198.18.2.2:8080/status")]})(),
+        type("Response", (), {"status": 200, "read": lambda self, _limit: b"industrial status",
+                              "getheaders": lambda self: [("Server", "generic-industrial-ui")]})(),
+    ])
+    class Connection:
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, *_args, **_kwargs): pass
+        def getresponse(self): return next(responses)
+        def close(self): pass
+    monkeypatch.setattr(enhanced_worker.http.client, "HTTPConnection", Connection)
+    worker = EnhancedReadOnlyWorker(policy(), live=True); worker.min_probe_interval = 0
+    result = worker.execute("inspect_http_resource", {
+        "ip": "198.18.2.2", "port": 8080, "path": "/", "method": "GET", "max_redirects": 1})
+    assert result["status"] == "ok"
+    assert result["final_path"] == "/status"
+    assert result["redirect_count"] == 1
+    assert result["redirect_followed"] is True
+    assert "industrial status" in result["visible_text_excerpt"]
+
+
+def test_http_redirect_rejects_unsupported_scheme(monkeypatch):
+    response = type("Response", (), {"status": 302, "read": lambda self, _limit: b"",
+                                      "getheaders": lambda self: [("Location", "ftp://198.18.2.2/file")]})()
+    class Connection:
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, *_args, **_kwargs): pass
+        def getresponse(self): return response
+        def close(self): pass
+    monkeypatch.setattr(enhanced_worker.http.client, "HTTPConnection", Connection)
+    result = EnhancedReadOnlyWorker(policy(), live=True).execute("inspect_http_resource", {
+        "ip": "198.18.2.2", "port": 8080, "path": "/", "method": "GET", "max_redirects": 1})
+    assert result["error"] == "unsupported_redirect_destination"
+    assert result["operation_executed"] is False
+
+
+def test_generic_http_fingerprint_is_protocol_specific_and_truthful(monkeypatch):
+    response = type("Response", (), {"status": 200,
+                                      "getheaders": lambda self: [("Server", "nonstandard") ]})()
+    class Connection:
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, method, path, headers): assert (method, path) == ("HEAD", "/")
+        def getresponse(self): return response
+        def close(self): pass
+    monkeypatch.setattr(enhanced_worker.http.client, "HTTPConnection", Connection)
+    result = EnhancedReadOnlyWorker(policy(), live=True).execute(
+        "fingerprint_protocol", {"ip": "198.18.2.2", "port": 8080})
+    assert result["protocol"] == "http"
+    assert result["protocol_evidence"] == "http_response_received"
+    assert "role" not in result and "runtime" not in result
+
+
+def test_http_timeout_is_distinct_and_retryable(monkeypatch):
+    class Connection:
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, *_args, **_kwargs): raise TimeoutError("fixture")
+        def close(self): pass
+    monkeypatch.setattr(enhanced_worker.http.client, "HTTPConnection", Connection)
+    result = EnhancedReadOnlyWorker(policy(), live=True).execute(
+        "inspect_http_service", {"ip": "198.18.2.2", "port": 8080})
+    assert result["error_category"] == "connection_timeout"
+    assert result["retryable"] is True
+    assert result["state_change_possible"] is False
 
 
 def test_enhanced_probe_budget_is_visible_and_never_bypassed():
@@ -408,6 +515,23 @@ def test_enhanced_probe_budget_is_visible_and_never_bypassed():
     assert first["status"] == "ok"
     assert second["status"] == "rejected"
     assert second["detail"] == "probe_budget_exhausted"
+
+
+def test_temporal_series_labels_collection_time_interval_and_sample_order(monkeypatch):
+    ticks = iter([1000.0, 1000.0, 1001.0, 1001.0])
+    monkeypatch.setattr(enhanced_worker.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(enhanced_worker.time, "sleep", lambda _seconds: None)
+    runner = lambda argv, timeout: subprocess.CompletedProcess(argv, 0, stdout="40001 10\n", stderr="")
+    worker = EnhancedReadOnlyWorker(policy(), live=True, runner=runner)
+    worker.min_probe_interval = 0
+    result = worker.execute("sample_modbus_series", {
+        "ip": "198.18.2.2", "port": 1502, "register_type": "holding",
+        "start": 0, "count": 1, "samples": 2, "interval_seconds": 1,
+    })
+    assert result["sampling_mode"] == "sequential_bounded"
+    assert result["requested_interval_seconds"] == 1
+    assert [sample["sample_index"] for sample in result["samples"]] == [0, 1]
+    assert all(isinstance(sample["collected_at_unix"], float) for sample in result["samples"])
 
 
 def test_evaluator_counts_unsupported_authenticity_claims():
@@ -575,9 +699,47 @@ def test_submission_recovery_respects_exhausted_global_budget(blocked):
     client = Client()
     result = run_agent(client, ReadOnlyWorker(policy(), live=False),
                        allowed_cidr="198.18.2.0/29", max_steps=3, budget=budget)
-    assert result.stop_reason == "submission_recovery_budget_exhausted"
-    assert client.calls == 1
-    assert result.diagnostics[-1] == {"kind": "submission_recovery_blocked", "budget": blocked}
+    if blocked == "api_cost_usd":
+        assert result.stop_reason == "model_request_budget_not_admitted"
+        assert client.calls == 0
+        assert result.diagnostics[-1]["kind"] == "model_request_not_admitted"
+        assert result.diagnostics[-1]["budget"] == blocked
+    else:
+        assert result.stop_reason == "submission_recovery_budget_exhausted"
+        assert client.calls == 1
+        assert result.diagnostics[-1] == {"kind": "submission_recovery_blocked", "budget": blocked}
+
+
+def test_model_budget_admission_reserves_finalization_capacity():
+    budget = EpisodeBudget(EpisodeLimits(max_input_tokens=100, max_output_tokens=30))
+    with pytest.raises(ModelBudgetAdmissionError, match="only 100 remain") as failure:
+        budget.admit_model_request(estimated_input_tokens=60, requested_output_tokens=10,
+                                   reserve_input_tokens=60, reserve_output_tokens=10)
+    assert failure.value.resource == "input_tokens"
+    assert budget.model_calls == 0
+
+
+def test_model_budget_rejects_zero_output_allowance():
+    budget = EpisodeBudget(EpisodeLimits(max_output_tokens=1))
+    budget.output_tokens = 1
+    with pytest.raises(ModelBudgetAdmissionError) as failure:
+        budget.admit_model_request(estimated_input_tokens=1, requested_output_tokens=0)
+    assert failure.value.resource == "output_tokens"
+
+
+def test_provider_usage_is_authoritative_and_crossing_is_explicit():
+    budget = EpisodeBudget(EpisodeLimits(max_input_tokens=100, max_output_tokens=100))
+    budget.ingest_request_records([
+        {"attempt": 1, "status": "transport_error"},
+        {"attempt": 2, "usage": {"prompt_tokens": 101, "completion_tokens": 2}},
+    ])
+    snapshot = budget.snapshot()
+    assert snapshot["usage"]["provider_attempts"] == 2
+    assert snapshot["usage"]["unknown_usage_attempts"] == 1
+    assert snapshot["crossings"] == [{
+        "resource": "input_tokens", "actual": 101, "limit": 100, "over_by": 1,
+    }]
+    assert "input_tokens" in snapshot["exhausted"]
 
 
 def test_submission_recovery_cannot_execute_another_e5_request():
@@ -625,9 +787,14 @@ def test_openrouter_records_sanitized_provider_and_budget_metadata(monkeypatch):
         def __exit__(self, *args): return None
         def read(self): return json.dumps(body).encode()
 
+    requests = []
     monkeypatch.setenv("TEST_OPENROUTER_KEY", "secret-not-for-records")
-    monkeypatch.setattr(openrouter_module, "urlopen", lambda request, timeout: Response())
-    client = OpenRouterClient("qwen/qwen3.5-9b", "TEST_OPENROUTER_KEY", max_tokens=4096)
+    def open_fixture(request, timeout):
+        requests.append(json.loads(request.data))
+        return Response()
+    monkeypatch.setattr(openrouter_module, "urlopen", open_fixture)
+    client = OpenRouterClient("qwen/qwen3.5-9b", "TEST_OPENROUTER_KEY", max_tokens=4096,
+                              seed=101)
     response = client.chat([], [], max_tokens=8192, call_index=7,
                            mode="submission_recovery",
                            remaining_budget={"model_calls": 3, "api_cost_usd": 1.0})
@@ -639,6 +806,12 @@ def test_openrouter_records_sanitized_provider_and_budget_metadata(monkeypatch):
     assert record["model_call_index"] == 7
     assert record["mode"] == "submission_recovery"
     assert record["requested_max_tokens"] == 8192
+    assert record["seed"] == 101
+    assert requests == [{
+        "model": "qwen/qwen3.5-9b", "messages": [], "tools": [],
+        "tool_choice": "auto", "temperature": 0, "max_tokens": 8192,
+        "stream": False, "seed": 101,
+    }]
     assert record["provider"] == "fixture-provider"
     assert record["reasoning_tokens"] == 2
     assert record["termination_reason"] == "submission_recovery_truncated"
@@ -722,6 +895,19 @@ def test_action_broker_is_disabled_by_default_and_restores_simulator_state(tmp_p
     assert result["during"]["inlet"] is True
     assert result["restored"]["inlet"] is False
     assert result["restoration_verified"] is True
+
+
+def test_composite_executor_rejects_action_without_touching_closed_transport():
+    class ClosedTransport:
+        def execute(self, _name, _arguments):
+            raise AssertionError("disabled action must not reach worker transport")
+    result = CompositeExecutor(ClosedTransport(), None, None).execute(
+        "bounded_binary_output",
+        {"ip": "198.18.2.2", "port": 1502, "address": 0,
+         "active": True, "duration_seconds": 1},
+    )
+    assert result == {"tool": "bounded_binary_output", "status": "rejected",
+                      "error": "actions_not_authorized"}
 
 
 def test_action_broker_rejects_arbitrary_operations_and_unbounded_duration():

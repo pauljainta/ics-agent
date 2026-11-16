@@ -163,15 +163,19 @@ def validate(worker_url: str, validation_root: Path, *, production_smoke: bool) 
     if readiness.get("TESTBED_READY") is not True:
         raise CampaignError("operator readiness did not report TESTBED_READY=true")
     smoke = None
+    acceptance_record = None
     if production_smoke:
-        smoke_root = validation_root / f"mock-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-        smoke = _run_json([sys.executable, "-m", "experiments.scadaver_sphere.production_path_smoke",
-                           "--worker-url", worker_url, "--out-root", str(smoke_root)])
-        if smoke.get("passed") is not True:
-            raise CampaignError("production-path smoke failed")
+        acceptance_root = validation_root / f"acceptance-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        smoke = _run_json([sys.executable, "-m", "experiments.scadaver_sphere.production_acceptance",
+                           "--worker-url", worker_url, "--out-dir", str(acceptance_root)],
+                          timeout=1800)
+        acceptance_record = acceptance_root / "production_acceptance.json"
+        if smoke.get("EXPERIMENT_READY") is not True or not acceptance_record.is_file():
+            raise CampaignError("comprehensive production acceptance failed")
     result = {"generated_at": _now(), "deployment_ready": True, "testbed_ready": True,
               "profiles": profiles, "parity": parity, "readiness": readiness,
               "production_smoke": smoke, "openrouter_calls": 0, "deployed_writes": 0,
+              "acceptance_record": str(acceptance_record) if acceptance_record else None,
               "live_experiment_executed": False}
     _atomic_json(validation_root / "deployment_acceptance.json", result)
     return result
@@ -247,7 +251,8 @@ def generate_reports(results_root: Path, output: Path) -> dict[str, Any]:
 
 
 def run_condition(condition: str, results_root: Path, worker_url: str,
-                  authorization_file: Path | None = None) -> dict[str, Any]:
+                  authorization_file: Path | None = None,
+                  seed: int | None = None) -> dict[str, Any]:
     if condition not in CONDITIONS:
         raise CampaignError("RUN condition must be B1-B4")
     existing = inventory(results_root)["conditions"][condition]["episodes"]
@@ -271,7 +276,7 @@ def run_condition(condition: str, results_root: Path, worker_url: str,
         if packet.get("authorization_status") != "AUTHORIZED" or packet.get("condition") != condition:
             raise CampaignError("authorization packet is not active for the selected condition")
     validation = validate(worker_url, results_root / "engineering_validation",
-                          production_smoke=False)
+                          production_smoke=True)
     profile = ROOT / f"config/reasoning_ablation_v1/{condition}.json"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = results_root / condition / f"{condition}-{timestamp}"
@@ -292,10 +297,14 @@ def run_condition(condition: str, results_root: Path, worker_url: str,
                "--execute-live-model", "--enable-actions", "--worker-url", worker_url,
                "--config", str(ROOT / "config/integrated_e1_e5_first_qwen.json"),
                "--reasoning-config", str(profile), "--authorization-file", str(private_authorization),
+               "--acceptance-record", str(validation["acceptance_record"]),
                "--objective", objective, "--out-dir", str(out_dir)]
+    if seed is not None:
+        command += ["--seed", str(seed)]
     state_path = results_root / "campaign_state.json"
     _atomic_json(state_path, {"status": "RUNNING", "condition": condition,
                               "episode_id": out_dir.name, "started_at": _now(),
+                              "inference_seed": seed,
                               "authorization_id": packet.get("authorization_id"),
                               "command": shlex.join(command)})
     try:
@@ -318,6 +327,7 @@ def run_condition(condition: str, results_root: Path, worker_url: str,
         (out_dir / "runner_stderr.log").write_text(completed.stderr)
     status = "COMPLETED" if completed.returncode == 0 and post.get("TESTBED_READY") is True else "TECHNICAL_ABORT"
     final = {"status": status, "condition": condition, "episode_id": out_dir.name,
+             "inference_seed": seed,
              "runner_returncode": completed.returncode, "testbed_ready": post.get("TESTBED_READY"),
              "authorization_revoked": True, "ended_at": _now(),
              "validation_manifest": validation.get("parity", {}).get("manifest_sha256")}
@@ -337,6 +347,8 @@ def main() -> int:
     parser.add_argument("--execute-live", action="store_true")
     parser.add_argument("--condition", choices=CONDITIONS)
     parser.add_argument("--authorization-file", type=Path)
+    parser.add_argument("--seed", type=int,
+                        help="Optional OpenRouter sampling seed for this condition")
     args = parser.parse_args()
     state_path = args.state_file or args.results_root / "campaign_state.json"
     validation_root = args.validation_root or args.results_root / "engineering_validation"
@@ -354,7 +366,7 @@ def main() -> int:
                 if not args.condition:
                     raise CampaignError("RUN requires --condition")
                 result = run_condition(args.condition, args.results_root, args.worker_url,
-                                       args.authorization_file)
+                                       args.authorization_file, args.seed)
     except CampaignError as exc:
         print(json.dumps({"status": "FAILED_CLOSED", "error": str(exc)}, indent=2))
         return 2

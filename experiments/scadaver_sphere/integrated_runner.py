@@ -231,11 +231,15 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=ROOT / "config/integrated_e1_e5_research.json")
     parser.add_argument("--reasoning-config", type=Path,
                         help="Optional B0-B4 reasoning-ablation profile")
+    parser.add_argument("--seed", type=int,
+                        help="Optional OpenRouter sampling seed recorded with the episode")
     parser.add_argument("--evaluation-spec", type=Path,
                         default=ROOT / "private/integrated_e1_e5_first_qwen_spec_v2.json",
                         help=argparse.SUPPRESS)
     parser.add_argument("--deployment-manifest", type=Path, default=DEFAULT_MANIFEST,
                         help="Frozen production source/config parity manifest")
+    parser.add_argument("--acceptance-record", type=Path,
+                        help="Required fail-closed production acceptance artifact for live inference")
     mode = parser.add_mutually_exclusive_group(required=True); mode.add_argument("--mock", action="store_true"); mode.add_argument("--execute-live-model", action="store_true")
     parser.add_argument("--enable-actions", action="store_true")
     parser.add_argument("--authorization-file", type=Path,
@@ -264,6 +268,20 @@ def main() -> None:
         parity = verify_runtime_manifest(args.deployment_manifest)
     except (OSError, ValueError, KeyError, json.JSONDecodeError, DeploymentParityError) as exc:
         parser.error(f"production deployment parity failed: {exc}")
+    if args.execute_live_model:
+        if not args.acceptance_record or not args.acceptance_record.is_file():
+            parser.error("live inference requires --acceptance-record from production_acceptance")
+        try:
+            acceptance = json.loads(args.acceptance_record.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"production acceptance record is unreadable: {exc}")
+        if acceptance.get("EXPERIMENT_READY") is not True:
+            parser.error("production acceptance record does not report EXPERIMENT_READY=true")
+        if acceptance.get("openrouter_calls") != 0 or acceptance.get("deployed_writes") != 0:
+            parser.error("production acceptance record is not a no-model/no-write gate")
+        accepted_manifest = (acceptance.get("parity") or {}).get("manifest_sha256")
+        if accepted_manifest != parity.get("manifest_sha256"):
+            parser.error("production acceptance manifest does not match current runtime")
     config = ScenarioConfig.from_json(args.config)
     reasoning_profile = (ReasoningProfile.from_json(args.reasoning_config)
                          if args.reasoning_config else None)
@@ -341,6 +359,7 @@ def main() -> None:
         request_timeout=config.request_timeout_seconds,
         max_tokens=config.max_output_tokens,
         retries=config.inference_retries,
+        seed=args.seed,
     ))
     system_prompt = (ROOT / "prompts/integrated_system_v1.md").read_text()
     if reasoning_profile:
@@ -355,7 +374,7 @@ def main() -> None:
     evaluation = evaluate_integrated(outcome.messages, outcome.report, load_spec(args.evaluation_spec), action_required=action_enabled)
     action_mode = "deployed" if deployed_action else ("fixture" if args.mock_action else "disabled")
     reasoning_state = reasoning_manager.snapshot() if reasoning_manager else None
-    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "inference_requests": client.request_records, "reasoning_profile": reasoning_profile.public_snapshot() if reasoning_profile else None, "reasoning_state": reasoning_state, "reasoning_diagnostics": compute_reasoning_diagnostics(outcome.messages, outcome.diagnostics, reasoning_state)}
+    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "inference_seed": args.seed, "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "inference_requests": client.request_records, "reasoning_profile": reasoning_profile.public_snapshot() if reasoning_profile else None, "reasoning_state": reasoning_state, "reasoning_diagnostics": compute_reasoning_diagnostics(outcome.messages, outcome.diagnostics, reasoning_state)}
     _write(args.out_dir / "episode.json", record)
     print(json.dumps(record["evaluation"], indent=2))
 

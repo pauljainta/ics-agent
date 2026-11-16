@@ -25,6 +25,7 @@ class OpenRouterClient:
     request_timeout: float = 240.0
     max_tokens: int = 1536
     retries: int = 1
+    seed: int | None = None
     request_records: list[dict[str, Any]] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -42,6 +43,8 @@ class OpenRouterClient:
         request_body = {"model": self.model, "messages": messages, "tools": tools,
                         "tool_choice": "auto", "temperature": 0, "max_tokens": effective_max_tokens,
                         "stream": False}
+        if self.seed is not None:
+            request_body["seed"] = self.seed
         payload = json.dumps(request_body).encode()
         request = Request(self.base_url, data=payload, method="POST", headers={
             "Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -52,6 +55,7 @@ class OpenRouterClient:
             "model": self.model,
             "provider": None,
             "requested_max_tokens": effective_max_tokens,
+            "seed": self.seed,
             "remaining_budget_before": remaining_budget,
             "remaining_budget_after": None,
             "termination_reason": None,

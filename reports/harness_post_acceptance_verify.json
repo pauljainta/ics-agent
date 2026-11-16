@@ -1,0 +1,495 @@
+{
+  "TESTBED_READY": true,
+  "acceptance_returncode": 0,
+  "deployed_acceptance": {
+    "closed_loop": {
+      "controller_decisions_observed": true,
+      "passed": true,
+      "process_response": {
+        "confirmed_intervals": 11,
+        "inconsistent_intervals": 0,
+        "indeterminate_intervals": 0,
+        "intervals": [
+          {
+            "after_scan": 63060,
+            "applied_inlet_evidence": true,
+            "before_scan": 63059,
+            "coil_after": true,
+            "coil_before": true,
+            "coil_transition_observed": false,
+            "elapsed_seconds": 0.4020047187805176,
+            "expected_level_delta": 12,
+            "flow_after": 120,
+            "level_error": 0,
+            "observed_level_delta": 12,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63061,
+            "applied_inlet_evidence": false,
+            "before_scan": 63060,
+            "coil_after": false,
+            "coil_before": true,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.0064325332641602,
+            "expected_level_delta": -7,
+            "flow_after": 0,
+            "level_error": 0,
+            "observed_level_delta": -7,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63062,
+            "applied_inlet_evidence": true,
+            "before_scan": 63061,
+            "coil_after": true,
+            "coil_before": false,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.0065743923187256,
+            "expected_level_delta": 12,
+            "flow_after": 120,
+            "level_error": 0,
+            "observed_level_delta": 12,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63063,
+            "applied_inlet_evidence": false,
+            "before_scan": 63062,
+            "coil_after": false,
+            "coil_before": true,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.0064191818237305,
+            "expected_level_delta": -7,
+            "flow_after": 0,
+            "level_error": 0,
+            "observed_level_delta": -7,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63064,
+            "applied_inlet_evidence": false,
+            "before_scan": 63063,
+            "coil_after": false,
+            "coil_before": false,
+            "coil_transition_observed": false,
+            "elapsed_seconds": 1.0063631534576416,
+            "expected_level_delta": -7,
+            "flow_after": 0,
+            "level_error": 0,
+            "observed_level_delta": -7,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63065,
+            "applied_inlet_evidence": true,
+            "before_scan": 63064,
+            "coil_after": true,
+            "coil_before": false,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.0062975883483887,
+            "expected_level_delta": 12,
+            "flow_after": 120,
+            "level_error": 0,
+            "observed_level_delta": 12,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63066,
+            "applied_inlet_evidence": false,
+            "before_scan": 63065,
+            "coil_after": false,
+            "coil_before": true,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.0065014362335205,
+            "expected_level_delta": -7,
+            "flow_after": 0,
+            "level_error": 0,
+            "observed_level_delta": -7,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63067,
+            "applied_inlet_evidence": false,
+            "before_scan": 63066,
+            "coil_after": false,
+            "coil_before": false,
+            "coil_transition_observed": false,
+            "elapsed_seconds": 1.0064408779144287,
+            "expected_level_delta": -7,
+            "flow_after": 0,
+            "level_error": 0,
+            "observed_level_delta": -7,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63068,
+            "applied_inlet_evidence": true,
+            "before_scan": 63067,
+            "coil_after": true,
+            "coil_before": false,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.006206750869751,
+            "expected_level_delta": 12,
+            "flow_after": 120,
+            "level_error": 0,
+            "observed_level_delta": 12,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63069,
+            "applied_inlet_evidence": false,
+            "before_scan": 63068,
+            "coil_after": false,
+            "coil_before": true,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.006185531616211,
+            "expected_level_delta": -7,
+            "flow_after": 0,
+            "level_error": 0,
+            "observed_level_delta": -7,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          },
+          {
+            "after_scan": 63070,
+            "applied_inlet_evidence": true,
+            "before_scan": 63069,
+            "coil_after": true,
+            "coil_before": false,
+            "coil_transition_observed": true,
+            "elapsed_seconds": 1.0062141418457031,
+            "expected_level_delta": 12,
+            "flow_after": 120,
+            "level_error": 0,
+            "observed_level_delta": 12,
+            "outcome": "CONSISTENT",
+            "reason": "single_scan_flow_and_level_agree",
+            "scan_delta": 1
+          }
+        ],
+        "minimum_confirmed_intervals": 3,
+        "missing_samples": 0,
+        "outcome": "CONSISTENT",
+        "reason": "sufficient_confirmed_single_scan_intervals"
+      },
+      "process_response_consistent": true,
+      "process_response_outcome": "CONSISTENT",
+      "samples": [
+        {
+          "controller_input_level": 443,
+          "read_started": 1794870104.6710908,
+          "simulator_flow": 0,
+          "simulator_inlet": true,
+          "simulator_level": 443,
+          "simulator_scan_counter": 63059,
+          "time": 1794870104.7510788
+        },
+        {
+          "controller_input_level": 443,
+          "read_started": 1794870105.1523466,
+          "simulator_flow": 120,
+          "simulator_inlet": true,
+          "simulator_level": 455,
+          "simulator_scan_counter": 63060,
+          "time": 1794870105.1530836
+        },
+        {
+          "controller_input_level": 455,
+          "read_started": 1794870106.1584623,
+          "simulator_flow": 0,
+          "simulator_inlet": false,
+          "simulator_level": 448,
+          "simulator_scan_counter": 63061,
+          "time": 1794870106.159516
+        },
+        {
+          "controller_input_level": 448,
+          "read_started": 1794870107.165072,
+          "simulator_flow": 120,
+          "simulator_inlet": true,
+          "simulator_level": 460,
+          "simulator_scan_counter": 63062,
+          "time": 1794870107.1660905
+        },
+        {
+          "controller_input_level": 460,
+          "read_started": 1794870108.1714873,
+          "simulator_flow": 0,
+          "simulator_inlet": false,
+          "simulator_level": 453,
+          "simulator_scan_counter": 63063,
+          "time": 1794870108.1725097
+        },
+        {
+          "controller_input_level": 453,
+          "read_started": 1794870109.1778655,
+          "simulator_flow": 0,
+          "simulator_inlet": false,
+          "simulator_level": 446,
+          "simulator_scan_counter": 63064,
+          "time": 1794870109.1788728
+        },
+        {
+          "controller_input_level": 446,
+          "read_started": 1794870110.1841795,
+          "simulator_flow": 120,
+          "simulator_inlet": true,
+          "simulator_level": 458,
+          "simulator_scan_counter": 63065,
+          "time": 1794870110.1851704
+        },
+        {
+          "controller_input_level": 458,
+          "read_started": 1794870111.1902776,
+          "simulator_flow": 0,
+          "simulator_inlet": false,
+          "simulator_level": 451,
+          "simulator_scan_counter": 63066,
+          "time": 1794870111.1916718
+        },
+        {
+          "controller_input_level": 451,
+          "read_started": 1794870112.1970644,
+          "simulator_flow": 0,
+          "simulator_inlet": false,
+          "simulator_level": 444,
+          "simulator_scan_counter": 63067,
+          "time": 1794870112.1981127
+        },
+        {
+          "controller_input_level": 444,
+          "read_started": 1794870113.203314,
+          "simulator_flow": 120,
+          "simulator_inlet": true,
+          "simulator_level": 456,
+          "simulator_scan_counter": 63068,
+          "time": 1794870113.2043195
+        },
+        {
+          "controller_input_level": 456,
+          "read_started": 1794870114.20951,
+          "simulator_flow": 0,
+          "simulator_inlet": false,
+          "simulator_level": 449,
+          "simulator_scan_counter": 63069,
+          "time": 1794870114.210505
+        },
+        {
+          "controller_input_level": 449,
+          "read_started": 1794870115.2156975,
+          "simulator_flow": 120,
+          "simulator_inlet": true,
+          "simulator_level": 461,
+          "simulator_scan_counter": 63070,
+          "time": 1794870115.2167192
+        }
+      ],
+      "scan_progress": true,
+      "synchronized": true
+    },
+    "controller_lifecycle": {
+      "activation": {
+        "active_program_file": "339003.st",
+        "active_program_name": "SCADAver water level controller",
+        "core_sha256": "120035e2ed832e12dcc128ac63eddca89eecc6c4a7e566c8c3e4923b8a0d4d9d",
+        "modbus_port": "1502",
+        "program_registered": true,
+        "start_run_mode": "false"
+      },
+      "core_process_count": 1,
+      "core_processes": [
+        {
+          "command": "/opt/openplc-v3/webserver/core/openplc",
+          "pid": 44413
+        }
+      ],
+      "http_8080_open": true,
+      "legacy_controller_state": "inactive",
+      "modbus_1502_open": true,
+      "openplc_controller_state": "active",
+      "passed": true,
+      "returncode": 0,
+      "runtime_rpc_43628_open": true,
+      "time": 1794870101.40655
+    },
+    "modbus": {
+      "controller": {
+        "coils": [
+          false
+        ],
+        "connected": true,
+        "registers": [
+          0,
+          0,
+          0
+        ]
+      },
+      "decoy": {
+        "coils": [
+          true
+        ],
+        "connected": true,
+        "registers": [
+          42,
+          42,
+          42
+        ]
+      },
+      "simulator": {
+        "coils": [
+          true
+        ],
+        "connected": true,
+        "registers": [
+          445,
+          0,
+          63056
+        ]
+      }
+    },
+    "opcua": {
+      "ok": true
+    },
+    "s7": {
+      "db1_first_bytes": [
+        1,
+        194,
+        0,
+        0,
+        0
+      ],
+      "ok": true
+    },
+    "simulator_temporal_observation": {
+      "changed": true,
+      "first": {
+        "coils": [
+          true
+        ],
+        "connected": true,
+        "registers": [
+          445,
+          0,
+          63056
+        ]
+      },
+      "second": {
+        "coils": [
+          true
+        ],
+        "connected": true,
+        "registers": [
+          443,
+          0,
+          63059
+        ]
+      }
+    },
+    "tcp": {
+      "controller": true,
+      "controller_http": true,
+      "decoy": true,
+      "engineering": true,
+      "opcua": true,
+      "s7": true,
+      "simulator": true
+    }
+  },
+  "status": {
+    "TESTBED_READY": true,
+    "action_environment": {
+      "emergency_latch_present": false,
+      "enabled": false,
+      "token_present": false
+    },
+    "openplc_lifecycle": {
+      "activation": {
+        "active_program_file": "339003.st",
+        "active_program_name": "SCADAver water level controller",
+        "core_sha256": "120035e2ed832e12dcc128ac63eddca89eecc6c4a7e566c8c3e4923b8a0d4d9d",
+        "modbus_port": "1502",
+        "program_registered": true,
+        "start_run_mode": "false"
+      },
+      "core_process_count": 1,
+      "core_processes": [
+        {
+          "command": "/opt/openplc-v3/webserver/core/openplc",
+          "pid": 44413
+        }
+      ],
+      "http_8080_open": true,
+      "legacy_controller_state": "inactive",
+      "modbus_1502_open": true,
+      "openplc_controller_state": "active",
+      "passed": true,
+      "returncode": 0,
+      "runtime_rpc_43628_open": true,
+      "time": 1794870101.1510904
+    },
+    "ports": {
+      "controller_http": true,
+      "controller_modbus": true,
+      "engineering_http": true,
+      "engineering_opcua": true,
+      "engineering_s7": true,
+      "independent_modbus": true,
+      "simulator_modbus": true
+    },
+    "services": {
+      "engineering_http": "active",
+      "engineering_opcua": "active",
+      "engineering_s7": "active",
+      "legacy_controller": "inactive",
+      "openplc": "active",
+      "simulator": "active"
+    },
+    "timestamp": 1794870101.1562345,
+    "worker": {
+      "healthy": true,
+      "profile": "heterogeneous_e4",
+      "tool_count": 19,
+      "tool_names": [
+        "discover_hosts",
+        "discover_services",
+        "fingerprint_protocol",
+        "read_modbus_holding",
+        "read_modbus_coils",
+        "get_previous_observations",
+        "read_modbus_input_registers",
+        "read_modbus_discrete_inputs",
+        "explore_modbus_map",
+        "sample_modbus_series",
+        "probe_device_identity",
+        "inspect_http_service",
+        "inspect_http_resource",
+        "sample_cross_device_series",
+        "browse_opcua_nodes",
+        "read_opcua_values",
+        "read_s7_data",
+        "inspect_s7_metadata",
+        "submit_objective_pathway"
+      ]
+    }
+  }
+}

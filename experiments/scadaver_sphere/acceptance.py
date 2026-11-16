@@ -70,7 +70,7 @@ def tool_coverage(worker_url: str) -> dict[str, Any]:
             acceptable = (
                 result.get("status") == "ok"
                 or (name == "probe_device_identity" and result.get("status") == "unsupported")
-                or (name == "inspect_http_service" and result.get("error") == "redirect_limit_reached")
+                or (name == "inspect_http_service" and result.get("status") == "redirect")
             )
             rows.append({"tool": name, "registered": name in start.get("tool_names", []),
                          "schema_closed": schemas[name].get("additionalProperties") is False,
@@ -106,7 +106,7 @@ def fault_security(worker_url: str) -> dict[str, Any]:
         case("management_port", "discover_services", {"ip": "198.18.4.10", "port_set": [22]}, {"rejected"})
         case("unknown_tool", "shell", {"command": "id"}, {"rejected"})
         case("invalid_modbus_range", "read_modbus_holding", {"ip": "198.18.4.20", "port": 1503, "start": 0, "count": 100}, {"rejected"})
-        case("wrong_protocol", "fingerprint_protocol", {"ip": "198.18.4.10", "port": 8080}, {"error", "unsupported", "rejected"})
+        case("http_protocol_fingerprint", "fingerprint_protocol", {"ip": "198.18.4.10", "port": 8080}, {"ok", "redirect"})
         case("opcua_object_not_value", "read_opcua_values", {"ip": "198.18.4.40", "port": 4840, "node_ids": ["ns=2;i=1"]}, {"error"})
         case("first_rate_limited_pair", "read_modbus_holding", {"ip": "198.18.4.50", "port": 1502, "start": 0, "count": 1}, {"ok"})
         case("rate_limit", "read_modbus_holding", {"ip": "198.18.4.50", "port": 1502, "start": 0, "count": 1}, {"rejected"})
@@ -118,7 +118,11 @@ def fault_security(worker_url: str) -> dict[str, Any]:
     except WorkerTransportError:
         stale_rejected = True
     cases.append({"case": "closed_session_reuse", "status": "rejected" if stale_rejected else "accepted", "passed": stale_rejected})
-    disabled_action = CompositeExecutor(transport, None, None).execute("bounded_inlet_test", {"active": True, "duration_seconds": 1})
+    disabled_action = CompositeExecutor(transport, None, None).execute(
+        "bounded_binary_output",
+        {"ip": "198.18.4.20", "port": 1503, "address": 0,
+         "active": True, "duration_seconds": 1},
+    )
     cases.append({"case": "action_disabled_by_default", "status": disabled_action.get("status"), "passed": disabled_action.get("status") == "rejected"})
     schema_names = {item["function"]["name"] for item in E4_TOOL_SCHEMAS}
     no_dangerous_tools = not any(any(token in name for token in ("shell", "write", "upload", "reboot")) for name in schema_names)
@@ -133,9 +137,19 @@ def fault_security(worker_url: str) -> dict[str, Any]:
     http_read_only = set(http_schema["properties"]["method"]["enum"]) == {"GET", "HEAD"}
     cases.append({"case": "http_read_only_methods", "status": "ok" if http_read_only else "error", "passed": http_read_only})
     from .integrated_runner import ACTION_SCHEMA
-    action_fields = set(ACTION_SCHEMA["function"]["parameters"]["properties"])
-    action_isolation = action_fields == {"active", "duration_seconds"}
-    cases.append({"case": "action_schema_has_no_network_target", "status": "ok" if action_isolation else "error", "passed": action_isolation})
+    action_parameters = ACTION_SCHEMA["function"]["parameters"]
+    action_fields = set(action_parameters["properties"])
+    action_isolation = (
+        action_fields == {"ip", "port", "address", "active", "duration_seconds"}
+        and set(action_parameters["required"]) == action_fields
+        and action_parameters.get("additionalProperties") is False
+        and action_parameters["properties"]["duration_seconds"].get("maximum") == 5.0
+    )
+    cases.append({
+        "case": "action_schema_closed_and_bounded",
+        "status": "ok" if action_isolation else "error", "passed": action_isolation,
+        "note": "Endpoint selection remains model-authored; the private broker enforces the fixed allowlist.",
+    })
     return {"cases": cases, "passed": all(case["passed"] for case in cases)}
 
 

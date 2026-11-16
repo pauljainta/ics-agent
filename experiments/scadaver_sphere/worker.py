@@ -13,6 +13,7 @@ from typing import Any, Callable, Sequence
 
 from .policy import PolicyError, ReadOnlyPolicy
 from .schemas import validate_inventory, validate_runtime_process_report, validate_objective_pathway_report
+from .tool_results import normalize_tool_result, policy_error_category
 
 
 Runner = Callable[[Sequence[str], float], subprocess.CompletedProcess[str]]
@@ -61,7 +62,12 @@ class ReadOnlyWorker:
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if len(self.observations.values) >= self.max_observations:
-            return {"tool": name, "status": "rejected", "error": "observation_budget_exhausted"}
+            return normalize_tool_result(
+                {"tool": name, "status": "rejected", "error": "observation_budget_exhausted",
+                 "error_category": "resource_budget_exhausted",
+                 "detail": "The per-session observation budget is exhausted."},
+                tool=name, attempted=False, budget_consumed=False,
+            )
         handlers = {
             "discover_hosts": self._discover_hosts,
             "discover_services": self._discover_services,
@@ -77,15 +83,35 @@ class ReadOnlyWorker:
         }
         handler = handlers.get(name)
         if handler is None:
-            return self.observations.add({"tool": name, "status": "rejected", "error": "unsupported_operation"})
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "rejected", "error": "unsupported_operation",
+                 "error_category": "protocol_unsupported"}), tool=name, attempted=False,
+                budget_consumed=False)
         try:
-            return handler(arguments)
+            return normalize_tool_result(handler(arguments), tool=name)
         except PolicyError as exc:
-            return self.observations.add({"tool": name, "status": "rejected", "error": "policy_denied", "detail": str(exc)})
-        except (OSError, subprocess.TimeoutExpired):
-            return self.observations.add({"tool": name, "status": "error", "error": "timeout_or_connection_failure"})
+            detail = str(exc)
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "rejected", "error": "policy_denied",
+                 "error_category": policy_error_category(detail), "detail": detail}),
+                tool=name, attempted=False, budget_consumed=False)
+        except (TimeoutError, subprocess.TimeoutExpired):
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "error", "error": "connection_timeout",
+                 "error_category": "connection_timeout",
+                 "detail": "The bounded operation timed out before a complete response was received."}),
+                tool=name, attempted=True)
+        except OSError:
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "error", "error": "connection_failure",
+                 "error_category": "connection_failure",
+                 "detail": "The bounded connection or protocol operation failed."}),
+                tool=name, attempted=True)
         except ValueError as exc:
-            return self.observations.add({"tool": name, "status": "rejected", "error": "invalid_submission", "detail": str(exc)})
+            return normalize_tool_result(self.observations.add(
+                {"tool": name, "status": "rejected", "error": "invalid_submission",
+                 "error_category": "invalid_arguments", "detail": str(exc)}),
+                tool=name, attempted=False, budget_consumed=False)
 
     def _discover_hosts(self, args: dict[str, Any]) -> dict[str, Any]:
         self.policy.host_cidr(args.get("cidr"))

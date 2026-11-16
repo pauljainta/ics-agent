@@ -175,6 +175,20 @@ def baseline() -> dict[str, Any]:
     closed_loop = result.get("deployed_acceptance", {}).get("closed_loop", {})
     samples = closed_loop.get("samples", [])
     result["initial_process_state"] = samples[-1] if samples else None
+    result["initial_condition_record"] = {
+        "captured_at_unix": time.time(),
+        "source": "deployed_read_only_closed_loop_validation",
+        "process_sample": samples[-1] if samples else None,
+        "openplc_core": result.get("status", {}).get("openplc_lifecycle"),
+        "service_health": result.get("status", {}).get("ports"),
+        "controller_mode": "automatic_running" if result.get("TESTBED_READY") else "unconfirmed",
+        "process_phase": "continuously_evolving_uncontrolled_phase",
+        "reset_performed": False,
+        "limitations": [
+            "No deployed process reset was authorized for this engineering validation.",
+            "Comparable future runs must select and record an approved initial-state band.",
+        ],
+    }
     result["initial_condition_policy"] = (
         "continuous_evolving_state_recorded_no_deterministic_reset_claimed")
     return result
