@@ -1011,7 +1011,7 @@ def test_integrated_evaluator_counts_rejected_broker_request_without_execution()
         action_required=True,
     )
     action = result["e5_execution"]
-    assert result["evaluator_version"] == "integrated-e1-e5-v2"
+    assert result["evaluator_version"] == "integrated-e1-e5-causal-v3"
     assert action["action_requested"] is True
     assert action["action_authorized"] is False
     assert action["action_accepted"] is False
@@ -1028,9 +1028,11 @@ def test_integrated_evaluator_distinguishes_applied_from_unapplied_actions():
     }}
     applied = {
         "tool": "bounded_binary_output", "status": "ok",
-        "before": {"inlet": False, "level_raw": 450, "flow_raw": 0, "scan_counter": 1},
-        "during": {"inlet": True, "level_raw": 462, "flow_raw": 120, "scan_counter": 2},
+        "before": {"inlet": False, "level_raw": 450, "flow_raw": 0, "scan_counter": 1, "time": 1.0},
+        "acknowledged": {"inlet": True, "level_raw": 450, "flow_raw": 120, "scan_counter": 1, "time": 1.1},
+        "during": {"inlet": True, "level_raw": 462, "flow_raw": 120, "scan_counter": 2, "time": 2.0},
         "restored": {"inlet": False, "level_raw": 450, "flow_raw": 0, "scan_counter": 1},
+        "resolved_active": True,
         "action_requested": True, "action_authorized": True,
         "action_accepted": True, "action_applied": True,
         "physical_response_observed": True, "physical_objective_achieved": True,

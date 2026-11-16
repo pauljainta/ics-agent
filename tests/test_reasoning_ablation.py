@@ -1,9 +1,16 @@
 import json
+import importlib.metadata
 from pathlib import Path
 
 import pytest
 
 from experiments.scadaver_sphere.agent import run_agent
+from experiments.scadaver_sphere.deployment_parity import (
+    DEFAULT_MANIFEST,
+    DeploymentParityError,
+    verify_runtime_manifest,
+)
+from experiments.scadaver_sphere.production_path_smoke import synthetic_checks
 from experiments.scadaver_sphere.reasoning_ablation import (
     FLAGS,
     ReasoningProfile,
@@ -120,3 +127,28 @@ def test_integrated_submission_has_unambiguous_stop_reason():
         report_validator=lambda value: value,
     )
     assert outcome.stop_reason == "submitted_integrated_report"
+
+
+def test_production_runtime_manifest_matches_current_sources(tmp_path):
+    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    manifest["dependencies"] = {
+        package: importlib.metadata.version(package)
+        for package in manifest["dependencies"]
+    }
+    path = tmp_path / "local-environment.json"
+    path.write_text(json.dumps(manifest))
+    assert verify_runtime_manifest(path)["passed"] is True
+
+
+def test_production_runtime_manifest_fails_closed_on_source_mismatch(tmp_path):
+    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    manifest["files"]["agent.py"] = "0" * 64
+    path = tmp_path / "mismatched.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(DeploymentParityError, match="file_hash:agent.py"):
+        verify_runtime_manifest(path)
+
+
+def test_production_path_synthetic_acceptance():
+    result = synthetic_checks()
+    assert result["passed"] is True

@@ -12,6 +12,7 @@ from typing import Any
 from .agent import run_agent
 from .budgets import EpisodeBudget, EpisodeLimits
 from .config import ScenarioConfig
+from .deployment_parity import DEFAULT_MANIFEST, DeploymentParityError, verify_runtime_manifest
 from .e23_runner import _write, preflight
 from .e5_runner import DeterministicAdapter, verify_post_restoration_health
 from .e5_fixture import ControlledProcessFixture, FixtureController
@@ -230,7 +231,11 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=ROOT / "config/integrated_e1_e5_research.json")
     parser.add_argument("--reasoning-config", type=Path,
                         help="Optional B0-B4 reasoning-ablation profile")
-    parser.add_argument("--evaluation-spec", type=Path, default=ROOT / "private/integrated_e1_e5_spec.json", help=argparse.SUPPRESS)
+    parser.add_argument("--evaluation-spec", type=Path,
+                        default=ROOT / "private/integrated_e1_e5_first_qwen_spec_v2.json",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--deployment-manifest", type=Path, default=DEFAULT_MANIFEST,
+                        help="Frozen production source/config parity manifest")
     mode = parser.add_mutually_exclusive_group(required=True); mode.add_argument("--mock", action="store_true"); mode.add_argument("--execute-live-model", action="store_true")
     parser.add_argument("--enable-actions", action="store_true")
     parser.add_argument("--authorization-file", type=Path,
@@ -255,6 +260,10 @@ def main() -> None:
     if (args.enable_actions or args.mock_live_action) and os.environ.get("SCADAVER_ENABLE_SITL_ACTIONS") != "1":
         parser.error("deployed actions require SCADAVER_ENABLE_SITL_ACTIONS=1")
     if args.out_dir.exists() and any(args.out_dir.iterdir()): parser.error("--out-dir must be new or empty")
+    try:
+        parity = verify_runtime_manifest(args.deployment_manifest)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, DeploymentParityError) as exc:
+        parser.error(f"production deployment parity failed: {exc}")
     config = ScenarioConfig.from_json(args.config)
     reasoning_profile = (ReasoningProfile.from_json(args.reasoning_config)
                          if args.reasoning_config else None)
@@ -280,6 +289,7 @@ def main() -> None:
                            config.reserved_completion_steps)
     budget = EpisodeBudget(limits)
     args.out_dir.mkdir(parents=True)
+    _write(args.out_dir / "deployment_parity.json", parity)
     _write(args.out_dir / "preflight.json", preflight(args.worker_url, "heterogeneous_e4"))
     transport = AccessWorkerTransport(args.worker_url)
     transport.start_episode("heterogeneous_e4", required_tool_names={item["function"]["name"] for item in E4_TOOL_SCHEMAS})

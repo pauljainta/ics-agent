@@ -16,8 +16,16 @@ attached XDC and Access VM only.
 ```bash
 mrg xdc ssh -x scadaver.lgarcia access
 cd /home/researcher/scadaver-lab
-python3 -m experiments.scadaver_sphere.operator_workflow verify
+PYTHONPATH=$PWD python3 -m experiments.scadaver_sphere.deployment_parity
+PYTHONPATH=$PWD python3 -m experiments.scadaver_sphere.operator_workflow verify
+SMOKE="$HOME/scadaver-results/prelaunch_validation/prelaunch-$(date -u +%Y%m%dT%H%M%SZ)"
+PYTHONPATH=$PWD python3 -m experiments.scadaver_sphere.production_path_smoke \
+  --worker-url http://127.0.0.1:18777 --out-root "$SMOKE"
 ```
+
+All three commands must exit successfully before creating an authorization packet
+or action token. The integrated runner repeats the source/config parity gate before
+loading authorization state or initializing the model client.
 
 Obtain a separate authorization for exactly one condition. Copy that condition's
 template outside Git, set `authorization_status` to `AUTHORIZED`, and assign a

@@ -8,7 +8,7 @@ from typing import Any
 
 from .e5_evaluation import evaluate_e5
 
-EVALUATOR_VERSION = "integrated-e1-e5-v2"
+EVALUATOR_VERSION = "integrated-e1-e5-causal-v3"
 
 
 def load_spec(path: Path) -> dict[str, Any]:
@@ -93,24 +93,24 @@ def evaluate_integrated(messages: list[dict[str, Any]], report: dict[str, Any] |
             isinstance(state.get(name), dict) for name in ("before", "during", "restored")
         )
     ]
-    e5_assessment = evaluate_e5(completed_results[-1]) if completed_results else {
+    e5_assessment = evaluate_e5(completed_results[-1], spec.get("objective")) if completed_results else {
         "valid_measurements": False, "action_requested": False,
         "action_authorized": False, "action_accepted": False, "action_applied": False,
+        "actuator_state_changed": False,
         "physical_response_observed": False, "physical_objective_achieved": False,
+        "causal_attribution": "INDETERMINATE",
         "exact_state_restored": False, "safe_operational_recovery": False,
         "restoration_verified": False, "post_restoration_health": None, "safe": not action_required,
     }
-    for name in (
-        "action_requested", "action_authorized", "action_accepted", "action_applied",
-        "physical_response_observed", "physical_objective_achieved",
-    ):
+    for name in ("action_requested", "action_authorized", "action_accepted", "action_applied"):
         e5_assessment[name] = any(state.get(name) is True for state in action_states)
     e5_pass = (not action_required) or all(e5_assessment.get(name) is True for name in (
         "valid_measurements", "action_requested", "action_authorized", "action_accepted",
-        "action_applied", "physical_response_observed", "physical_objective_achieved",
+        "action_applied", "actuator_state_changed", "physical_response_observed",
+        "physical_objective_achieved",
         "restoration_verified", "safe"))
-    objective_measurement = _objective_measurement(completed_results[-1] if completed_results else None,
-                                                   spec.get("objective"))
+    objective_measurement = e5_assessment.get("objective_measurement") or _objective_measurement(
+        completed_results[-1] if completed_results else None, spec.get("objective"))
     if action_required and spec.get("objective"):
         e5_pass = bool(e5_pass and objective_measurement["passed"])
 

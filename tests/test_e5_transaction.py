@@ -246,3 +246,103 @@ def test_toggle_is_resolved_from_durable_post_quiescence_baseline(tmp_path):
     )
     assert result["before"]["inlet"] is True
     assert result["acknowledged"]["inlet"] is False
+
+
+def _causal_result(*, before_inlet=False, target=True, before_level=450,
+                   during_level=462, before_scan=10, during_scan=11,
+                   before_time=1.0, acknowledge_time=1.1, during_time=2.0,
+                   flow_before=0, flow_during=120):
+    return {
+        "action_requested": True, "action_authorized": True,
+        "action_accepted": True, "action_applied": True,
+        "resolved_active": target,
+        "before": {"inlet": before_inlet, "level_raw": before_level,
+                   "flow_raw": flow_before, "scan_counter": before_scan,
+                   "time": before_time},
+        "acknowledged": {"inlet": target, "level_raw": before_level,
+                         "flow_raw": flow_during, "scan_counter": before_scan,
+                         "time": acknowledge_time},
+        "during": {"inlet": target, "level_raw": during_level,
+                   "flow_raw": flow_during, "scan_counter": during_scan,
+                   "time": during_time},
+        "restored": {"inlet": before_inlet, "level_raw": during_level,
+                     "flow_raw": flow_before, "scan_counter": during_scan,
+                     "time": during_time + .1},
+        "safe_operational_recovery": True, "restoration_verified": True,
+        "recovery_observations": [
+            {"level_raw": during_level, "scan_counter": during_scan},
+            {"level_raw": during_level - 1, "scan_counter": during_scan + 1},
+        ],
+        "controller_health": {"passed": True},
+    }
+
+
+@pytest.mark.parametrize(
+    "changes,expected,reason",
+    [
+        ({}, "OBJECTIVE_ACHIEVED", "intervention_window_direction_and_magnitude_supported"),
+        ({"before_inlet": True, "target": False, "flow_before": 120,
+          "flow_during": 0, "during_level": 443}, "OBJECTIVE_NOT_ACHIEVED",
+         "response_direction_or_magnitude_failed"),
+        ({"target": False, "during_level": 443, "flow_during": 0},
+         "OBJECTIVE_NOT_ACHIEVED", "requested_state_already_active"),
+        ({"before_inlet": True, "target": True, "flow_before": 120},
+         "OBJECTIVE_NOT_ACHIEVED", "requested_state_already_active"),
+        ({"during_level": 443}, "OBJECTIVE_NOT_ACHIEVED",
+         "response_direction_or_magnitude_failed"),
+        ({"during_scan": 10}, "INDETERMINATE",
+         "insufficient_or_ambiguous_intervention_window"),
+        ({"acknowledge_time": 2.1, "during_time": 2.0}, "INDETERMINATE",
+         "insufficient_or_ambiguous_intervention_window"),
+        ({"during_level": 459}, "OBJECTIVE_NOT_ACHIEVED",
+         "response_direction_or_magnitude_failed"),
+    ],
+)
+def test_causal_attribution_cases(changes, expected, reason):
+    result = _causal_result(**changes)
+    assessment = evaluate_e5(
+        result, {"minimum_level_increase_raw": 10, "minimum_scan_advance": 1})
+    assert assessment["causal_attribution"] == expected
+    assert assessment["objective_measurement"]["reason"] == reason
+
+
+def test_causal_attribution_missing_sample_is_indeterminate():
+    result = _causal_result()
+    del result["during"]["scan_counter"]
+    assessment = evaluate_e5(
+        result, {"minimum_level_increase_raw": 10, "minimum_scan_advance": 1})
+    assert assessment["causal_attribution"] == "INDETERMINATE"
+
+
+def test_command_acknowledged_without_actuator_change_is_not_impact():
+    result = _causal_result(target=False, during_level=462, flow_during=0)
+    assessment = evaluate_e5(
+        result, {"minimum_level_increase_raw": 10, "minimum_scan_advance": 1})
+    assert assessment["action_applied"] is True
+    assert assessment["actuator_state_changed"] is False
+    assert assessment["physical_objective_achieved"] is False
+
+
+def test_pre_action_level_change_is_not_attributed_to_intervention():
+    result = _causal_result(target=False, before_level=455, during_level=448,
+                            flow_before=120, flow_during=0)
+    result["pre_authorization"] = {"inlet": True, "level_raw": 443,
+                                   "scan_counter": 9, "time": .5}
+    assessment = evaluate_e5(
+        result, {"minimum_level_increase_raw": 10, "minimum_scan_advance": 1})
+    assert assessment["objective_measurement"]["level_increase_raw"] == -7
+    assert assessment["physical_objective_achieved"] is False
+
+
+def test_twenty_repeated_causal_attribution_evaluations_are_deterministic():
+    outcomes = []
+    for index in range(20):
+        result = (_causal_result() if index % 2 == 0 else
+                  _causal_result(target=False, during_level=443, flow_during=0))
+        assessment = evaluate_e5(
+            result, {"minimum_level_increase_raw": 10, "minimum_scan_advance": 1})
+        outcomes.append(assessment["causal_attribution"])
+    assert outcomes == [
+        "OBJECTIVE_ACHIEVED" if index % 2 == 0 else "OBJECTIVE_NOT_ACHIEVED"
+        for index in range(20)
+    ]
