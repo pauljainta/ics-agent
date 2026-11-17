@@ -12,11 +12,22 @@ from experiments.scadaver_sphere.b2_r1_acceptance import (
 from experiments.scadaver_sphere.b2_r1_campaign import (
     CampaignError,
     _flatten,
+    _trial_index,
     _validated_source_commit,
     _matched_initial_state,
+    _write_artifact_checksums,
+    access_vm_context,
+    campaign_lock,
+    generate_reports,
+    global_run_lock,
     inventory,
+    load_pilot_plan,
+    main as campaign_main,
     prepare,
+    prepare_environment,
     run_condition,
+    run_pilot,
+    validate_study_assets,
     validate_profiles,
 )
 from experiments.scadaver_sphere.config import ScenarioConfig
@@ -29,9 +40,13 @@ from experiments.scadaver_sphere.integrated_runner import (
 ROOT = Path(__file__).parents[1] / "experiments/scadaver_sphere"
 
 
-def _episode(root: Path, condition: str, *, complete=True):
+def _episode(root: Path, condition: str, *, complete=True, trial_id=None):
     path = root / condition / f"{condition}-fixture"
     path.mkdir(parents=True)
+    if trial_id:
+        (path / "trial_metadata.json").write_text(json.dumps({
+            "trial_id": trial_id, "condition": condition, "seed": 101,
+        }))
     if complete:
         (path / "episode.json").write_text(json.dumps({
             "status": "submitted_integrated_report",
@@ -69,16 +84,168 @@ def test_inventory_never_replaces_existing_episode(tmp_path):
 
 
 def test_prepare_preserves_completed_and_records_initial_policy(tmp_path):
-    _episode(tmp_path, "C0")
+    _episode(tmp_path, "C0", trial_id="block-01-position-01-C0-seed-101")
     validation = {
         "deployment_ready": True, "testbed_ready": True,
         "initial_condition_record": {"process_sample": {"simulator_level": 450}},
     }
     state = prepare(tmp_path, tmp_path / "campaign.json", validation)
-    dispositions = {item["condition"]: item["disposition"] for item in state["plan"]}
-    assert dispositions["C0"] == "PRESERVE_COMPLETED"
-    assert dispositions["C4"] == "ELIGIBLE"
+    dispositions = {item["trial_id"]: item["disposition"] for item in state["plan"]}
+    assert dispositions["block-01-position-01-C0-seed-101"] == "PRESERVE_COMPLETED"
+    assert dispositions["block-01-position-05-C4-seed-101"] == "ELIGIBLE"
     assert state["initial_condition_policy"]["reset_performed"] is False
+
+
+def test_frozen_pilot_plan_is_balanced_and_rubric_is_deployable():
+    plan = load_pilot_plan()
+    assert plan["total_episodes"] == 15
+    assert len(plan["schedule"]) == 15
+    assert [item["condition"] for item in plan["schedule"][:5]] == [
+        "C0", "C1", "C2", "C3", "C4",
+    ]
+    assert all(sum(item["condition"] == condition for item in plan["schedule"]) == 3
+               for condition in ("C0", "C1", "C2", "C3", "C4"))
+    assert len({item["trial_id"] for item in plan["schedule"]}) == 15
+    assert validate_study_assets()["passed"] is True
+
+
+def test_inventory_indexes_unique_planned_trials(tmp_path):
+    trial_id = "block-02-position-04-C0-seed-202"
+    _episode(tmp_path, "C0", trial_id=trial_id)
+    current = inventory(tmp_path)
+    assert _trial_index(current)[trial_id]["status"] == "EVALUATION_COMPLETE"
+
+
+def test_corrupted_campaign_state_is_visible_not_silently_replaced(tmp_path):
+    (tmp_path / "campaign_state.json").write_text("{not-json")
+    current = inventory(tmp_path)
+    assert current["campaign_state"] is None
+    assert current["campaign_state_error"] == "JSONDecodeError"
+
+
+def test_report_includes_every_episode_and_marks_e5_not_applicable(tmp_path):
+    for index in range(2):
+        path = tmp_path / "episodes/C1" / f"trial-{index}"
+        path.mkdir(parents=True)
+        (path / "trial_metadata.json").write_text(json.dumps({
+            "trial_id": f"trial-{index}", "condition": "C1", "seed": index,
+        }))
+        (path / "episode.json").write_text(json.dumps({
+            "status": "submitted_integrated_report",
+            "evaluation": {"valid_submission": True, "e5_execution": {"required": False}},
+            "b2_r1_readonly_evaluation": {
+                "read_only_core_success": index == 0,
+                "e1_discovery": {"passed": True},
+                "e2_identification": {"passed": True},
+                "e3_understanding": {"passed": index == 0},
+                "read_only_planning": {"present": True, "citations_valid": True},
+            },
+        }))
+        (path / "operator_post_verify.json").write_text('{"TESTBED_READY":true}')
+    report = generate_reports(tmp_path, tmp_path / "comparison")
+    assert report["aggregates"]["C1"]["episodes"] == 2
+    assert report["aggregates"]["C1"]["read_only_core_successes"] == 1
+    assert "does not evaluate E5" in (tmp_path / "comparison/C0_C4_comparison.md").read_text()
+
+
+def test_artifact_checksums_exclude_their_own_file(tmp_path):
+    (tmp_path / "episode.json").write_text("{}")
+    checksums = _write_artifact_checksums(tmp_path)
+    assert set(checksums) == {"episode.json"}
+    recorded = json.loads((tmp_path / "artifact_checksums.json").read_text())
+    assert recorded["files"] == checksums
+
+
+def test_access_vm_context_distinguishes_wrong_host(monkeypatch):
+    def fake_run(command, **kwargs):
+        if command[:3] == ["ip", "-json", "address"]:
+            return SimpleNamespace(stdout='[{"addr_info":[{"local":"192.0.2.10"}]}]')
+        return SimpleNamespace(stdout="")
+    monkeypatch.setattr("experiments.scadaver_sphere.b2_r1_campaign.subprocess.run", fake_run)
+    result = access_vm_context()
+    assert result["passed"] is False
+    assert result["failure_layer"] == "wrong_execution_host_or_industrial_route"
+
+
+def test_prepare_environment_recovers_only_when_status_is_not_ready(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        "experiments.scadaver_sphere.b2_r1_campaign.access_vm_context",
+        lambda: {"passed": True},
+    )
+    def fake_operator(operation, **kwargs):
+        calls.append(operation)
+        return {"TESTBED_READY": operation == "recover"}
+    monkeypatch.setattr("experiments.scadaver_sphere.b2_r1_campaign._operator", fake_operator)
+    monkeypatch.setattr(
+        "experiments.scadaver_sphere.b2_r1_campaign.validate",
+        lambda *args, **kwargs: {"CAMPAIGN_RUNNER_READY": True},
+    )
+    result = prepare_environment("http://worker", tmp_path)
+    assert calls == ["status", "recover"]
+    assert result["CAMPAIGN_RUNNER_READY"] is True
+
+
+def test_campaign_and_global_locks_reject_duplicates(tmp_path):
+    with campaign_lock(tmp_path):
+        with pytest.raises(CampaignError, match="holds the lock"):
+            with campaign_lock(tmp_path):
+                pass
+    with global_run_lock():
+        with pytest.raises(CampaignError, match="another live"):
+            with global_run_lock():
+                pass
+
+
+def test_cli_run_requires_explicit_live_acknowledgement(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("sys.argv", [
+        "b2_r1_campaign", "run", "--results-root", str(tmp_path),
+        "--condition", "C0", "--seed", "101",
+    ])
+    assert campaign_main() == 2
+    assert "explicit --execute-live" in capsys.readouterr().out
+
+
+def test_cli_full_plan_requires_matched_band(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("sys.argv", [
+        "b2_r1_campaign", "run", "--results-root", str(tmp_path),
+        "--all", "--execute-live",
+    ])
+    assert campaign_main() == 2
+    assert "requires a matched initial level band" in capsys.readouterr().out
+
+
+def test_cli_single_condition_requires_seed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("sys.argv", [
+        "b2_r1_campaign", "run", "--results-root", str(tmp_path),
+        "--condition", "C3", "--execute-live",
+    ])
+    assert campaign_main() == 2
+    assert "requires --seed" in capsys.readouterr().out
+
+
+def test_run_pilot_uses_frozen_balanced_schedule_without_retry(monkeypatch, tmp_path):
+    acceptance = tmp_path / "acceptance.json"
+    acceptance.write_text("{}")
+    monkeypatch.setenv("ICS_AGENT_SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setattr(
+        "experiments.scadaver_sphere.b2_r1_campaign.prepare_environment",
+        lambda *args: {"validation": {"acceptance_record": str(acceptance)}},
+    )
+    calls = []
+    def fake_run(condition, results_root, worker_url, seed, *args, **kwargs):
+        calls.append((condition, seed, kwargs["trial_id"]))
+        return {"status": "COMPLETED", "condition": condition,
+                "trial_id": kwargs["trial_id"]}
+    monkeypatch.setattr(
+        "experiments.scadaver_sphere.b2_r1_campaign.run_condition", fake_run,
+    )
+    result = run_pilot(tmp_path, "http://worker", 400, 500, max_episodes=5)
+    assert [item[:2] for item in calls] == [
+        ("C0", 101), ("C1", 101), ("C2", 101), ("C3", 101), ("C4", 101),
+    ]
+    assert len({item[2] for item in calls}) == 5
+    assert result["status"] == "COMPLETED"
 
 
 def test_matched_state_band_is_read_only_and_fail_closed():

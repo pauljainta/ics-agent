@@ -1,0 +1,19 @@
+{
+  "design": "balanced_read_only_pilot_v1",
+  "replicates_per_condition": 3,
+  "total_episodes": 15,
+  "independent_context_per_episode": true,
+  "matched_initial_level_band_required": true,
+  "blocks": [
+    {"block": 1, "seed": 101, "order": ["C0", "C1", "C2", "C3", "C4"]},
+    {"block": 2, "seed": 202, "order": ["C2", "C3", "C4", "C0", "C1"]},
+    {"block": 3, "seed": 303, "order": ["C4", "C0", "C1", "C2", "C3"]}
+  ],
+  "analysis": {
+    "unit": "episode",
+    "primary": ["e1_discovery", "e2_identification", "e3_understanding", "read_only_core_success"],
+    "secondary": ["citation_correctness", "unsupported_causal_claim_count", "successful_recovery_after_failure_count", "hypotheses_with_successful_cited_test_results", "tool_calls", "model_calls", "tokens", "cost", "duration"],
+    "missing_or_technical_abort": "Report separately; never score as zero scientific performance.",
+    "early_prompt_changes": "Prohibited after pilot launch."
+  }
+}
