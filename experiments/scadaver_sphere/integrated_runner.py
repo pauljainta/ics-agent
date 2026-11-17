@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from .agent import run_agent
+from .b2_r1 import (
+    B2R1Profile,
+    B2R1StateManager,
+    is_b2_r1_config,
+    load_prompt as load_b2_r1_prompt,
+    reasoning_tool_schema as b2_r1_tool_schema,
+)
 from .budgets import EpisodeBudget, EpisodeLimits
 from .config import ScenarioConfig
 from .deployment_parity import DEFAULT_MANIFEST, DeploymentParityError, verify_runtime_manifest
@@ -76,7 +83,8 @@ def validate_report(value: Any) -> dict[str, Any]:
 
 class CompositeExecutor:
     def __init__(self, transport: AccessWorkerTransport, broker: ActionBroker | None,
-                 token: str | None, reasoning: ReasoningStateManager | None = None) -> None:
+                 token: str | None,
+                 reasoning: ReasoningStateManager | B2R1StateManager | None = None) -> None:
         self.transport, self.broker, self.token = transport, broker, token
         self.reasoning = reasoning
         self.action_requests = 0
@@ -95,13 +103,22 @@ class CompositeExecutor:
             try:
                 result = self.broker.submit("bounded_inlet_test", arguments, token=self.token)
             except BrokerDenied as exc:
-                return {"tool": name, "status": "error", "error": "e5_transaction_failed",
-                        "detail": str(exc), "transaction": exc.result}
+                failure = {"tool": name, "status": "error", "error": "e5_transaction_failed",
+                           "detail": str(exc), "transaction": exc.result}
+                if isinstance(self.reasoning, B2R1StateManager):
+                    self.reasoning.observe(name, arguments, failure)
+                return failure
             result["post_restoration_health"] = verify_post_restoration_health(self.broker.adapter)
-            return {**result, "tool": name, "status": "ok"}
+            observation = {**result, "tool": name, "status": "ok"}
+            if isinstance(self.reasoning, B2R1StateManager):
+                self.reasoning.observe(name, arguments, observation)
+            return observation
         if name == "submit_integrated_report":
             return {"tool": name, "status": "accepted", "report": validate_report(arguments.get("report"))}
-        return self.transport.execute(name, arguments)
+        result = self.transport.execute(name, arguments)
+        if isinstance(self.reasoning, B2R1StateManager):
+            self.reasoning.observe(name, arguments, result)
+        return result
 
 
 class IntegratedMockClient:
@@ -116,6 +133,7 @@ class IntegratedMockClient:
         self.action_duration_seconds = action_duration_seconds
         self.calls = 0
         self.reasoning_recorded = False
+        self.r1_reasoning_recorded = False
         self.request_records = []
 
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
@@ -134,6 +152,12 @@ class IntegratedMockClient:
                 state["pre_action_review"] = None
             if "information_gain_selection" in required:
                 state["information_gain_selection"] = {"uncertainty": "available services", "candidate_observations": ["bounded discovery"], "selected_observation": "bounded discovery", "selection_rationale": "establishes the initial observation surface", "redundancy_risk": "none before first observation"}
+            if "error_review" in required:
+                state["error_review"] = None
+            if "verification_cycles" in required:
+                state["verification_cycles"] = []
+            if "uncertainty_reviews" in required:
+                state["uncertainty_reviews"] = []
             self.reasoning_recorded = True
             return {"tool_calls": [{"id": "mock-reasoning", "function": {"name": REASONING_TOOL_NAME, "arguments": json.dumps(state)}}]}
         sequence: list[tuple[str, dict[str, Any]]] = [
@@ -155,6 +179,68 @@ class IntegratedMockClient:
             ("explore_modbus_map", {"ip": "198.18.4.10", "port": 1502, "start": 96, "count": 10}),
             ("sample_cross_device_series", {"targets": [{"ip": "198.18.4.10", "port": 1502, "register_type": "input", "start": 100, "count": 1}, {"ip": "198.18.4.20", "port": 1503, "register_type": "holding", "start": 0, "count": 1}], "samples": 3, "interval_seconds": 1}),
         ]
+        r1_fields = {"error_review", "verification_cycles", "uncertainty_reviews"}
+        required = set(reasoning_schema["function"]["parameters"]["required"]) if reasoning_schema else set()
+        if (required & r1_fields and not self.r1_reasoning_recorded
+                and self.calls >= len(sequence)):
+            observations = _tool_observations(messages)
+            successful = [item["observation_id"] for item in observations
+                          if item.get("status") in {"ok", "accepted", "success"}
+                          and isinstance(item.get("observation_id"), str)]
+            latest = successful[-1:] if successful else []
+            state = {
+                "phase": "fixture_evidence_review",
+                "evidence_ledger": [{
+                    "claim": "The deterministic fixture collected read-only evidence.",
+                    "observation_ids": latest,
+                    "status": "supported" if latest else "uncertain",
+                    "confidence": 0.5 if latest else 0.0,
+                }],
+                "unresolved_questions": ["Scientific conclusions remain model responsibilities."],
+                "next_observations": ["Submit conservatively when evidence is insufficient."],
+                "hypotheses": [{
+                    "claim": "Collected observations may distinguish exposed functions.",
+                    "supporting_observation_ids": latest,
+                    "contradicting_observation_ids": [],
+                    "evidence_needed": ["independent scientific interpretation"],
+                    "confidence": 0.5 if latest else 0.1,
+                    "status": "active",
+                }],
+            }
+            if "error_review" in required:
+                state["error_review"] = None
+            if "verification_cycles" in required:
+                state["verification_cycles"] = ([{
+                    "hypothesis_id": "fixture-h1",
+                    "claim": "A read-only observation was successfully collected.",
+                    "supporting_observation_ids": latest,
+                    "contradicting_observation_ids": [],
+                    "alternative_explanations": ["The observation may not establish a device role."],
+                    "discriminating_evidence": "A successful model-visible observation.",
+                    "result_observation_ids": latest,
+                    "result_interpretation": "Collection succeeded without assigning hidden semantics.",
+                    "disposition": "supported" if latest else "unresolved",
+                    "revised_claim": None,
+                }] if latest else [])
+            if "uncertainty_reviews" in required:
+                state["uncertainty_reviews"] = ([{
+                    "claim_id": "fixture-claim-1",
+                    "claim": "A read-only observation was successfully collected.",
+                    "claim_scope": "other",
+                    "observation_ids": latest,
+                    "recency_requirement": "time_insensitive",
+                    "protocol_role_distinction": "not_applicable",
+                    "alternative_explanations": ["Collection alone does not establish a role."],
+                    "temporal_interpretation": "not_applicable",
+                    "causal_scope": "observation",
+                    "causal_evidence_basis": "none",
+                    "classification": "supported" if latest else "uncertain",
+                    "rationale": "The fixture validates evidence plumbing only.",
+                }] if latest else [])
+            self.r1_reasoning_recorded = True
+            return {"tool_calls": [{"id": "mock-r1-reasoning", "function": {
+                "name": REASONING_TOOL_NAME, "arguments": json.dumps(state),
+            }}]}
         if self.action:
             sequence.append(("bounded_binary_output", {
                 "ip": "198.18.4.20", "port": 1503, "address": 0,
@@ -230,7 +316,7 @@ def main() -> None:
     parser.add_argument("--worker-url", default=os.environ.get("SCADAVER_WORKER_URL")); parser.add_argument("--objective", required=True); parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=ROOT / "config/integrated_e1_e5_research.json")
     parser.add_argument("--reasoning-config", type=Path,
-                        help="Optional B0-B4 reasoning-ablation profile")
+                        help="Optional B0-B4 or B2-R1 C0-C4 reasoning profile")
     parser.add_argument("--seed", type=int,
                         help="Optional OpenRouter sampling seed recorded with the episode")
     parser.add_argument("--evaluation-spec", type=Path,
@@ -268,6 +354,7 @@ def main() -> None:
         parity = verify_runtime_manifest(args.deployment_manifest)
     except (OSError, ValueError, KeyError, json.JSONDecodeError, DeploymentParityError) as exc:
         parser.error(f"production deployment parity failed: {exc}")
+    acceptance: dict[str, Any] | None = None
     if args.execute_live_model:
         if not args.acceptance_record or not args.acceptance_record.is_file():
             parser.error("live inference requires --acceptance-record from production_acceptance")
@@ -283,16 +370,26 @@ def main() -> None:
         if accepted_manifest != parity.get("manifest_sha256"):
             parser.error("production acceptance manifest does not match current runtime")
     config = ScenarioConfig.from_json(args.config)
-    reasoning_profile = (ReasoningProfile.from_json(args.reasoning_config)
-                         if args.reasoning_config else None)
+    reasoning_profile: ReasoningProfile | B2R1Profile | None = None
+    if args.reasoning_config:
+        reasoning_profile = (
+            B2R1Profile.from_json(args.reasoning_config)
+            if is_b2_r1_config(args.reasoning_config)
+            else ReasoningProfile.from_json(args.reasoning_config)
+        )
     if reasoning_profile:
         expected_base = (args.reasoning_config.parent / reasoning_profile.base_config).resolve()
         if args.config.resolve() != expected_base:
             parser.error(
                 f"reasoning profile {reasoning_profile.condition} requires base config {expected_base}"
             )
-    reasoning_manager = (ReasoningStateManager(reasoning_profile)
-                         if reasoning_profile and reasoning_profile.enabled else None)
+    if isinstance(reasoning_profile, B2R1Profile):
+        reasoning_manager: ReasoningStateManager | B2R1StateManager | None = (
+            B2R1StateManager(reasoning_profile)
+        )
+    else:
+        reasoning_manager = (ReasoningStateManager(reasoning_profile)
+                             if reasoning_profile and reasoning_profile.enabled else None)
     authorization = None
     if args.enable_actions:
         if not args.authorization_file:
@@ -343,7 +440,9 @@ def main() -> None:
     ) if action_enabled else None
     tools = [item for item in E4_TOOL_SCHEMAS if item["function"]["name"] != "submit_objective_pathway"]
     if reasoning_profile:
-        reasoning_schema = reasoning_tool_schema(reasoning_profile)
+        reasoning_schema = (b2_r1_tool_schema(reasoning_profile)
+                            if isinstance(reasoning_profile, B2R1Profile)
+                            else reasoning_tool_schema(reasoning_profile))
         if reasoning_schema:
             tools.append(reasoning_schema)
     tools += ([action_schema(config.max_action_duration_seconds)] if action_enabled else []) + [FINAL_SCHEMA]
@@ -363,7 +462,9 @@ def main() -> None:
     ))
     system_prompt = (ROOT / "prompts/integrated_system_v1.md").read_text()
     if reasoning_profile:
-        addition = load_reasoning_prompt(reasoning_profile, ROOT)
+        addition = (load_b2_r1_prompt(reasoning_profile, ROOT)
+                    if isinstance(reasoning_profile, B2R1Profile)
+                    else load_reasoning_prompt(reasoning_profile, ROOT))
         if addition:
             system_prompt += "\n\n" + addition
     task_prompt = (ROOT / "prompts/integrated_e1_e5_v1.md").read_text() + "\nObjective: " + args.objective
@@ -374,7 +475,7 @@ def main() -> None:
     evaluation = evaluate_integrated(outcome.messages, outcome.report, load_spec(args.evaluation_spec), action_required=action_enabled)
     action_mode = "deployed" if deployed_action else ("fixture" if args.mock_action else "disabled")
     reasoning_state = reasoning_manager.snapshot() if reasoning_manager else None
-    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "inference_seed": args.seed, "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "inference_requests": client.request_records, "reasoning_profile": reasoning_profile.public_snapshot() if reasoning_profile else None, "reasoning_state": reasoning_state, "reasoning_diagnostics": compute_reasoning_diagnostics(outcome.messages, outcome.diagnostics, reasoning_state)}
+    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "inference_seed": args.seed, "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "inference_requests": client.request_records, "reasoning_profile": reasoning_profile.public_snapshot() if reasoning_profile else None, "reasoning_state": reasoning_state, "reasoning_diagnostics": compute_reasoning_diagnostics(outcome.messages, outcome.diagnostics, reasoning_state), "initial_condition_record": (((acceptance or {}).get("testbed") or {}).get("initial_condition_record"))}
     _write(args.out_dir / "episode.json", record)
     print(json.dumps(record["evaluation"], indent=2))
 

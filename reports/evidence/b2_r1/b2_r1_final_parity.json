@@ -1,0 +1,457 @@
+{
+  "b0_profile_passed": true,
+  "budget_initialization_passed": true,
+  "dependencies": {
+    "pymodbus": {
+      "actual": "3.6.9",
+      "expected": "3.6.9",
+      "passed": true
+    }
+  },
+  "evaluator_passed": true,
+  "failures": [],
+  "files": {
+    "acceptance.py": {
+      "actual": "80e503122bf60e033c79590aec39e021ed0d31273cee730f72c3f844b34270f5",
+      "expected": "80e503122bf60e033c79590aec39e021ed0d31273cee730f72c3f844b34270f5",
+      "passed": true
+    },
+    "agent.py": {
+      "actual": "a051ce04134d4e3881525b4b6e5725706ae722d1f54f6acefc0c704f8a31a987",
+      "expected": "a051ce04134d4e3881525b4b6e5725706ae722d1f54f6acefc0c704f8a31a987",
+      "passed": true
+    },
+    "b2_r1.py": {
+      "actual": "fcb2feb5a01c1b22c4783651c8dd50f85e90c11f3ffcea182fb92d5f7f90c82e",
+      "expected": "fcb2feb5a01c1b22c4783651c8dd50f85e90c11f3ffcea182fb92d5f7f90c82e",
+      "passed": true
+    },
+    "b2_r1_acceptance.py": {
+      "actual": "2e464e6982c46d52f3468a405ad94649c6fc9d4127f184d76d95563f953e8006",
+      "expected": "2e464e6982c46d52f3468a405ad94649c6fc9d4127f184d76d95563f953e8006",
+      "passed": true
+    },
+    "b2_r1_campaign.py": {
+      "actual": "2e7912052a7fa32df5c3f84a6131902ce9b0fc673f25e311c0f43862eae6bdf8",
+      "expected": "2e7912052a7fa32df5c3f84a6131902ce9b0fc673f25e311c0f43862eae6bdf8",
+      "passed": true
+    },
+    "budgets.py": {
+      "actual": "075f675af11a4e200f1eaae14b031a129680c896427e695ff7609c59582ea967",
+      "expected": "075f675af11a4e200f1eaae14b031a129680c896427e695ff7609c59582ea967",
+      "passed": true
+    },
+    "config.py": {
+      "actual": "9f3cac1711bddca1da85dcf5a12a2c3741a615bdef1902d4d55aa71a42e5c2ca",
+      "expected": "9f3cac1711bddca1da85dcf5a12a2c3741a615bdef1902d4d55aa71a42e5c2ca",
+      "passed": true
+    },
+    "config/b2_r1_v1/C0.json": {
+      "actual": "0a12a98f20c9c2e2afee72aa4700bc3c3488a4c097687e2dad9901ec37217a97",
+      "expected": "0a12a98f20c9c2e2afee72aa4700bc3c3488a4c097687e2dad9901ec37217a97",
+      "passed": true
+    },
+    "config/b2_r1_v1/C1.json": {
+      "actual": "ffe490ac32229a6cab84cc475ce36e697566a83e76efe63e2696b58a33cec1e4",
+      "expected": "ffe490ac32229a6cab84cc475ce36e697566a83e76efe63e2696b58a33cec1e4",
+      "passed": true
+    },
+    "config/b2_r1_v1/C2.json": {
+      "actual": "cd6411bed6cf68b7192c4c96995110c8891554a9f9e8586dd61672d76ad22b21",
+      "expected": "cd6411bed6cf68b7192c4c96995110c8891554a9f9e8586dd61672d76ad22b21",
+      "passed": true
+    },
+    "config/b2_r1_v1/C3.json": {
+      "actual": "cd6f75f58603b0db3b02b6f54909356bc95eac51b559853e50b673d10dd003b6",
+      "expected": "cd6f75f58603b0db3b02b6f54909356bc95eac51b559853e50b673d10dd003b6",
+      "passed": true
+    },
+    "config/b2_r1_v1/C4.json": {
+      "actual": "9c09a989e46a07d8d104b9c66d232efbb5ba93cdb913d87b4776b487c5f54146",
+      "expected": "9c09a989e46a07d8d104b9c66d232efbb5ba93cdb913d87b4776b487c5f54146",
+      "passed": true
+    },
+    "config/first_qwen_objective.json": {
+      "actual": "ed61a054a4634d7897ed65949914e2dc8435672d24f72d605b05973ae82ffefd",
+      "expected": "ed61a054a4634d7897ed65949914e2dc8435672d24f72d605b05973ae82ffefd",
+      "passed": true
+    },
+    "config/integrated_e1_e5_first_qwen.json": {
+      "actual": "79f5209cbfc416c774c30e604bd96e410603f7183e506a7acb83d983eb28df17",
+      "expected": "79f5209cbfc416c774c30e604bd96e410603f7183e506a7acb83d983eb28df17",
+      "passed": true
+    },
+    "config/qwen_openrouter_model_v1.json": {
+      "actual": "8b6163a99a5e8f7416055e6c4ee4ec1ec9fed42457ec5eb8b12cca01f4bcf566",
+      "expected": "8b6163a99a5e8f7416055e6c4ee4ec1ec9fed42457ec5eb8b12cca01f4bcf566",
+      "passed": true
+    },
+    "config/reasoning_ablation_v1/B0.json": {
+      "actual": "a4139ca64625b06d7c1b295fece38e7a520521c097fbb1e6cb0f97c86b7a79d2",
+      "expected": "a4139ca64625b06d7c1b295fece38e7a520521c097fbb1e6cb0f97c86b7a79d2",
+      "passed": true
+    },
+    "deployment_parity.py": {
+      "actual": "bf109fea39058a137cb406a69813401c7659be1295b550fd241075da7a7ddcbb",
+      "expected": "bf109fea39058a137cb406a69813401c7659be1295b550fd241075da7a7ddcbb",
+      "passed": true
+    },
+    "e23_evaluation.py": {
+      "actual": "15152e2f57008134b762b0edd797bcf0521bc132c114e649e6bb2eb711aad865",
+      "expected": "15152e2f57008134b762b0edd797bcf0521bc132c114e649e6bb2eb711aad865",
+      "passed": true
+    },
+    "e23_runner.py": {
+      "actual": "3d18b504b9c7c0c0ea7d76b7deb521d5e46b2058c72ce6469d110111f72eee23",
+      "expected": "3d18b504b9c7c0c0ea7d76b7deb521d5e46b2058c72ce6469d110111f72eee23",
+      "passed": true
+    },
+    "e5_evaluation.py": {
+      "actual": "22a6c8e749523612a2b44d63aa3889113782f50727968e3e39c51ae3f68eb553",
+      "expected": "22a6c8e749523612a2b44d63aa3889113782f50727968e3e39c51ae3f68eb553",
+      "passed": true
+    },
+    "e5_fixture.py": {
+      "actual": "85fa812ca305d1dd600c96b920b09d0f9131895ec50aa3d3c134fb6c8ffeb636",
+      "expected": "85fa812ca305d1dd600c96b920b09d0f9131895ec50aa3d3c134fb6c8ffeb636",
+      "passed": true
+    },
+    "e5_runner.py": {
+      "actual": "9f529cf803cd4b6d923865fd466094c015f848625da22b80177e6ca9eb5bb7f1",
+      "expected": "9f529cf803cd4b6d923865fd466094c015f848625da22b80177e6ca9eb5bb7f1",
+      "passed": true
+    },
+    "e5_transaction.py": {
+      "actual": "8daa95c60389e15a389897cc1f112bc6f9dc309724cbab1c91f2a87e48057f67",
+      "expected": "8daa95c60389e15a389897cc1f112bc6f9dc309724cbab1c91f2a87e48057f67",
+      "passed": true
+    },
+    "enhanced_worker.py": {
+      "actual": "a05d6aa5cd7439ce34c8b81fef17e3b90c645ddf620f5b66465f49db0469f1b9",
+      "expected": "a05d6aa5cd7439ce34c8b81fef17e3b90c645ddf620f5b66465f49db0469f1b9",
+      "passed": true
+    },
+    "evidence_sufficiency.py": {
+      "actual": "8fdf20d76cde22d38a0a9f3e48ac2d13b8cdf31fbdf6fba34b699c3f420a2fac",
+      "expected": "8fdf20d76cde22d38a0a9f3e48ac2d13b8cdf31fbdf6fba34b699c3f420a2fac",
+      "passed": true
+    },
+    "heterogeneous_sitl_v1/action_broker.py": {
+      "actual": "06cc238f103fac81af63abb670e5e8905217257ffc28a838735a5a445b9400cf",
+      "expected": "06cc238f103fac81af63abb670e5e8905217257ffc28a838735a5a445b9400cf",
+      "passed": true
+    },
+    "integrated_evaluation.py": {
+      "actual": "6f137b0474f1774c75dc0edf09ca3b573655c471ce0c20d03374a1dfb6ad4050",
+      "expected": "6f137b0474f1774c75dc0edf09ca3b573655c471ce0c20d03374a1dfb6ad4050",
+      "passed": true
+    },
+    "integrated_runner.py": {
+      "actual": "c5a12b55542fa0b313e14e77497ed9a416b3847251725677a16fdcc8aa8bf374",
+      "expected": "c5a12b55542fa0b313e14e77497ed9a416b3847251725677a16fdcc8aa8bf374",
+      "passed": true
+    },
+    "node_setup/access_worker_service.py": {
+      "actual": "10f180ae3fd6a6147b875197c4f1bc31bb5df0a04a440843cb58dad414b2c7d5",
+      "expected": "10f180ae3fd6a6147b875197c4f1bc31bb5df0a04a440843cb58dad414b2c7d5",
+      "passed": true
+    },
+    "openrouter.py": {
+      "actual": "4cdb749d6752b00865d5abf0ad5e361df8af122ff67eae29cb851c366c9f9637",
+      "expected": "4cdb749d6752b00865d5abf0ad5e361df8af122ff67eae29cb851c366c9f9637",
+      "passed": true
+    },
+    "operator_workflow.py": {
+      "actual": "b1f40ab07b8fa3d912a3a429780bd31c88436c0e66983bc8cee6bcbcf9fe4708",
+      "expected": "b1f40ab07b8fa3d912a3a429780bd31c88436c0e66983bc8cee6bcbcf9fe4708",
+      "passed": true
+    },
+    "private/integrated_e1_e5_first_qwen_spec_v2.json": {
+      "actual": "241bdcd3a2b122dd1f6401272429a86324e8af2bcac9b7a9d6e69a57603aa096",
+      "expected": "241bdcd3a2b122dd1f6401272429a86324e8af2bcac9b7a9d6e69a57603aa096",
+      "passed": true
+    },
+    "production_acceptance.py": {
+      "actual": "1f15d57cec61403953f65cc53e38162bbac3d8c3e4137b0acdfc240277e1a25b",
+      "expected": "1f15d57cec61403953f65cc53e38162bbac3d8c3e4137b0acdfc240277e1a25b",
+      "passed": true
+    },
+    "production_path_smoke.py": {
+      "actual": "8176a8980e7b8c28dd2277c63f5e726b6a6d034b20a74de77243b5ec2c6b2c36",
+      "expected": "8176a8980e7b8c28dd2277c63f5e726b6a6d034b20a74de77243b5ec2c6b2c36",
+      "passed": true
+    },
+    "prompts/b2_r1_v1/R1_A.md": {
+      "actual": "8915f6fdb30e7674650455d9e97b7872451e25453a203d7b4ef70ae95adee20a",
+      "expected": "8915f6fdb30e7674650455d9e97b7872451e25453a203d7b4ef70ae95adee20a",
+      "passed": true
+    },
+    "prompts/b2_r1_v1/R1_B.md": {
+      "actual": "f3330c7ce856c2efdc68e5d6652bdaeba27b0fadbf3602dac56634be93f64fe6",
+      "expected": "f3330c7ce856c2efdc68e5d6652bdaeba27b0fadbf3602dac56634be93f64fe6",
+      "passed": true
+    },
+    "prompts/b2_r1_v1/R1_C.md": {
+      "actual": "9a277aa584711193cc60b159b4f889be6dcadda6cf84807968d5388f273669bc",
+      "expected": "9a277aa584711193cc60b159b4f889be6dcadda6cf84807968d5388f273669bc",
+      "passed": true
+    },
+    "prompts/integrated_e1_e5_v1.md": {
+      "actual": "8e1c7703d9844edb7845fa211a7167182e094088e896d057db425c1ce46abfe0",
+      "expected": "8e1c7703d9844edb7845fa211a7167182e094088e896d057db425c1ce46abfe0",
+      "passed": true
+    },
+    "prompts/integrated_system_v1.md": {
+      "actual": "2396ddbbadc27873f6029a18a809ce3a8c1f3d3a9fb6296df01800fee128e55a",
+      "expected": "2396ddbbadc27873f6029a18a809ce3a8c1f3d3a9fb6296df01800fee128e55a",
+      "passed": true
+    },
+    "reasoning_ablation.py": {
+      "actual": "6356de24e592e84a534b96024a1d9147c08921c8466229020607fc533dd4aee1",
+      "expected": "6356de24e592e84a534b96024a1d9147c08921c8466229020607fc533dd4aee1",
+      "passed": true
+    },
+    "reasoning_campaign.py": {
+      "actual": "2d9b41accc50c70bbc7890f5fa72269ec6785a7232899c86a42476c265523dbc",
+      "expected": "2d9b41accc50c70bbc7890f5fa72269ec6785a7232899c86a42476c265523dbc",
+      "passed": true
+    },
+    "reasoning_metrics.py": {
+      "actual": "e51a9a4f28a3105d7fa88053689b4476b70039dbd82bfd5fd55442a155c9284e",
+      "expected": "e51a9a4f28a3105d7fa88053689b4476b70039dbd82bfd5fd55442a155c9284e",
+      "passed": true
+    },
+    "schemas.py": {
+      "actual": "27e770993183c891f023aa6f60586fd240d943a93c2957c1f03e15ed9100d368",
+      "expected": "27e770993183c891f023aa6f60586fd240d943a93c2957c1f03e15ed9100d368",
+      "passed": true
+    },
+    "tool_results.py": {
+      "actual": "2719b9f9381ee3545e53329590bbf7c64546ec5ced7ca572e7a7d16d8927defc",
+      "expected": "2719b9f9381ee3545e53329590bbf7c64546ec5ced7ca572e7a7d16d8927defc",
+      "passed": true
+    },
+    "transport.py": {
+      "actual": "8e92be363c9af03774af5c9c504c510c5697adacbbc69227aa696fa5a978c23c",
+      "expected": "8e92be363c9af03774af5c9c504c510c5697adacbbc69227aa696fa5a978c23c",
+      "passed": true
+    },
+    "worker.py": {
+      "actual": "d04d7b45f557d8826fea23018e12dc8a16499612421f158675251e1df5b754cd",
+      "expected": "d04d7b45f557d8826fea23018e12dc8a16499612421f158675251e1df5b754cd",
+      "passed": true
+    }
+  },
+  "imports": {
+    "experiments.scadaver_sphere.acceptance": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/acceptance.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/acceptance.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.agent": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/agent.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/agent.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.b2_r1": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/b2_r1.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/b2_r1.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.b2_r1_acceptance": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/b2_r1_acceptance.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/b2_r1_acceptance.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.b2_r1_campaign": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/b2_r1_campaign.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/b2_r1_campaign.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.budgets": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/budgets.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/budgets.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.config": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/config.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/config.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.deployment_parity": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/deployment_parity.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/deployment_parity.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.e23_evaluation": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e23_evaluation.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e23_evaluation.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.e23_runner": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e23_runner.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e23_runner.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.e5_evaluation": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_evaluation.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_evaluation.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.e5_fixture": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_fixture.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_fixture.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.e5_runner": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_runner.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_runner.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.e5_transaction": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_transaction.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/e5_transaction.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.enhanced_worker": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/enhanced_worker.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/enhanced_worker.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.evidence_sufficiency": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/evidence_sufficiency.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/evidence_sufficiency.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.heterogeneous_sitl_v1.action_broker": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/heterogeneous_sitl_v1/action_broker.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/heterogeneous_sitl_v1/action_broker.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.integrated_evaluation": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/integrated_evaluation.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/integrated_evaluation.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.integrated_runner": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/integrated_runner.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/integrated_runner.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.openrouter": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/openrouter.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/openrouter.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.operator_workflow": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/operator_workflow.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/operator_workflow.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.production_acceptance": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/production_acceptance.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/production_acceptance.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.production_path_smoke": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/production_path_smoke.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/production_path_smoke.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.reasoning_ablation": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/reasoning_ablation.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/reasoning_ablation.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.reasoning_campaign": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/reasoning_campaign.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/reasoning_campaign.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.reasoning_metrics": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/reasoning_metrics.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/reasoning_metrics.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.schemas": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/schemas.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/schemas.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.tool_results": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/tool_results.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/tool_results.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.transport": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/transport.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/transport.py",
+      "passed": true
+    },
+    "experiments.scadaver_sphere.worker": {
+      "actual": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/worker.py",
+      "expected": "/home/researcher/scadaver-lab/experiments/scadaver_sphere/worker.py",
+      "passed": true
+    }
+  },
+  "interfaces": {
+    "AccessWorkerTransport.execute": true,
+    "ActionBroker.submit": true,
+    "EpisodeBudget.ingest_request_records": true,
+    "EpisodeBudget.remaining": true,
+    "OpenRouterClient.chat": true,
+    "OpenRouterClient.mark_termination": true
+  },
+  "manifest_sha256": "00cbda710c9186531d1c9b20d3fcef728e0a6dc885cc8f537b1a7f2e6dd14f8c",
+  "manifest_version": "production-runtime-parity-v2",
+  "passed": true,
+  "python": {
+    "actual": {
+      "major": 3,
+      "minor": 10
+    },
+    "expected": {
+      "major": 3,
+      "minor": 10
+    },
+    "passed": true
+  },
+  "scientific_configuration": {
+    "actual": {
+      "episode_deadline_seconds": 7200,
+      "final_submission_max_output_tokens": 8192,
+      "inference_retries": 2,
+      "max_action_duration_seconds": 1.25,
+      "max_actions": 1,
+      "max_api_cost_usd": 25.0,
+      "max_input_tokens": 2000000,
+      "max_model_calls": 250,
+      "max_output_tokens": 4096,
+      "max_steps": 250,
+      "max_tool_calls": 500,
+      "max_total_output_tokens": 150000,
+      "model": "qwen/qwen3.5-9b",
+      "request_timeout_seconds": 300,
+      "reserved_completion_steps": 5
+    },
+    "expected": {
+      "episode_deadline_seconds": 7200,
+      "final_submission_max_output_tokens": 8192,
+      "inference_retries": 2,
+      "max_action_duration_seconds": 1.25,
+      "max_actions": 1,
+      "max_api_cost_usd": 25.0,
+      "max_input_tokens": 2000000,
+      "max_model_calls": 250,
+      "max_output_tokens": 4096,
+      "max_steps": 250,
+      "max_tool_calls": 500,
+      "max_total_output_tokens": 150000,
+      "model": "qwen/qwen3.5-9b",
+      "request_timeout_seconds": 300,
+      "reserved_completion_steps": 5
+    },
+    "passed": true
+  },
+  "tool_catalog_passed": true
+}

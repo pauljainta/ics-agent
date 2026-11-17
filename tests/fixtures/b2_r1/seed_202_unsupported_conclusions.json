@@ -1,0 +1,16 @@
+{
+  "source_episode": "seed_202/B2/B2-20261116T185819Z",
+  "historical_summary": {
+    "model_calls": 27,
+    "executed_tool_calls": 52,
+    "unsuccessful_tool_calls": 15,
+    "redundant_probe_requests": 5,
+    "finding": "functional-role conclusion exceeded the cited protocol evidence"
+  },
+  "synthetic_conclusion": {
+    "claim_scope": "functional_role",
+    "observation_ids": ["obs-protocol"],
+    "protocol_role_distinction": "protocol_only",
+    "classification": "supported"
+  }
+}

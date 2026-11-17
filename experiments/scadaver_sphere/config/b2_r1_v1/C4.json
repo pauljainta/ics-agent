@@ -1,0 +1,16 @@
+{
+  "condition": "C4",
+  "version": "b2-r1-v1",
+  "profile_family": "b2-r1-v1",
+  "base_config": "../integrated_e1_e5_first_qwen.json",
+  "base_reasoning_profile": "../reasoning_ablation_v1/B2.json",
+  "component_prompts": {
+    "error_aware_investigation": "prompts/b2_r1_v1/R1_A.md",
+    "evidence_verification": "prompts/b2_r1_v1/R1_B.md",
+    "uncertainty_review": "prompts/b2_r1_v1/R1_C.md"
+  },
+  "error_aware_investigation": true,
+  "evidence_verification": true,
+  "uncertainty_review": true,
+  "freshness_max_age_seconds": 30.0
+}
