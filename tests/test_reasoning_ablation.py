@@ -149,6 +149,15 @@ def test_production_runtime_manifest_fails_closed_on_source_mismatch(tmp_path):
         verify_runtime_manifest(path)
 
 
+def test_production_runtime_manifest_fails_closed_on_missing_dependency(tmp_path):
+    manifest = json.loads(DEFAULT_MANIFEST.read_text())
+    manifest["dependencies"] = {"definitely-not-installed-b2-r1-package": "1.0"}
+    path = tmp_path / "missing-dependency.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(DeploymentParityError, match="dependency:definitely-not-installed"):
+        verify_runtime_manifest(path)
+
+
 def test_production_path_synthetic_acceptance():
     result = synthetic_checks()
     assert result["passed"] is True

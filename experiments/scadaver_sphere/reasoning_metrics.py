@@ -59,6 +59,7 @@ def compute_reasoning_diagnostics(messages: list[dict[str, Any]], diagnostics: l
     failed_keys: set[tuple[str, str]] = set()
     repeated_after_failure = 0
     alternatives_after_failure = 0
+    successful_recoveries_after_failure = 0
     for index, item in enumerate(investigative):
         key = item["request_key"]
         if key in failed_keys:
@@ -69,12 +70,20 @@ def compute_reasoning_diagnostics(messages: list[dict[str, Any]], diagnostics: l
                 next_item = investigative[index + 1]
                 if next_item["request_key"] != key:
                     alternatives_after_failure += 1
+                    if next_item["successful"]:
+                        successful_recoveries_after_failure += 1
     successful_evidence = {
         item["observation_id"] for item in investigative
         if item["successful"] and isinstance(item.get("observation_id"), str)
     }
     uncertainty_reviews = [item for update in updates
                            for item in update.get("uncertainty_reviews", [])]
+    hypotheses_with_successful_cited_tests = sum(
+        bool(item.get("result_observation_ids"))
+        and set(item.get("result_observation_ids", [])) <= successful_evidence
+        and item.get("disposition") != "unresolved"
+        for item in verification_cycles
+    )
     result = {
         "tool_calls_total": len(tool_calls),
         "distinct_tools": len(set(tool_calls)),
@@ -87,6 +96,13 @@ def compute_reasoning_diagnostics(messages: list[dict[str, Any]], diagnostics: l
         "redundant_probe_requests": sum(item.get("kind") == "redundant_probe_request" for item in diagnostics),
         "unsuccessful_tool_calls": failed,
         "submission_recovery_events": sum(str(item.get("kind", "")).startswith("submission_recovery") for item in diagnostics),
+        # These names describe observable trace behavior only. They do not infer
+        # whether an error was informative or whether the alternative was wise.
+        "repeated_failed_request_count": repeated_after_failure,
+        "alternative_probe_after_failure_count": alternatives_after_failure,
+        "successful_recovery_after_failure_count": successful_recoveries_after_failure,
+        # Retain the original keys for historical artifact compatibility. New
+        # scientific reports use the accurately named fields above.
         "errors_repeated_after_informative_rejection": repeated_after_failure,
         "alternative_tool_or_arguments_after_failure": alternatives_after_failure,
         "successful_evidence_per_investigative_call": (
@@ -100,6 +116,7 @@ def compute_reasoning_diagnostics(messages: list[dict[str, Any]], diagnostics: l
             and item.get("disposition") != "unresolved"
             for item in verification_cycles
         ),
+        "hypotheses_with_successful_cited_test_results": hypotheses_with_successful_cited_tests,
         "hypotheses_revised": sum(item.get("disposition") == "revised"
                                    for item in verification_cycles),
         "hypotheses_rejected": sum(item.get("disposition") == "rejected"

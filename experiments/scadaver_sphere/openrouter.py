@@ -99,6 +99,15 @@ class OpenRouterClient:
             message = choice.get("message") if isinstance(choice, dict) else None
             tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
             completion_details = (body.get("usage") or {}).get("completion_tokens_details") or {}
+            provider_seed = body.get("seed")
+            if self.seed is None:
+                seed_acknowledgement = "not_requested"
+            elif provider_seed is None:
+                seed_acknowledgement = "not_reported"
+            elif provider_seed == self.seed:
+                seed_acknowledgement = "acknowledged"
+            else:
+                seed_acknowledgement = "mismatch"
             record = {
                 **record_context,
                 "attempt": attempt + 1,
@@ -109,6 +118,9 @@ class OpenRouterClient:
                 "response_id": body.get("id"),
                 "finish_reason": choice.get("finish_reason"),
                 "requested_max_tokens": effective_max_tokens,
+                "seed_requested": self.seed,
+                "seed_reported_by_provider": provider_seed,
+                "seed_acknowledgement": seed_acknowledgement,
                 "provider_limit_evidence": {
                     "finish_reason": choice.get("finish_reason"),
                     "completion_tokens": (body.get("usage") or {}).get("completion_tokens"),

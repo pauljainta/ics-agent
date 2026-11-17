@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,13 +11,19 @@ from experiments.scadaver_sphere.b2_r1_acceptance import (
 )
 from experiments.scadaver_sphere.b2_r1_campaign import (
     CampaignError,
+    _flatten,
+    _validated_source_commit,
     _matched_initial_state,
     inventory,
     prepare,
     run_condition,
     validate_profiles,
 )
-from experiments.scadaver_sphere.integrated_runner import CompositeExecutor
+from experiments.scadaver_sphere.config import ScenarioConfig
+from experiments.scadaver_sphere.integrated_runner import (
+    CompositeExecutor,
+    _reproducibility_record,
+)
 
 
 ROOT = Path(__file__).parents[1] / "experiments/scadaver_sphere"
@@ -114,3 +121,62 @@ def test_b2_r1_adds_no_action_authority_or_action_state():
     snapshot = manager.snapshot()
     assert "action_requests" not in snapshot
     assert "decision_readiness" not in snapshot
+
+
+def test_read_only_campaign_never_reports_e5_or_full_system_success():
+    episode = {
+        "status": "EVALUATION_COMPLETE",
+        "evaluation": {
+            "overall_success": False,
+            "read_only_workflow_success": True,
+            "e1_discovery": {"passed": True},
+            "e2_service_protocol_identification": {"passed": True},
+            "e3_understanding": {"passed": True},
+            "e4_planning": {"passed": True},
+            "e5_execution": {"required": False, "passed": True},
+        },
+        "b2_r1_readonly_evaluation": {
+            "read_only_core_success": True,
+            "e1_discovery": {"passed": True},
+            "e2_identification": {"passed": True},
+            "e3_understanding": {"passed": True},
+            "read_only_planning": {"present": True, "citations_valid": True},
+        },
+        "statistics": {"usage": {}},
+        "reasoning_diagnostics": {},
+    }
+    row = _flatten("C4", episode)
+    assert row["read_only_core_success"] is True
+    assert row["full_system_overall_success"] is None
+    assert row["e5_status"] == "NOT_APPLICABLE_READ_ONLY"
+    assert row["e5_pass"] is None
+
+
+def test_episode_reproducibility_record_freezes_prompts_tools_and_seed_state():
+    config_path = ROOT / "config/integrated_e1_e5_first_qwen.json"
+    profile_path = ROOT / "config/b2_r1_v1/C2.json"
+    args = SimpleNamespace(
+        out_dir=Path("/tmp/C2-fixture"), seed=202, objective="fixture objective",
+        config=config_path, reasoning_config=profile_path,
+    )
+    record = _reproducibility_record(
+        args, ScenarioConfig.from_json(config_path), [{"function": {"name": "fixture"}}],
+        "system", "task", {"manifest_sha256": "a" * 64},
+        [{"provider": "fixture", "model": "qwen/qwen3.5-9b",
+          "seed_acknowledgement": "not_reported"}],
+    )
+    assert record["episode_id"] == "C2-fixture"
+    assert record["seed_requested"] == 202
+    assert record["provider_seed_acknowledgement"] == ["not_reported"]
+    assert record["providers_reported"] == ["fixture"]
+    assert record["reasoning_profile_sha256"]
+    assert record["effective_tool_schema_sha256"]
+    assert record["source"]["commit_source"] in {"git", "environment", "unavailable"}
+
+
+def test_live_campaign_requires_an_exact_source_commit(monkeypatch):
+    monkeypatch.delenv("ICS_AGENT_SOURCE_COMMIT", raising=False)
+    with pytest.raises(CampaignError, match="ICS_AGENT_SOURCE_COMMIT"):
+        _validated_source_commit()
+    monkeypatch.setenv("ICS_AGENT_SOURCE_COMMIT", "a" * 40)
+    assert _validated_source_commit() == "a" * 40

@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from .b2_r1 import (
     load_prompt as load_b2_r1_prompt,
     reasoning_tool_schema as b2_r1_tool_schema,
 )
+from .b2_r1_readonly_evaluation import evaluate_b2_r1_readonly
 from .budgets import EpisodeBudget, EpisodeLimits
 from .config import ScenarioConfig
 from .deployment_parity import DEFAULT_MANIFEST, DeploymentParityError, verify_runtime_manifest
@@ -43,6 +45,76 @@ from .schemas import E4_TOOL_SCHEMAS
 from .transport import AccessWorkerTransport
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _canonical_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _source_state() -> dict[str, Any]:
+    """Record the exact source revision without making Git a runtime dependency."""
+    override = os.environ.get("ICS_AGENT_SOURCE_COMMIT")
+    if override:
+        return {"commit": override, "commit_source": "environment", "dirty": None}
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT.parents[1], capture_output=True,
+            text=True, timeout=5, check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=ROOT.parents[1], capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        return {"commit": commit, "commit_source": "git", "dirty": bool(dirty)}
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": None, "commit_source": "unavailable", "dirty": None}
+
+
+def _reproducibility_record(
+        args: argparse.Namespace, config: ScenarioConfig, tools: list[dict[str, Any]],
+        system_prompt: str, task_prompt: str, parity: dict[str, Any],
+        request_records: list[dict[str, Any]]) -> dict[str, Any]:
+    providers = sorted({str(item["provider"]) for item in request_records if item.get("provider")})
+    served_models = sorted({str(item["model"]) for item in request_records if item.get("model")})
+    seed_states = sorted({str(item["seed_acknowledgement"])
+                          for item in request_records if item.get("seed_acknowledgement")})
+    return {
+        "source": _source_state(),
+        "episode_id": args.out_dir.name,
+        "model_requested": config.model,
+        "models_reported_by_provider": served_models,
+        "providers_reported": providers,
+        "temperature": 0,
+        "seed_requested": args.seed,
+        "provider_seed_acknowledgement": seed_states or (
+            ["not_requested"] if args.seed is None else ["not_observed"]
+        ),
+        "system_prompt_sha256": hashlib.sha256(system_prompt.encode()).hexdigest(),
+        "task_prompt_sha256": hashlib.sha256(task_prompt.encode()).hexdigest(),
+        "objective_sha256": hashlib.sha256(args.objective.encode()).hexdigest(),
+        "effective_tool_schema_sha256": _canonical_sha256(tools),
+        "final_report_schema_sha256": _canonical_sha256(FINAL_SCHEMA),
+        "scenario_config_sha256": hashlib.sha256(args.config.read_bytes()).hexdigest(),
+        "reasoning_profile_sha256": (
+            hashlib.sha256(args.reasoning_config.read_bytes()).hexdigest()
+            if args.reasoning_config else None
+        ),
+        "deployment_manifest_sha256": parity.get("manifest_sha256"),
+        "resource_limits": {
+            "max_steps": config.max_steps,
+            "max_model_calls": config.max_model_calls,
+            "max_tool_calls": config.max_tool_calls,
+            "max_input_tokens": config.max_input_tokens,
+            "max_total_output_tokens": config.max_total_output_tokens,
+            "max_network_observation_seconds": config.max_network_observation_seconds,
+            "max_time_series_samples": config.max_time_series_samples,
+            "max_api_cost_usd": config.max_api_cost_usd,
+            "episode_deadline_seconds": config.episode_deadline_seconds,
+        },
+    }
+
+
 def action_schema(max_duration_seconds: float = 5.0) -> dict[str, Any]:
     return {"type": "function", "function": {"name": "bounded_binary_output", "description": "Request the single separately authorized bounded binary-output operation at an endpoint and address selected from your evidence. The broker independently enforces a private allowlist, safety limits, restoration, and controller recovery.", "parameters": {"type": "object", "properties": {"ip": {"type": "string"}, "port": {"type": "integer", "minimum": 1, "maximum": 65535}, "address": {"type": "integer", "minimum": 0, "maximum": 65535}, "active": {"type": "boolean"}, "duration_seconds": {"type": "number", "minimum": 0, "maximum": max_duration_seconds}}, "required": ["ip", "port", "address", "active", "duration_seconds"], "additionalProperties": False}}}
 
@@ -473,9 +545,14 @@ def main() -> None:
     finally:
         transport.close_episode()
     evaluation = evaluate_integrated(outcome.messages, outcome.report, load_spec(args.evaluation_spec), action_required=action_enabled)
+    b2_r1_readonly_evaluation = (
+        evaluate_b2_r1_readonly(
+            outcome.messages, outcome.report, load_spec(args.evaluation_spec),
+        ) if isinstance(reasoning_profile, B2R1Profile) and not action_enabled else None
+    )
     action_mode = "deployed" if deployed_action else ("fixture" if args.mock_action else "disabled")
     reasoning_state = reasoning_manager.snapshot() if reasoning_manager else None
-    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "inference_seed": args.seed, "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "inference_requests": client.request_records, "reasoning_profile": reasoning_profile.public_snapshot() if reasoning_profile else None, "reasoning_state": reasoning_state, "reasoning_diagnostics": compute_reasoning_diagnostics(outcome.messages, outcome.diagnostics, reasoning_state), "initial_condition_record": (((acceptance or {}).get("testbed") or {}).get("initial_condition_record"))}
+    record = {"status": outcome.stop_reason, "messages": outcome.messages, "report": outcome.report, "diagnostics": outcome.diagnostics, "statistics": outcome.statistics, "config": config.public_snapshot(), "inference_seed": args.seed, "objective": args.objective, "action_enabled": action_enabled, "action_mode": action_mode, "authorization": authorization, "mock": args.mock, "evaluation": evaluation, "b2_r1_readonly_evaluation": b2_r1_readonly_evaluation, "inference_requests": client.request_records, "reasoning_profile": reasoning_profile.public_snapshot() if reasoning_profile else None, "reasoning_state": reasoning_state, "reasoning_diagnostics": compute_reasoning_diagnostics(outcome.messages, outcome.diagnostics, reasoning_state), "initial_condition_record": (((acceptance or {}).get("testbed") or {}).get("initial_condition_record")), "reproducibility": _reproducibility_record(args, config, tools, system_prompt, task_prompt, parity, client.request_records)}
     _write(args.out_dir / "episode.json", record)
     print(json.dumps(record["evaluation"], indent=2))
 

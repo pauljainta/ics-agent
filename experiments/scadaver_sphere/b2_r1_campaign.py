@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -36,6 +37,15 @@ PROFILE_HASHES = {
 
 class CampaignError(RuntimeError):
     pass
+
+
+def _validated_source_commit() -> str:
+    value = os.environ.get("ICS_AGENT_SOURCE_COMMIT", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise CampaignError(
+            "ICS_AGENT_SOURCE_COMMIT must identify the exact 40-character review commit"
+        )
+    return value
 
 
 def _now() -> str:
@@ -125,6 +135,7 @@ def _inspect_episode(directory: Path) -> dict[str, Any]:
         "episode_id": directory.name, "path": str(directory),
         "status": "EVALUATION_COMPLETE" if complete else "TECHNICAL_ABORT",
         "evaluation": evaluation, "statistics": episode.get("statistics"),
+        "b2_r1_readonly_evaluation": episode.get("b2_r1_readonly_evaluation"),
         "reasoning_diagnostics": episode.get("reasoning_diagnostics"),
         "initial_condition_record": episode.get("initial_condition_record"),
         "recovery_complete": recovered,
@@ -231,21 +242,26 @@ def _flatten(condition: str, episode: dict[str, Any] | None) -> dict[str, Any]:
     if not episode:
         return {"condition": condition, "status": "NOT_AVAILABLE"}
     evaluation = episode.get("evaluation") or {}
+    read_only_evaluation = episode.get("b2_r1_readonly_evaluation") or {}
     usage = ((episode.get("statistics") or {}).get("usage") or {})
     reasoning = episode.get("reasoning_diagnostics") or {}
     row = {
         "condition": condition, "status": episode.get("status"),
-        "overall_success": evaluation.get("overall_success"),
+        "read_only_core_success": read_only_evaluation.get("read_only_core_success"),
+        # C0-C4 intentionally expose no action interface. Full E1-E5 success is
+        # therefore not a defined outcome for this campaign.
+        "full_system_overall_success": None,
         "model_calls": usage.get("model_calls"), "tool_calls": usage.get("tool_calls"),
         "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
         "api_cost_usd": usage.get("api_cost_usd"),
     }
     for key in (
         "unsuccessful_tool_calls", "redundant_probe_requests",
-        "errors_repeated_after_informative_rejection",
-        "alternative_tool_or_arguments_after_failure",
+        "repeated_failed_request_count", "alternative_probe_after_failure_count",
+        "successful_recovery_after_failure_count",
         "successful_evidence_per_investigative_call", "error_reviews",
-        "hypotheses_meaningfully_tested", "hypotheses_revised", "hypotheses_rejected",
+        "hypotheses_with_successful_cited_test_results",
+        "hypotheses_revised", "hypotheses_rejected",
         "contradictions_recognized", "uncertainty_reviews",
         "reviewed_supported_claims", "reviewed_uncertain_claims",
         "reviewed_contradicted_claims", "role_claims_with_role_evidence",
@@ -253,11 +269,17 @@ def _flatten(condition: str, episode: dict[str, Any] | None) -> dict[str, Any]:
     ):
         row[key] = reasoning.get(key)
     for stage, field in (("e1_pass", "e1_discovery"),
-                         ("e2_pass", "e2_service_protocol_identification"),
-                         ("e3_pass", "e3_understanding"),
-                         ("e4_pass", "e4_planning"),
-                         ("e5_pass", "e5_execution")):
-        row[stage] = (evaluation.get(field) or {}).get("passed")
+                         ("e2_pass", "e2_identification"),
+                         ("e3_pass", "e3_understanding")):
+        row[stage] = (read_only_evaluation.get(field) or {}).get("passed")
+    planning = read_only_evaluation.get("read_only_planning") or {}
+    row["e4_plan_present"] = planning.get("present")
+    row["e4_plan_citations_valid"] = planning.get("citations_valid")
+    e5 = evaluation.get("e5_execution") or {}
+    row["e5_required"] = e5.get("required")
+    row["e5_status"] = ("EVALUATED" if e5.get("required") is True
+                        else "NOT_APPLICABLE_READ_ONLY")
+    row["e5_pass"] = e5.get("passed") if e5.get("required") is True else None
     return row
 
 
@@ -306,6 +328,7 @@ def run_condition(condition: str, results_root: Path, worker_url: str,
         raise CampaignError("RUN condition must be C0-C4")
     if inventory(results_root)["conditions"][condition]["episodes"]:
         raise CampaignError(f"{condition} already has an episode; automatic replacement is prohibited")
+    source_commit = _validated_source_commit()
     validation = validate(worker_url, results_root / "engineering_validation",
                           production_smoke=True)
     matched_state = _matched_initial_state(
@@ -318,6 +341,7 @@ def run_condition(condition: str, results_root: Path, worker_url: str,
         (ROOT / "config/first_qwen_objective.json").read_text()
     )["agent_facing_objective"]
     environment = dict(os.environ, PYTHONPATH=str(REPO))
+    environment["ICS_AGENT_SOURCE_COMMIT"] = source_commit
     environment.pop("SCADAVER_ENABLE_SITL_ACTIONS", None)
     environment.pop("SCADAVER_SITL_ACTION_TOKEN", None)
     command = [
@@ -334,6 +358,7 @@ def run_condition(condition: str, results_root: Path, worker_url: str,
     _atomic_json(state_path, {
         "status": "RUNNING", "condition": condition, "episode_id": out_dir.name,
         "started_at": _now(), "inference_seed": seed,
+        "source_commit": source_commit,
         "read_only": True, "action_authorization_created": False,
         "matched_initial_state": matched_state, "command": shlex.join(command),
     })
@@ -362,6 +387,7 @@ def run_condition(condition: str, results_root: Path, worker_url: str,
     final = {
         "status": status, "condition": condition, "episode_id": out_dir.name,
         "inference_seed": seed, "runner_returncode": completed.returncode,
+        "source_commit": source_commit,
         "testbed_ready": post.get("TESTBED_READY"), "read_only": True,
         "action_authorization_created": False,
         "matched_initial_state": matched_state, "ended_at": _now(),

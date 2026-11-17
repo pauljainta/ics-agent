@@ -1,0 +1,163 @@
+{
+  "review_version": "b2-r1-comprehensive-review-v1",
+  "findings": [
+    {
+      "id": "B2R1-001",
+      "severity": "High",
+      "status": "resolved",
+      "file": "experiments/scadaver_sphere/b2_r1_campaign.py",
+      "line": 240,
+      "issue": "The read-only comparison previously flattened the frozen evaluator's vacuous non-required E5 pass as E5 success.",
+      "evidence": "integrated_evaluation.py sets E5 passed when action_required is false; C0-C4 do not register the action tool.",
+      "consequence": "A read-only run could be incorrectly described as complete E1-E5 success.",
+      "correction": "Campaign reports now set full-system success and E5 pass to null and label E5 NOT_APPLICABLE_READ_ONLY.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-002",
+      "severity": "High",
+      "status": "resolved",
+      "file": "experiments/scadaver_sphere/b2_r1_readonly_evaluation.py",
+      "line": 15,
+      "issue": "The frozen full-system evaluator accepted some role and planning claims based on matching text plus an arbitrary valid citation.",
+      "evidence": "integrated_evaluation.py:_supported_text checks expected report text and citation existence but not observation relevance.",
+      "consequence": "A valid-looking report could receive E3 credit without dynamic process or cross-device evidence.",
+      "correction": "A separate private versioned read-only evaluator now requires OpenPLC-identifying content, changing process measurements, and a cross-device temporal association. The frozen E1-E5 evaluator remains unchanged.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-003",
+      "severity": "High",
+      "status": "resolved",
+      "file": "experiments/scadaver_sphere/integrated_runner.py",
+      "line": 74,
+      "issue": "Episode artifacts did not freeze all effective prompt, schema, source, model-provider, and seed-acknowledgement metadata.",
+      "evidence": "The previous episode record stored config and request records but no effective prompt/tool hashes or explicit provider seed acknowledgement.",
+      "consequence": "A future C0-C4 comparison could not be independently reconstructed with sufficient precision.",
+      "correction": "Episodes now record source state, deployment manifest, prompt/objective/schema/config hashes, limits, requested and reported models/providers, temperature, seed, and provider acknowledgement. Live campaigns require ICS_AGENT_SOURCE_COMMIT.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-004",
+      "severity": "Medium",
+      "status": "resolved",
+      "file": "experiments/scadaver_sphere/reasoning_metrics.py",
+      "line": 59,
+      "issue": "Diagnostic names implied informative rejection, effective recovery, and meaningful hypothesis testing beyond what the trace established.",
+      "evidence": "The old counters used request equality, any changed next request, and any non-unresolved disposition with result IDs.",
+      "consequence": "Mechanism adoption could be mistaken for improved reasoning quality.",
+      "correction": "Reports now use repeated_failed_request_count, alternative_probe_after_failure_count, successful_recovery_after_failure_count, and hypotheses_with_successful_cited_test_results. Historical keys remain only for compatibility.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-005",
+      "severity": "Medium",
+      "status": "open_limitation",
+      "file": "experiments/scadaver_sphere/agent.py",
+      "line": 208,
+      "issue": "R1 reasoning-state calls are model-selected and advisory rather than mandatory before investigation or submission.",
+      "evidence": "The continuous loop executes whichever available tool Qwen selects and does not gate final submission on a reasoning update.",
+      "consequence": "A condition can expose an R1 mechanism that the model never adopts.",
+      "correction": "Treat mechanism use and non-use as an experimental outcome; report update counts and never infer mechanism effectiveness from availability alone.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-006",
+      "severity": "Medium",
+      "status": "open_limitation",
+      "file": "experiments/scadaver_sphere/b2_r1.py",
+      "line": 338,
+      "issue": "R1-B validates provenance, successful result status, contradiction retention, and revision structure but cannot determine whether model-authored evidence is scientifically relevant to the hypothesis.",
+      "evidence": "Runtime validation is answer-blind by design and has no private ground truth access.",
+      "consequence": "Structured verification-cycle completion is not itself proof of a correct or meaningfully discriminating test.",
+      "correction": "Use structural diagnostics only as secondary measures and use the private read-only evaluator for factual outcome scoring.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-007",
+      "severity": "Medium",
+      "status": "open_limitation",
+      "file": "experiments/scadaver_sphere/agent.py",
+      "line": 272,
+      "issue": "Long histories are compacted, and larger R1 prompts/schemas may cause enhanced conditions to reach compaction earlier than C0.",
+      "evidence": "Compaction preserves recent full observations and older observation IDs/tool metadata but not all older numeric values.",
+      "consequence": "Token overhead is part of the treatment and may affect available context, especially in C4.",
+      "correction": "Record compaction events, prompt/schema sizes, token usage, and observation retrieval calls; include them in interpretation rather than changing context policy by condition.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-008",
+      "severity": "Medium",
+      "status": "open_limitation",
+      "file": "experiments/scadaver_sphere/b2_r1_campaign.py",
+      "line": 218,
+      "issue": "The continuously evolving plant is not reset between read-only episodes.",
+      "evidence": "Campaign preparation explicitly records reset_performed=false and supports an optional matched initial level band.",
+      "consequence": "Environmental drift can confound condition comparisons if execution order is not balanced.",
+      "correction": "Use the predefined balanced block order, record preflight measurements, and enforce the same matched level band for every episode.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-009",
+      "severity": "Medium",
+      "status": "open_limitation",
+      "file": "experiments/scadaver_sphere/openrouter.py",
+      "line": 98,
+      "issue": "OpenRouter may accept a requested seed without returning provider acknowledgement.",
+      "evidence": "The API response used by the client does not necessarily contain a seed field.",
+      "consequence": "Temperature zero and a requested seed do not guarantee identical episodes.",
+      "correction": "Record acknowledgement as acknowledged, mismatch, or not_reported and use independent repetitions rather than claiming determinism.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-010",
+      "severity": "Low",
+      "status": "open_limitation",
+      "file": "experiments/scadaver_sphere/schemas.py",
+      "line": 94,
+      "issue": "The phrase '19 investigative tools' includes 18 investigative operations plus one non-actuating submission tool.",
+      "evidence": "E4_TOOL_SCHEMAS contains 19 functions; submit_objective_pathway is removed before integrated execution and replaced by submit_integrated_report.",
+      "consequence": "Documentation can overstate the number of observation capabilities.",
+      "correction": "Describe the surface as 18 investigative tools plus one submission contract; R1 adds one reasoning-record tool when configured.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-011",
+      "severity": "Low",
+      "status": "environment_note",
+      "file": "experiments/scadaver_sphere/config/production_runtime_manifest_v1.json",
+      "line": 3,
+      "issue": "The workstation virtualenv has pymodbus 3.15.0 while the scientific deployment pins 3.6.9.",
+      "evidence": "Local parity fails only the dependency check; Access-VM parity reports 3.6.9 and passes.",
+      "consequence": "The workstation virtualenv must not be treated as the authoritative scientific runtime.",
+      "correction": "Run production parity and experiments on the Access VM; use the workstation environment for offline tests only.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-012",
+      "severity": "Medium",
+      "status": "open_limitation",
+      "file": "experiments/scadaver_sphere/config/first_qwen_objective.json",
+      "line": 3,
+      "issue": "The preserved objective mentions a conditional physical action, but C0-C4 intentionally expose no action interface.",
+      "evidence": "The read-only runner omits bounded_binary_output and strips action environment variables.",
+      "consequence": "C0-C4 can assess investigation, identification, understanding, and planning but cannot demonstrate E5 or direct intervention causality.",
+      "correction": "Keep objective wording identical for baseline comparability, label E5 not applicable, and score E1-E3 plus descriptive read-only planning separately.",
+      "blocks_experimentation": false
+    },
+    {
+      "id": "B2R1-013",
+      "severity": "High",
+      "status": "open",
+      "file": "experiments/scadaver_sphere/b2_r1_campaign.py",
+      "line": 42,
+      "issue": "The reviewed corrections are not yet represented by a Git commit, while live launch requires a claimed exact source commit.",
+      "evidence": "HEAD is 0af8608, but the reviewed evaluator, provenance, metrics, campaign, tests, and reports remain modified or untracked.",
+      "consequence": "A live episode cannot truthfully identify the reviewed source using the old commit hash, weakening exact reproducibility.",
+      "correction": "Create a narrow reviewed commit for only the targeted B2-R1 changes, deploy that exact commit, and rerun deployment parity before live inference.",
+      "blocks_experimentation": true
+    }
+  ],
+  "unresolved_critical": 0,
+  "unresolved_high": 1
+}

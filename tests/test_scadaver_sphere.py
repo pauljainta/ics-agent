@@ -807,6 +807,9 @@ def test_openrouter_records_sanitized_provider_and_budget_metadata(monkeypatch):
     assert record["mode"] == "submission_recovery"
     assert record["requested_max_tokens"] == 8192
     assert record["seed"] == 101
+    assert record["seed_requested"] == 101
+    assert record["seed_reported_by_provider"] is None
+    assert record["seed_acknowledgement"] == "not_reported"
     assert requests == [{
         "model": "qwen/qwen3.5-9b", "messages": [], "tools": [],
         "tool_choice": "auto", "temperature": 0, "max_tokens": 8192,
@@ -825,6 +828,27 @@ def test_inference_timeout_terminates_safely_without_fabricating_report():
     assert result.stop_reason == "inference_error"
     assert result.report is None
     assert result.diagnostics[-1]["kind"] == "inference_failure"
+
+
+def test_tool_timeout_is_a_visible_fail_closed_transport_error():
+    class Client:
+        def chat(self, messages, tools):
+            return {"tool_calls": [{"id": "timeout-call", "function": {
+                "name": "discover_hosts", "arguments": json.dumps({"cidr": "198.18.2.0/29"}),
+            }}]}
+
+    class TimedOutWorker:
+        def execute(self, name, arguments):
+            raise TimeoutError("controlled worker timeout")
+
+    result = run_agent(
+        Client(), TimedOutWorker(), allowed_cidr="198.18.2.0/29", max_steps=2,
+        reserved_completion_steps=0,
+    )
+    assert result.stop_reason == "tool_transport_error"
+    assert result.report is None
+    assert result.diagnostics[-1]["error_type"] == "TimeoutError"
+    assert result.diagnostics[-1]["kind"] == "tool_transport_error"
 
 
 def test_malformed_tool_arguments_are_visible_and_do_not_execute_hidden_defaults():
