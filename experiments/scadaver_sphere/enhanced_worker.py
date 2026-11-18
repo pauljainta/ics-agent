@@ -236,10 +236,13 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
         finally:
             client.close()
 
-    def _read_data_model(self, data_model: str, args: dict[str, Any], *, record: bool = True) -> dict[str, Any]:
+    def _read_data_model(
+        self, data_model: str, args: dict[str, Any], *, record: bool = True,
+        reserve: bool = True,
+    ) -> dict[str, Any]:
         if data_model in {"holding", "coil"}:
-            return self._value_read(data_model, args, record=record)
-        return self._native_modbus_read(data_model, args, record=record)
+            return self._value_read(data_model, args, record=record, reserve=reserve)
+        return self._native_modbus_read(data_model, args, record=record, reserve=reserve)
 
     def _explore_modbus_map(self, args: dict[str, Any]) -> dict[str, Any]:
         ip, port = self.policy.target_ip(args.get("ip")), self.policy.port(args.get("port"))
@@ -286,8 +289,18 @@ class EnhancedReadOnlyWorker(ReadOnlyWorker):
                 time.sleep(interval)
             sweep_started = time.time()
             readings = []
+            reserved_hosts: set[str] = set()
             for target in normalized:
-                reading = self._read_data_model(target["register_type"], target, record=False)
+                # Reserve each host once per coordinated sweep.  Multiple data
+                # models on one device are a single bounded observation, not a
+                # rapid sequence of independent host probes.
+                if target["ip"] not in reserved_hosts:
+                    self._reserve_probe(target["ip"])
+                    reserved_hosts.add(target["ip"])
+                self._consume_probe()
+                reading = self._read_data_model(
+                    target["register_type"], target, record=False, reserve=False,
+                )
                 readings.append({
                     "target": {key: target[key] for key in ("ip", "port")},
                     "register_type": target["register_type"], "start": target["start"], "count": target["count"],

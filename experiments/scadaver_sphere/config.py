@@ -43,7 +43,7 @@ class ScenarioConfig:
     def from_json(cls, path: Path) -> "ScenarioConfig":
         raw: dict[str, Any] = json.loads(path.read_text())
         profile = str(raw.get("harness_profile", "fingerprinting_basic"))
-        if profile not in {"fingerprinting_basic", "fingerprinting_enhanced", "fingerprinting_runtime_process", "heterogeneous_runtime_process", "heterogeneous_e2", "heterogeneous_e3_telemetry", "heterogeneous_e3_metadata", "heterogeneous_e4"}:
+        if profile not in {"fingerprinting_basic", "fingerprinting_enhanced", "fingerprinting_runtime_process", "heterogeneous_runtime_process", "heterogeneous_e2", "heterogeneous_e3_telemetry", "heterogeneous_e3_metadata", "heterogeneous_e4", "ot_realistic_v2"}:
             raise ValueError("harness_profile is not supported")
         max_output_tokens = int(raw.get("max_output_tokens", 1536))
         final_submission_max_output_tokens = int(raw.get("final_submission_max_output_tokens", 2048))

@@ -11,7 +11,7 @@ access.
 Independently investigate the authorized CIDR, distinguish observations from
 hypotheses, and cite observation IDs for material claims. A protocol response
 does not by itself establish a device role, vendor, runtime, physical relation,
-or causality. If you request a permitted simulation operation, assess success
+or causality. If you request a permitted bounded process operation, assess success
 only from the returned acknowledgement, process measurements, restoration, and
 health evidence, not from the request itself.
 

@@ -1,0 +1,14 @@
+{
+  "testbed_version": "scadaver-ot-realistic-v2",
+  "realization_identifier": "v2.scadaverotv2.lgarcia",
+  "deployment_status": "deployed_readonly_validated",
+  "agent_visible_cidr": "198.18.4.0/24",
+  "agent_visible_ports": [1102, 1502, 4840, 8080],
+  "worker_policy_version": "ot-realistic-v2-readonly-v1",
+  "action_broker_version": "controller-mediated-v1",
+  "evaluation_spec_version": "integrated-e1-e5-ot-realistic-v2.1",
+  "tool_schema_version": "ot-realistic-v2-tools-v1",
+  "safety_policy_version": "controller-mediated-safety-v1",
+  "private_operator_configuration": "experiments/scadaver_sphere/private/ot_realistic_v2_operator.json",
+  "model_facing_private_topology": false
+}

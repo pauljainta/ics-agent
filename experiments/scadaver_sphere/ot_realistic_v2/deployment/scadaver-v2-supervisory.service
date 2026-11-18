@@ -1,0 +1,22 @@
+[Unit]
+Description=SCADAver V2 controller-local supervisory command source
+After=network.target
+Before=scadaver-openplc-controller.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/scadaver-v2
+Environment=PYTHONPATH=/opt/scadaver-v2
+Environment=SCADAVER_V2_MAX_COMMAND_SECONDS=1.25
+ExecStart=/usr/bin/python3 -m experiments.scadaver_sphere.ot_realistic_v2.supervisory_runtime
+Restart=on-failure
+RestartSec=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/scadaver-v2
+
+[Install]
+WantedBy=multi-user.target

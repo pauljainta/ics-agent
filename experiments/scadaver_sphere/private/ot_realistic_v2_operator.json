@@ -1,0 +1,10 @@
+{
+  "controller_ot": "198.18.4.10:1502",
+  "controller_process": "198.18.6.1",
+  "simulator_process": "198.18.6.2:1503",
+  "evaluator_process": "198.18.6.3",
+  "private_process_cidr": "198.18.6.0/29",
+  "supervisory_service": "127.0.0.1:1504",
+  "forwarding_required": false,
+  "agent_visible": false
+}

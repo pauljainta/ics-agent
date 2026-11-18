@@ -289,6 +289,26 @@ def test_cross_device_sampling_preserves_per_target_values_and_measured_skew():
     assert len(worker.observations.values) == 1
 
 
+def test_cross_device_sampling_allows_distinct_data_models_on_one_host():
+    outputs = iter(["40001 470\n", "1 ON\n"])
+
+    def runner(argv, timeout):
+        return subprocess.CompletedProcess(argv, 0, stdout=next(outputs), stderr="")
+
+    worker = EnhancedReadOnlyWorker(policy(), live=True, runner=runner)
+    worker.min_probe_interval = 1.0
+    worker.min_sample_interval = 0
+    result = worker.execute("sample_cross_device_series", {
+        "targets": [
+            {"ip": "198.18.2.2", "port": 1502, "register_type": "holding", "start": 0, "count": 1},
+            {"ip": "198.18.2.2", "port": 1502, "register_type": "coil", "start": 0, "count": 1},
+        ], "samples": 1, "interval_seconds": 0,
+    })
+    assert result["status"] == "ok"
+    assert [item["values"] for item in result["samples"][0]["readings"]] == [[470], [True]]
+    assert worker.probe_operations == 2
+
+
 def test_cross_device_sampling_rejects_duplicate_or_unbounded_targets():
     worker = EnhancedReadOnlyWorker(policy(), live=True)
     worker.min_sample_interval = 0

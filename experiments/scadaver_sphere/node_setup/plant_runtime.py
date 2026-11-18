@@ -13,16 +13,29 @@ import threading
 import time
 
 from pymodbus.client import ModbusTcpClient
-from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext, ModbusSlaveContext
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
+try:  # pymodbus < 3.10 used the Slave name; deployed V1 remains supported.
+    from pymodbus.datastore import ModbusSlaveContext
+except ImportError:  # pragma: no cover - selected by the installed dependency.
+    from pymodbus.datastore import ModbusDeviceContext as ModbusSlaveContext
 from pymodbus.server import StartTcpServer
 
 
 def context() -> ModbusServerContext:
+    def block(size: int) -> ModbusSequentialDataBlock:
+        try:
+            return ModbusSequentialDataBlock(0, [0] * size)
+        except TypeError:  # pymodbus >= 3.10 uses one-based datastore origins.
+            return ModbusSequentialDataBlock(1, [0] * size)
+
     store = ModbusSlaveContext(
-        co=ModbusSequentialDataBlock(0, [0] * 64),
-        hr=ModbusSequentialDataBlock(0, [0] * 256),
+        co=block(64),
+        hr=block(256),
     )
-    return ModbusServerContext(slaves=store, single=True)
+    try:
+        return ModbusServerContext(slaves=store, single=True)
+    except TypeError:  # pymodbus >= 3.10 renamed slaves to devices.
+        return ModbusServerContext(devices=store, single=True)
 
 
 def simulator_loop(store: ModbusServerContext) -> None:
@@ -54,6 +67,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("role", choices=("controller", "simulator"))
     parser.add_argument("--controller-simulator", default="198.18.4.20")
+    parser.add_argument("--bind-address", default="0.0.0.0")
     args = parser.parse_args()
     store = context()
     if args.role == "simulator":
@@ -62,7 +76,7 @@ def main() -> None:
     else:
         threading.Thread(target=controller_loop, args=(store, args.controller_simulator), daemon=True).start()
         port = 1502
-    StartTcpServer(context=store, address=("0.0.0.0", port))
+    StartTcpServer(context=store, address=(args.bind_address, port))
 
 
 if __name__ == "__main__":
