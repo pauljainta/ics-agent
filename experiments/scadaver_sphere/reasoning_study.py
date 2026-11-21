@@ -70,8 +70,13 @@ def build(out_root: Path) -> None:
         "version": "reasoning-ablation-v1",
         "branch": git_value("branch", "--show-current"),
         "implementation_commit": git_value("rev-parse", "HEAD"),
-        "frozen_baseline_commit": "bf8b93928cbfe9afd91031841230d6640df54595",
-        "frozen_baseline_tag": "scadaver-e1-e5-harness-repair-v2",
+        "frozen_baseline_commit": None,
+        "frozen_baseline_tag": None,
+        "baseline_provenance_note": (
+            "Original baseline references were retired during publication sanitization. "
+            "implementation_commit and input_hashes identify these public inputs; "
+            "historical results do not qualify the sanitized deployment."
+        ),
         "live_episode_status": "PENDING_SEPARATE_AUTHORIZATION",
         "live_order": list(CONDITIONS),
         "profiles": profiles,
@@ -98,7 +103,9 @@ def build(out_root: Path) -> None:
         "verification; B3 adds pre-action review; B4 adds information-gain selection. "
         "Conditions are cumulative. Each live condition requires a separate authorization "
         "and fresh action token and is executed once in B0-B4 order. Fixture outputs are "
-        "engineering validation only and must not be reported as scientific outcomes.\n",
+        "engineering validation only and must not be reported as scientific outcomes. "
+        "The public inputs were sanitized; historical deployment evidence must be "
+        "revalidated before reuse.\n",
         encoding="utf-8",
     )
     (out_root / "reports/implementation_and_readiness.md").write_text(

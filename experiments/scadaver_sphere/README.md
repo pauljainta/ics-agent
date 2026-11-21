@@ -1,5 +1,10 @@
 # SCADAver + SPHERE Read-Only ICS Fingerprinting
 
+This public source snapshot has been sanitized. Its refreshed integrity fingerprints
+identify the published inputs; historical reports do not qualify a current deployment
+or establish new experimental results. See the
+[publication and revalidation note](docs/publication_sanitization.md).
+
 This is a separate experiment for read-only inventory and device-authenticity
 assessment in an authorized isolated SPHERE lab. It is not a PLCBench runner and
 does not reuse any previous realization.

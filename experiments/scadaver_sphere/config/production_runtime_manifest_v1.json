@@ -3,16 +3,16 @@
     "pymodbus": "3.6.9"
   },
   "files": {
-    "acceptance.py": "80e503122bf60e033c79590aec39e021ed0d31273cee730f72c3f844b34270f5",
+    "acceptance.py": "ee7e341417a73b55db0197ab19b0996f5f561006e270901e7187f15881b40f1c",
     "agent.py": "a051ce04134d4e3881525b4b6e5725706ae722d1f54f6acefc0c704f8a31a987",
-    "b2_r1.py": "fcb2feb5a01c1b22c4783651c8dd50f85e90c11f3ffcea182fb92d5f7f90c82e",
+    "b2_r1.py": "91b48b1e04d19a65c0fa45b90775c4d6dc31f4d88604cc7ba8799b056f8e3a28",
     "b2_r1_acceptance.py": "2e464e6982c46d52f3468a405ad94649c6fc9d4127f184d76d95563f953e8006",
-    "b2_r1_campaign.py": "99702c59a47b3e229c55e49af7e606acc28e48ceab00b93126878172a3069516",
+    "b2_r1_campaign.py": "f47f1867ba83b1188b4e29bca237bd4fb845ae0a7989904b508067d543896f1a",
     "b2_r1_readonly_evaluation.py": "cd50a53b1f5328451067089d052395ca4e38e389ad2e26c04251f3279b957adf",
     "budgets.py": "075f675af11a4e200f1eaae14b031a129680c896427e695ff7609c59582ea967",
     "config.py": "efc34a2575b2a0ed511cb4c6b3f8e8bcb463d93adbebaabb878aada34efdc645",
     "config/first_qwen_objective.json": "ed61a054a4634d7897ed65949914e2dc8435672d24f72d605b05973ae82ffefd",
-    "config/integrated_e1_e5_first_qwen.json": "79f5209cbfc416c774c30e604bd96e410603f7183e506a7acb83d983eb28df17",
+    "config/integrated_e1_e5_first_qwen.json": "bbda711efb87704a0ee3a840741908d53114595c648f88600cdc2ffbaea5cc8c",
     "config/b2_r1_v1/C0.json": "0a12a98f20c9c2e2afee72aa4700bc3c3488a4c097687e2dad9901ec37217a97",
     "config/b2_r1_v1/C1.json": "ffe490ac32229a6cab84cc475ce36e697566a83e76efe63e2696b58a33cec1e4",
     "config/b2_r1_v1/C2.json": "cd6411bed6cf68b7192c4c96995110c8891554a9f9e8586dd61672d76ad22b21",
@@ -24,22 +24,22 @@
     "config/reasoning_ablation_v1/B0.json": "a4139ca64625b06d7c1b295fece38e7a520521c097fbb1e6cb0f97c86b7a79d2",
     "deployment_parity.py": "bf109fea39058a137cb406a69813401c7659be1295b550fd241075da7a7ddcbb",
     "e23_evaluation.py": "15152e2f57008134b762b0edd797bcf0521bc132c114e649e6bb2eb711aad865",
-    "e23_runner.py": "3d18b504b9c7c0c0ea7d76b7deb521d5e46b2058c72ce6469d110111f72eee23",
+    "e23_runner.py": "19330125e751783982029c58c7e0a8f394b2b0ab232958c754b260a961de0384",
     "e5_evaluation.py": "22a6c8e749523612a2b44d63aa3889113782f50727968e3e39c51ae3f68eb553",
     "e5_fixture.py": "85fa812ca305d1dd600c96b920b09d0f9131895ec50aa3d3c134fb6c8ffeb636",
-    "e5_runner.py": "9f529cf803cd4b6d923865fd466094c015f848625da22b80177e6ca9eb5bb7f1",
+    "e5_runner.py": "4200e749e0dbc22ad5e2dd23ac882a1b1fddcf1bb572415ca5f2fde038b2a5aa",
     "e5_transaction.py": "8daa95c60389e15a389897cc1f112bc6f9dc309724cbab1c91f2a87e48057f67",
-    "heterogeneous_sitl_v1/action_broker.py": "06cc238f103fac81af63abb670e5e8905217257ffc28a838735a5a445b9400cf",
+    "heterogeneous_sitl_v1/action_broker.py": "aa01e5ebaf4fcfd6fd3fec20934ee734446919982cf36fd9da33c561238af734",
     "integrated_evaluation.py": "6f137b0474f1774c75dc0edf09ca3b573655c471ce0c20d03374a1dfb6ad4050",
     "enhanced_worker.py": "5b55c8b815b638695239456f06738ddb9fb8e36c9eb244553799f200439f765a",
-    "evidence_sufficiency.py": "8fdf20d76cde22d38a0a9f3e48ac2d13b8cdf31fbdf6fba34b699c3f420a2fac",
-    "integrated_runner.py": "045923248530f0e1263dc19ebce2986a1c13ed6f10ac9727f9e0b4a09d08902f",
-    "node_setup/access_worker_service.py": "10f180ae3fd6a6147b875197c4f1bc31bb5df0a04a440843cb58dad414b2c7d5",
+    "evidence_sufficiency.py": "7153db8de3d3fb4205ceea395135ebad4f2b3539bb4bc1b79951c8d4d5d28ce9",
+    "integrated_runner.py": "98800cf46ea378153a6a91111184d9cddde4c93ef9ea6b484a10f18892704baa",
+    "node_setup/access_worker_service.py": "88faca144c80f0746fbddca57c6f6591f8bfb5f299ee780a8e8938bee035893c",
     "openrouter.py": "642523ad6de73336364ed5016eb20812c0b50de6bd8d095612c82f0d8bbb5399",
-    "operator_workflow.py": "b1f40ab07b8fa3d912a3a429780bd31c88436c0e66983bc8cee6bcbcf9fe4708",
-    "private/integrated_e1_e5_first_qwen_spec_v2.json": "241bdcd3a2b122dd1f6401272429a86324e8af2bcac9b7a9d6e69a57603aa096",
-    "prompts/integrated_e1_e5_v1.md": "8e1c7703d9844edb7845fa211a7167182e094088e896d057db425c1ce46abfe0",
-    "prompts/integrated_system_v1.md": "2396ddbbadc27873f6029a18a809ce3a8c1f3d3a9fb6296df01800fee128e55a",
+    "operator_workflow.py": "2357171c8e2d4c4691bb56a3bad3ab0bf71b1b85d7b1dbd3e12841ff44eafcc3",
+    "private/integrated_e1_e5_first_qwen_spec_v2.json": "5885579a6b64375a8b3939ffa7878e527895909a3be0b0e2a2fbf443c60587a0",
+    "prompts/integrated_e1_e5_v1.md": "0d1432093b7ff8857a64b9a918191f703991b00ed07f6cc937df2791218eade5",
+    "prompts/integrated_system_v1.md": "756d650237553d71f640276932cf9e2a947db8edd33c800ac3fb84ba2f8af1fd",
     "prompts/b2_r1_v1/R1_A.md": "8915f6fdb30e7674650455d9e97b7872451e25453a203d7b4ef70ae95adee20a",
     "prompts/b2_r1_v1/R1_B.md": "f3330c7ce856c2efdc68e5d6652bdaeba27b0fadbf3602dac56634be93f64fe6",
     "prompts/b2_r1_v1/R1_C.md": "9a277aa584711193cc60b159b4f889be6dcadda6cf84807968d5388f273669bc",
@@ -86,7 +86,7 @@
     "experiments.scadaver_sphere.transport": "transport.py",
     "experiments.scadaver_sphere.worker": "worker.py"
   },
-  "manifest_version": "production-runtime-parity-v2",
+  "manifest_version": "production-runtime-parity-v3-sanitized-public",
   "python": {
     "major": 3,
     "minor": 10
@@ -134,5 +134,10 @@
     "read_s7_data",
     "inspect_s7_metadata",
     "submit_objective_pathway"
-  ]
+  ],
+  "publication": {
+    "source_baseline": "sanitized-public-inputs",
+    "historical_results_revalidated": false,
+    "deployment_status": "requires-revalidation"
+  }
 }

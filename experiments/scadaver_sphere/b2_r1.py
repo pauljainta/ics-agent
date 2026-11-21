@@ -32,17 +32,21 @@ EXPECTED_COMPONENTS = {
     "C4": (True, True, True),
 }
 SUCCESS_STATUSES = {"ok", "accepted", "success"}
+# These fingerprints identify the sanitized public inputs, not an old deployment.
 FROZEN_BASELINE = {
-    "harness_commit": "65e96bf",
-    "production_manifest_sha256": "76b6104327e98adfc6e7ef7f8db12db5a59b01782aab348812929176947f4067",
+    "harness_commit": None,
+    "baseline_provenance_note": (
+        "Public inputs were sanitized and refingerprinted. Historical deployment "
+        "results require revalidation; the original private baseline is unavailable."
+    ),
     "original_b2_config_sha256": "9ebf50871aaf09967394d1b12f5dbdcf1657ed0040be6d49c424ed5cf93e4b5b",
     "original_b2_prompt_sha256": "57ac35a48f1456abf706cedf8965d73a4c92d080b5efc11d0c815c3b594ea100",
-    "base_scenario_sha256": "79f5209cbfc416c774c30e604bd96e410603f7183e506a7acb83d983eb28df17",
-    "system_prompt_sha256": "2396ddbbadc27873f6029a18a809ce3a8c1f3d3a9fb6296df01800fee128e55a",
-    "task_prompt_sha256": "8e1c7703d9844edb7845fa211a7167182e094088e896d057db425c1ce46abfe0",
+    "base_scenario_sha256": "bbda711efb87704a0ee3a840741908d53114595c648f88600cdc2ffbaea5cc8c",
+    "system_prompt_sha256": "756d650237553d71f640276932cf9e2a947db8edd33c800ac3fb84ba2f8af1fd",
+    "task_prompt_sha256": "0d1432093b7ff8857a64b9a918191f703991b00ed07f6cc937df2791218eade5",
     "integrated_evaluator_sha256": "6f137b0474f1774c75dc0edf09ca3b573655c471ce0c20d03374a1dfb6ad4050",
     "e5_evaluator_sha256": "22a6c8e749523612a2b44d63aa3889113782f50727968e3e39c51ae3f68eb553",
-    "action_broker_sha256": "06cc238f103fac81af63abb670e5e8905217257ffc28a838735a5a445b9400cf",
+    "action_broker_sha256": "aa01e5ebaf4fcfd6fd3fec20934ee734446919982cf36fd9da33c561238af734",
     "investigative_tools_schema_sha256": "236fc6e3c617cca38d659f59d90534a5b071c4cd08b2ef3935eb4f20989b5d4f",
     "action_schema_sha256": "7f3fc05340e8ebce99ee27e852f38183c7ddda2a6675d650d6845263512d5239",
     "final_report_schema_sha256": "386fc5b3ed2eabfb8630fd32ad0e3fe4486c99552f050331ad006d69f1547700",
