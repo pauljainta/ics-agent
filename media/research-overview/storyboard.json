@@ -1,0 +1,98 @@
+[
+  {
+    "start": 0,
+    "end": 10,
+    "chapter": "RESEARCH OVERVIEW",
+    "title": "When software reaches the physical world",
+    "caption": "Tool-using AI agents. Industrial control systems. Measurable consequences.",
+    "visual": "intro"
+  },
+  {
+    "start": 10,
+    "end": 24,
+    "chapter": "01  ENTERPRISE IT",
+    "title": "Start with an assumed foothold",
+    "caption": "A conceptual enterprise endpoint is already compromised. The agent begins from a defined, authorized research position.",
+    "visual": "it"
+  },
+  {
+    "start": 24,
+    "end": 38,
+    "chapter": "02  THE TRUST BOUNDARY",
+    "title": "Crossing IT into operational technology",
+    "caption": "The storyline follows a permitted path toward an engineering interface. Segmentation, identity, and action authority define the boundary.",
+    "visual": "boundary"
+  },
+  {
+    "start": 38,
+    "end": 52,
+    "chapter": "03  OT RECONNAISSANCE",
+    "title": "Build an operational picture",
+    "caption": "Inspect allowed surfaces. Identify devices and process roles. Read observations. Connect digital evidence to pumps, valves, and tanks.",
+    "visual": "recon"
+  },
+  {
+    "start": 52,
+    "end": 67,
+    "chapter": "04  TOOL-USING AGENT",
+    "title": "Observe. Plan. Act. Verify.",
+    "caption": "The agent selects structured actions. Validation checks the proposal. The runtime returns new observations and a traceable process response.",
+    "visual": "loop"
+  },
+  {
+    "start": 67,
+    "end": 84,
+    "chapter": "05  MODELED PHYSICAL EFFECTS",
+    "title": "A digital action can change a process",
+    "caption": "Manipulated observations or control actions can alter modeled flow and tank levels. The evaluation tracks actual process state separately from displayed readings.",
+    "visual": "process"
+  },
+  {
+    "start": 84,
+    "end": 97,
+    "chapter": "HISTORICAL CONTEXT  /  2010",
+    "title": "Stuxnet: industrial control was the target",
+    "caption": "Stuxnet targeted Siemens ICS and manipulated centrifuge-control logic. Its lesson: trusted engineering paths can carry adversarial physical intent.",
+    "visual": "stuxnet"
+  },
+  {
+    "start": 97,
+    "end": 110,
+    "chapter": "HISTORICAL CONTEXT  /  2016",
+    "title": "Industroyer: the language of the grid",
+    "caption": "Industroyer used industrial protocols to interact with substation equipment. It was involved in the December 2016 Kyiv power outage.",
+    "visual": "industroyer"
+  },
+  {
+    "start": 110,
+    "end": 121,
+    "chapter": "HISTORICAL CONTEXT  /  2017",
+    "title": "TRITON: the safety layer is in scope",
+    "caption": "TRITON targeted Triconex safety controllers. Safety-system integrity must remain separate from an agent\u2019s confidence or a successful tool call.",
+    "visual": "triton"
+  },
+  {
+    "start": 121,
+    "end": 135,
+    "chapter": "06  DEFENDER RESPONSE",
+    "title": "Contain the action. Recover the process.",
+    "caption": "A defender observes anomalies and applies permitted containment. Compare immediate, delayed, and observation-only authority against safety and availability.",
+    "visual": "defense"
+  },
+  {
+    "start": 135,
+    "end": 146,
+    "chapter": "07  EVIDENCE AND EVALUATION",
+    "title": "Measure outcomes beyond the tool call",
+    "caption": "Inspect trajectories, safety violations, response time, downtime, and recovery. Compare agent policies with scripted and rule-based baselines.",
+    "visual": "evaluation"
+  },
+  {
+    "start": 146,
+    "end": 150,
+    "chapter": "ONGOING RESEARCH",
+    "title": "ICS-Agent",
+    "caption": "AI systems engineering meets industrial cybersecurity.",
+    "visual": "outro"
+  }
+]

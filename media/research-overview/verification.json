@@ -1,0 +1,49 @@
+{
+  "duration_seconds": 150,
+  "width": 1280,
+  "height": 720,
+  "fps": 15,
+  "decoded_frames": 2250,
+  "video_codec": "H.264",
+  "audio_codec": "AAC",
+  "full_decode": "passed",
+  "consecutive_frame_changed_components": 38379,
+  "files": {
+    "ics-agent-research-overview.mp4": {
+      "bytes": 3741255,
+      "sha256": "54b3e1b63166e61af7368d81be4817f62788cd27c07fe738826111e70568d032"
+    },
+    "overview-preview.gif": {
+      "bytes": 2251946,
+      "sha256": "838f0a782f184d37274a722b887bd96539f9c9a45ed63b3aa86f1d9fb384da07"
+    },
+    "overview-poster.png": {
+      "bytes": 48954,
+      "sha256": "45ddc77654f0c6a80ec48bbb2dbe2c50edc81df0b705e88f715d56015a68510f"
+    },
+    "overview.srt": {
+      "bytes": 2366,
+      "sha256": "399cb61c8113b845ecef10cc8a5db2fef1df9d1a7ab6de72c80c8d81a85fc3b7"
+    },
+    "storyboard.json": {
+      "bytes": 3661,
+      "sha256": "77e7833ddf21ac250beec51a274d111c2c2c81f7bdf3dc5bdf4937ee88352c45"
+    },
+    "render_overview.py": {
+      "bytes": 24787,
+      "sha256": "facb627e6c36627859a36bc2762d4059d3006dbb8c1a54dd96ef311b2212e161"
+    },
+    "requirements-video.txt": {
+      "bytes": 37,
+      "sha256": "4e6ba8cf679a2004322d46a7850c3ef1f36062e7462627aaf4d4c29f39b1e114"
+    },
+    "SOURCES.md": {
+      "bytes": 2591,
+      "sha256": "a8141011573fda088bc3d1af2f3b984ff77cd1fce4c40c1a0314e02793ddbbf2"
+    },
+    "contact-sheet.jpg": {
+      "bytes": 390054,
+      "sha256": "42f2eaa9f32c145ef2d8e298feaf95115477237cfca803067b3d70c2ec3ca61b"
+    }
+  }
+}

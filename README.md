@@ -10,6 +10,14 @@ The research spans adversarial agent evaluation, process-aware defense, reconnai
 
 **Research and engineering scope:** Python · LLM agents · structured tool use · LangGraph / LangChain · OpenPLC · Modbus · control logic · cyber-physical security · reproducible experiments.
 
+## Watch the Research Overview
+
+[![Watch the 2:30 ICS-Agent research animation](media/research-overview/overview-preview.gif)](https://github.com/pauljainta/ics-agent/blob/main/media/research-overview/ics-agent-research-overview.mp4)
+
+**[Watch the full 2:30 animation](https://github.com/pauljainta/ics-agent/blob/main/media/research-overview/ics-agent-research-overview.mp4)** · [Captions](media/research-overview/overview.srt) · [Sources and reproducible animation](media/research-overview/SOURCES.md)
+
+Follow a tool-using agent through a conceptual **IT → OT → physical-process** storyline: operational discovery, validated actions, modeled process manipulation, defender containment, and outcome measurement. Historical context includes [Stuxnet](https://www.enisa.europa.eu/news/enisa-news/stuxnet-analysis), [Industroyer](https://www.welivesecurity.com/2022/06/13/industroyer-cyber-weapon-brought-down-power-grid/), and [TRITON](https://www.ncsc.gov.uk/information/triton-malware-targeting-safety-controllers). The starting IT compromise and cross-boundary access are narrative assumptions; the film illustrates the research rather than captured exploitation or an incident reproduction.
+
 ## Why This Research Matters
 
 Industrial cybersecurity connects software decisions to physical processes: water levels, pumps, valves, chemical dosing, and essential-service availability. A convincing alert or a valid tool call is only part of the problem; the research must also examine the resulting process behavior.
@@ -176,6 +184,8 @@ The CTF operator pilot has a separate [qualification record](configs/experiments
 Default experiment output lives under **`../Artifact/Results/`**, outside the repository source tree. Typical families include `Water-treatment/`, `water_distribution_openplc/`, `Qwen3-14B/`, and `Phi-4-mini-instruct/`. The artifact root can be overridden with `ICS_AGENT_ARTIFACT_ROOT`; see [path configuration](ics_agent/paths.py).
 
 Keep result bundles, model weights, generated logs, and private infrastructure files out of source control. Run process-changing experiments only on authorized testbeds.
+
+See [publication and secret-handling notes](SECURITY.md) before sharing deployment configuration or restoring older Git history.
 
 ## Repository Map
 

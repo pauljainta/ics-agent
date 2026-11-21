@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Reviewed original and sanitized source-integrity SHA-256 checksums"
+condition = "AND"
+paths = ['''^experiments/scadaver_sphere/config/production_runtime_manifest_v1\.json$''']
+regexTarget = "line"
+regexes = ['''"node_setup/access_worker_service\.py"\s*:\s*"(?:10f180ae3fd6a6147b875197c4f1bc31bb5df0a04a440843cb58dad414b2c7d5|88faca144c80f0746fbddca57c6f6591f8bfb5f299ee780a8e8938bee035893c)"''']
